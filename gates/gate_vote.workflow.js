@@ -35,11 +35,12 @@ const gate     = args?.gate     || 'unnamed-gate'
 const target   = args?.target   || 'unnamed-target'
 const artifact = args?.artifact || '(no artifact description provided)'
 const criteria = Array.isArray(args?.criteria) ? args.criteria : []
-const N        = args?.n || 3
+const N        = args?.n ?? 3
 const rule     = args?.rule || 'unanimous'
 
 if (!Number.isInteger(N) || N < 1) throw new Error(`n must be a positive integer; got ${N}`)
 if (!['unanimous', 'majority'].includes(rule)) throw new Error(`unknown decision rule: ${rule}`)
+if (criteria.length === 0) throw new Error('gate criteria must not be empty')
 
 const VERDICT_SCHEMA = {
   type: 'object',
@@ -65,9 +66,7 @@ const VERDICT_SCHEMA = {
   required: ['verdict', 'criteria_checked', 'rationale', 'required_fix'],
 }
 
-const criteriaBlock = criteria.length
-  ? criteria.map((c, i) => `  ${i + 1}. ${c}`).join('\n')
-  : '  (none supplied — vote REVISE: a gate with no stated criteria cannot PASS)'
+const criteriaBlock = criteria.map((c, i) => `  ${i + 1}. ${c}`).join('\n')
 
 function judgePrompt(idx) {
   return [
@@ -131,4 +130,4 @@ if (votes.length !== N) {
 
 log(`Tally PASS=${tally.PASS} REVISE=${tally.REVISE} FAIL=${tally.FAIL} -> ${decision}`)
 
-return { gate, target, requested_n: N, received_n: votes.length, rule, decision, tally, votes }
+return { gate, target, criteria, requested_n: N, received_n: votes.length, rule, decision, tally, votes }

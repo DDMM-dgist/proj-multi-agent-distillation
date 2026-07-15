@@ -1,0 +1,33 @@
+run_id: mock-smoke
+inputs:
+  - "{project_dir}/examples/mock/teacher.yaml"
+  - "{project_dir}/examples/mock/student.yaml"
+  - "{project_dir}/examples/mock/seed.example.xyz"
+stages:
+  - name: teacher_labeling
+    command: ["{python}", -m, adapters.acquisition, label,
+              "{project_dir}/examples/mock/teacher.yaml",
+              "{project_dir}/examples/mock/seed.example.xyz",
+              "{artifacts_dir}/teacher_labeled.extxyz",
+              "{artifacts_dir}/teacher_labels.manifest.json"]
+    outputs: [artifacts/teacher_labeled.extxyz, artifacts/teacher_labels.manifest.json]
+  - name: dataset_split
+    command: ["{python}", -m, workflow.steps, split-dataset,
+              "{artifacts_dir}/teacher_labeled.extxyz", "{artifacts_dir}/dataset",
+              "{artifacts_dir}/dataset/split_manifest.json", --seed, "7",
+              --validation-fraction, "0.2", --test-fraction, "0.2"]
+    outputs: [artifacts/dataset/train.extxyz, artifacts/dataset/validation.extxyz,
+              artifacts/dataset/test.extxyz, artifacts/dataset/split_manifest.json]
+  - name: training
+    command: ["{python}", -m, workflow.steps, train-committee,
+              "{project_dir}/examples/mock/student.yaml",
+              "{artifacts_dir}/dataset/train.extxyz", "{artifacts_dir}/committee",
+              "{artifacts_dir}/student_committee.manifest.json"]
+    outputs: [artifacts/student_committee.manifest.json, artifacts/committee]
+  - name: evaluation
+    command: ["{python}", -m, workflow.steps, evaluate-committee,
+              "{project_dir}/examples/mock/student.yaml",
+              "{artifacts_dir}/student_committee.manifest.json",
+              "{artifacts_dir}/dataset/test.extxyz", "{artifacts_dir}/evaluated.extxyz",
+              "{artifacts_dir}/accuracy_report.json", --require-channel, student_vs_teacher]
+    outputs: [artifacts/evaluated.extxyz, artifacts/accuracy_report.json]

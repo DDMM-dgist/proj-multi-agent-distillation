@@ -31,6 +31,7 @@ calculator:
   module: nequip.ase              # python import path
   class: NequIPCalculator
   env: distill-teacher-allegro    # which conda env's interpreter to invoke (see environment.yml)
+  model_is_path: true             # false only for package-defined names such as a built-in model ID
 emits_stress: true                # confirm empirically before relying on this (see adapters/teacher.py:check_stress_support)
 ```
 Any teacher with an ASE `Calculator` satisfies this — that covers essentially
@@ -43,7 +44,7 @@ kind: simple-nn
 train:
   env: distill-student-simplenn
   config_template: templates/student/simple-nn.input.yaml.template
-  descriptor_params: {Si: templates/student/params_Si, O: templates/student/params_O}
+  descriptor_params: {A: /path/to/params_A, B: /path/to/params_B}
   total_epoch: 1500
   double_precision: false
   use_stress: true
@@ -71,6 +72,21 @@ predict:
 ```
 
 Run `adapters.preflight.check_student_config(...)` before expensive training.
+Repository-relative paths are resolved from the project root, not from the run
+directory. `--skip-files` performs schema-only checks without requiring Conda
+or model packages. A workflow stage may declare `env: <conda-name>` to run the
+whole labeling or evaluation worker in that environment.
+
+The same path rule is applied to teacher model/checkpoint references,
+augment-atoms workdirs, student templates and descriptors, MD template
+directories, and DFT input templates.
+
+Production workflows should declare immutable `inputs:` such as active configs,
+templates, seed structures, and small reference inputs. The controller copies
+and hashes them when the run is initialized.
+Large checkpoints or directory models should use
+`{path: /absolute/model/path, copy: false}` so they are hash-bound without being
+duplicated. Every stage rechecks both copied snapshots and original sources.
 
 ### `uncertainty.yaml`
 ```yaml

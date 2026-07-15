@@ -1,0 +1,5 @@
+kind: mock
+calculator:
+  factory: ase.calculators.emt.EMT
+  model_arg: null
+  kwargs: {}

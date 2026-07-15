@@ -27,7 +27,9 @@ model it's working with, it reads these, not a hardcoded name.
 
 Initialize a persistent run with `python -m workflow.controller init
 <workflow.yaml> <run_dir>`. Use `run-stage` for deterministic commands and
-record the blind committee result with `gate <run_dir> <stage> PASS|REVISE|FAIL`.
+record PASS only with `gate <run_dir> <stage> --votes <vote-bundle.json>`.
+The bundle binds three votes to the current artifact hashes. A human may record
+REVISE or FAIL directly, but cannot bypass the committee with a bare PASS.
 Never run a later stage while the controller reports it blocked. The controller
 manifest is the authoritative run state; the prose coordination log is a
 human-readable companion, not a substitute.
@@ -71,7 +73,7 @@ human-readable companion, not a substitute.
 4. Any FAIL makes the aggregate FAIL. Otherwise PASS requires three PASS votes;
    all other outcomes are REVISE.
 5. Write the aggregate and individual votes to the run directory, then record
-   the same aggregate verdict through `workflow.controller gate`.
+   the same aggregate verdict through `workflow.controller gate --votes`.
 
 ## What "autonomous" means here
 

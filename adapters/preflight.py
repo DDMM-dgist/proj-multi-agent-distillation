@@ -3,7 +3,7 @@ import importlib
 import shutil
 from pathlib import Path
 
-from adapters import load_config
+from adapters import load_config, resolve_config_path
 
 
 def _require(cfg, dotted):
@@ -29,11 +29,12 @@ def check_student_config(cfg, check_files=True):
             paths = [cfg["train"]["config_template"]]
             if kind == "simple-nn":
                 paths += list(_require(cfg, "train.descriptor_params").values())
-            missing = [str(p) for p in paths if not Path(p).exists()]
+            missing = [str(resolve_config_path(cfg, p)) for p in paths
+                       if not resolve_config_path(cfg, p).exists()]
             if missing:
                 raise FileNotFoundError("missing student inputs: " + ", ".join(missing))
         env = cfg["train"].get("env")
-        if env and shutil.which("conda") is None:
+        if check_files and env and shutil.which("conda") is None:
             raise RuntimeError("train.env is set but conda is not available")
         checks.append(f"training environment={env or 'current interpreter'}")
 

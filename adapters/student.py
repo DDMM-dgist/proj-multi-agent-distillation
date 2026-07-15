@@ -16,6 +16,7 @@ from pathlib import Path
 
 import numpy as np
 
+from adapters import resolve_config_path
 from adapters.contracts import ModelArtifact, PredictionBatch
 
 
@@ -37,6 +38,10 @@ def train_student(cfg, dataset_path, out_dir, seed):
         return ModelArtifact(kind=kind, path=checkpoint, seed=seed).require_exists()
     elif kind == "grace-fs":
         checkpoint = _train_grace_fs(cfg, dataset_path, out_dir, seed)
+        return ModelArtifact(kind=kind, path=checkpoint, seed=seed).require_exists()
+    elif kind == "mock":
+        checkpoint = out_dir / "mock-model.json"
+        checkpoint.write_text(f'{{"seed": {int(seed)}}}\n')
         return ModelArtifact(kind=kind, path=checkpoint, seed=seed).require_exists()
     else:
         raise NotImplementedError(
@@ -62,9 +67,11 @@ def _train_simple_nn(cfg, dataset_path, out_dir, seed):
     prefix = ["conda", "run", "-n", env, "python"] if env else [sys.executable]
     cmd = prefix + [
         "-m", module,  # override train.runner.module for the installed SIMPLE-NN wrapper
-        "--config", train_cfg["config_template"],
-        "--params-si", train_cfg["descriptor_params"]["Si"],
-        "--params-o", train_cfg["descriptor_params"]["O"],
+        "--config", str(resolve_config_path(cfg, train_cfg["config_template"])),
+    ]
+    for element, path in train_cfg["descriptor_params"].items():
+        cmd += ["--descriptor-param", f"{element}={resolve_config_path(cfg, path)}"]
+    cmd += [
         "--dataset", str(dataset_path),
         "--out", str(out_dir),
         "--seed", str(seed),
@@ -84,7 +91,7 @@ def _train_simple_nn(cfg, dataset_path, out_dir, seed):
 def _train_grace_fs(cfg, dataset_path, out_dir, seed):
     """Run gracemaker from a user-reviewed input template and export GRACE/FS."""
     train_cfg = cfg["train"]
-    template = Path(train_cfg["config_template"])
+    template = resolve_config_path(cfg, train_cfg["config_template"])
     rendered = template.read_text().replace("{{DATASET_PATH}}", str(Path(dataset_path).resolve()))
     input_path = out_dir / "input.yaml"
     input_path.write_text(rendered)
@@ -109,6 +116,9 @@ def load_student(cfg, checkpoint):
     if kind == "grace-fs":
         path = checkpoint if checkpoint.name == "FS_model.yaml" else checkpoint / "FS_model.yaml"
         return ModelArtifact(kind=kind, path=path).require_exists()
+    if kind == "mock":
+        path = checkpoint if checkpoint.name == "mock-model.json" else checkpoint / "mock-model.json"
+        return ModelArtifact(kind=kind, path=path).require_exists()
     raise NotImplementedError(f"student kind={kind!r} loading is not implemented.")
 
 
@@ -128,6 +138,8 @@ def _calculator_from_predict_config(cfg, artifact):
     factory = getattr(importlib.import_module(module_name), callable_name)
     kwargs = dict(pred.get("kwargs", {}))
     checkpoint_arg = pred.get("checkpoint_arg", "checkpoint")
+    if not checkpoint_arg:
+        return factory(**kwargs)
     if checkpoint_arg == "__positional__":
         return factory(str(artifact.path), **kwargs)
     kwargs[checkpoint_arg] = str(artifact.path)

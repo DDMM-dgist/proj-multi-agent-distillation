@@ -10,6 +10,18 @@ configs/teacher.<name>.yaml with the right `calculator.module`/`calculator.class
 """
 import importlib
 
+from adapters import resolve_config_path
+
+
+def teacher_model_reference(cfg):
+    """Resolve a model/checkpoint path, unless config marks it as a named model."""
+    value = cfg.get("model", cfg.get("checkpoint"))
+    if value is None:
+        return None
+    if cfg.get("calculator", {}).get("model_is_path", True):
+        return str(resolve_config_path(cfg, value))
+    return value
+
 
 def load_teacher(cfg):
     """Instantiate the teacher's ASE calculator from its config.
@@ -23,7 +35,8 @@ def load_teacher(cfg):
         factory = getattr(importlib.import_module(module_name), callable_name)
         kwargs = dict(calc_cfg.get("kwargs", {}))
         model_arg = calc_cfg.get("model_arg", "model")
-        kwargs[model_arg] = cfg.get("model", cfg.get("checkpoint"))
+        if model_arg:
+            kwargs[model_arg] = teacher_model_reference(cfg)
         return factory(**kwargs)
     module = importlib.import_module(calc_cfg["module"])
     calc_cls = getattr(module, calc_cfg["class"])
@@ -31,12 +44,12 @@ def load_teacher(cfg):
     kind = cfg["kind"]
     if kind == "allegro":
         # nequip/allegro calculators are constructed from a compiled checkpoint path.
-        return calc_cls.from_deployed_model(cfg["checkpoint"])
+        return calc_cls.from_deployed_model(teacher_model_reference(cfg))
     elif kind == "mace":
         # MACE's calculator takes the checkpoint path + configurable kwargs.
         kwargs = dict(calc_cfg.get("kwargs", {}))
         kwargs.setdefault("device", "cpu")
-        return calc_cls(model_paths=cfg["checkpoint"], **kwargs)
+        return calc_cls(model_paths=teacher_model_reference(cfg), **kwargs)
     else:
         raise NotImplementedError(
             f"teacher kind={kind!r} has no construction recipe in adapters/teacher.py yet. "

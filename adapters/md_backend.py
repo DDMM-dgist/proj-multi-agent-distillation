@@ -5,6 +5,7 @@ alternative for small cells and is a documented stub.
 import subprocess
 from pathlib import Path
 
+from adapters import resolve_config_path
 from adapters.student import lammps_pair_style_block
 
 
@@ -17,7 +18,7 @@ def render_lammps_input(md_cfg, student_cfg, checkpoint_path, template_name, con
         keep templates simple (str.format, not a full templating engine) so
         they stay readable as plain LAMMPS input files with a few {slots}.
     """
-    template_path = Path(md_cfg["template_dir"]) / template_name
+    template_path = resolve_config_path(md_cfg, md_cfg["template_dir"]) / template_name
     text = template_path.read_text()
     pair_block = lammps_pair_style_block(student_cfg, checkpoint_path)
     text = text.format(PAIR_STYLE_BLOCK=pair_block, **context)

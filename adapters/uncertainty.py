@@ -12,6 +12,7 @@ own teacher). It is rank-correlated but only weakly magnitude-correlated with
 the teacher's own DFT error — do not sell it as calibrated uncertainty.
 """
 import numpy as np
+from scipy.stats import spearmanr
 
 
 def committee_force_std(forces_per_seed, aggregate="max"):
@@ -36,12 +37,8 @@ def pearson(x, y):
 
 
 def spearman(x, y):
-    def rank(v):
-        order = np.argsort(v)
-        r = np.empty_like(order, dtype=float)
-        r[order] = np.arange(len(v))
-        return r
-    return pearson(rank(np.asarray(x)), rank(np.asarray(y)))
+    """Tie-correct Spearman rank correlation."""
+    return float(spearmanr(np.asarray(x, dtype=float), np.asarray(y, dtype=float)).statistic)
 
 
 def top_decile_enrichment(sigma_scores, true_error_scores, fraction=0.10):

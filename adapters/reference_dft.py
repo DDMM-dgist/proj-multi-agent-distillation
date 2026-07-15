@@ -4,13 +4,15 @@ NOTICE.md); the caller supplies their own licensed copy.
 """
 from pathlib import Path
 
+from adapters import resolve_config_path
+
 
 def render_incar(dft_cfg, out_path, overrides=None):
     kind = dft_cfg["kind"]
     if kind != "vasp":
         raise NotImplementedError(f"reference_dft kind={kind!r} is not implemented (only 'vasp' is).")
 
-    template_path = Path(dft_cfg["incar_template"])
+    template_path = resolve_config_path(dft_cfg, dft_cfg["incar_template"])
     text = template_path.read_text()
     ctx = {
         "ENCUT": dft_cfg["encut_ev"],

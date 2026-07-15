@@ -1,0 +1,9 @@
+kind: mock
+committee:
+  n_seeds: 3
+predict:
+  factory: adapters.mock_model.MockCheckpointCalculator
+  checkpoint_arg: checkpoint
+  kwargs: {}
+deploy:
+  elements: [Cu]

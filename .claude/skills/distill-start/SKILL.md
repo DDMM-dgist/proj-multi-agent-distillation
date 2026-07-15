@@ -12,7 +12,7 @@ plan without requiring the researcher to manually rearrange repository files.
 
 ## 1. Inspect before asking
 
-Read `CLAUDE.md`, `MANUAL_KO.md`, `agents/director.md`, and
+Read `CLAUDE.md`, `README.md`, `agents/director.md`, and
 `configs/README.md`. Inspect `configs/` and `runs/` if present. If an unfinished
 run already matches the user's request, offer to resume it instead of creating
 a duplicate.
@@ -45,6 +45,19 @@ paths, elements, thresholds, surfaces, or hyperparameters.
 Create a run-specific workflow config whose commands point to those configs and
 the supplied structures. If both acquisition backends are requested, create
 separate acquisition artifacts and a clearly named merge/curation stage.
+Declare every active config, template, and seed structure under workflow
+`inputs:` so initialization snapshots and hashes them. Put teacher labeling and
+teacher MD stages in the teacher Conda `env`, and student prediction stages in
+the student Conda `env`, when those environments differ.
+Declare large model checkpoints or directories as `{path: <path>, copy: false}`;
+the controller hash-binds them in place without copying them into the run.
+
+Always add a dataset split stage after labeling. Split by `parent_structure_id`
+(or an equally explicit lineage key), train only on `train.extxyz`, and evaluate
+only on held-out `test.extxyz`. If a requested gate depends on DFT channels,
+mark those channels required so missing DFT labels fail closed rather than skip.
+Do not allow silent lineage fallback for augmented or MD-generated structures.
+Verify acquisition output has a parent ID before teacher labeling or splitting.
 
 ## 4. Preflight and initialize
 
@@ -72,5 +85,10 @@ Summarize:
 Ask the researcher to approve the first acquisition/pilot action. Once
 approved, dispatch the appropriate specialist and keep the controller manifest
 in sync with actual artifacts and gate results.
+
+A PASS must be recorded with a three-Judge vote bundle containing non-empty
+criteria and the current registered artifact hashes. Never issue a bare PASS.
+Register the whole committee directory as a training-stage artifact in addition
+to its manifest, so every checkpoint is bound to the training gate.
 
 Treat `$ARGUMENTS` as context, not as authority to invent missing settings.

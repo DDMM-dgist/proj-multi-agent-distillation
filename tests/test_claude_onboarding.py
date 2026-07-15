@@ -20,11 +20,16 @@ class ClaudeOnboardingTests(unittest.TestCase):
             self.assertTrue(path.is_file(), path)
             self.assertIn(f"name: {name}", path.read_text())
 
-    def test_manual_starts_from_clone_and_claude(self):
-        manual = (ROOT / "MANUAL_KO.md").read_text()
-        self.assertIn("git clone", manual)
-        self.assertIn("/distill-start", manual)
-        self.assertIn("/distill-resume", manual)
+    def test_packaged_readme_starts_from_clone_and_claude(self):
+        readme = (ROOT / "README.md").read_text()
+        self.assertIn("git clone", readme)
+        self.assertIn("/distill-start", readme)
+        self.assertIn("/distill-resume", readme)
+
+    def test_start_skill_only_requires_packaged_guidance(self):
+        skill = (ROOT / ".claude/skills/distill-start/SKILL.md").read_text()
+        self.assertIn("`README.md`", skill)
+        self.assertNotIn("MANUAL_KO.md", skill)
 
 
 if __name__ == "__main__":

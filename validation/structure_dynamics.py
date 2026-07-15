@@ -80,18 +80,26 @@ def compute_msd(frames):
     committee seeds and independent trajectories."""
     ref = frames[0].get_positions()
     syms = np.array(frames[0].get_chemical_symbols())
-    msd_t = []
-    for atoms in frames:
-        disp = atoms.get_positions() - ref
-        msd_t.append((disp ** 2).sum(axis=1))
+    previous_scaled = frames[0].get_scaled_positions(wrap=True)
+    unwrapped = ref.copy()
+    msd_t = [np.zeros(len(frames[0]))]
+    for atoms in frames[1:]:
+        scaled = atoms.get_scaled_positions(wrap=True)
+        delta = scaled - previous_scaled
+        delta[:, atoms.get_pbc()] -= np.round(delta[:, atoms.get_pbc()])
+        unwrapped += delta @ atoms.cell.array
+        msd_t.append(((unwrapped - ref) ** 2).sum(axis=1))
+        previous_scaled = scaled
     msd_t = np.array(msd_t)  # (n_frames, n_atoms)
     return {el: msd_t[:, syms == el].mean(axis=1) for el in set(syms)}
 
 
-def compute_nve_drift(energies, timestep_fs, n_atoms):
+def compute_nve_drift(energies, timestep_fs, n_atoms, sample_interval_steps=1, steps=None):
     """energies: array of total energy per frame (eV). Returns drift in
     meV/atom/ns via a linear fit."""
-    t_ns = np.arange(len(energies)) * timestep_fs * 1e-6
+    if steps is None:
+        steps = np.arange(len(energies)) * int(sample_interval_steps)
+    t_ns = np.asarray(steps, dtype=float) * timestep_fs * 1e-6
     e_per_atom_meV = (energies - energies.mean()) / n_atoms * 1000
     slope, intercept = np.polyfit(t_ns, e_per_atom_meV, 1)
     resid = e_per_atom_meV - (slope * t_ns + intercept)
@@ -142,10 +150,13 @@ def main():
         if args.temperature_log:
             import csv
             with open(args.temperature_log) as f:
-                energies = np.array([float(row["total_energy"]) for row in csv.DictReader(f)])
+                rows = list(csv.DictReader(f))
+            energies = np.array([float(row["total_energy"]) for row in rows])
+            steps = np.array([int(row["step"]) for row in rows])
         else:
-            energies = np.array([a.get_potential_energy() for a in frames])
-        drift, resid_std = compute_nve_drift(energies, args.timestep_fs, len(frames[0]))
+            energies = np.array([a.get_total_energy() for a in frames])
+            steps = None
+        drift, resid_std = compute_nve_drift(energies, args.timestep_fs, len(frames[0]), steps=steps)
         max_abs = thresholds.get("nve_drift_meV_per_atom_per_ns", {}).get("max_abs")
         flag = "" if max_abs is None else ("PASS" if abs(drift) < max_abs else "FAIL")
         print(f"nve_drift: {drift:+.4f} +/- {resid_std:.4f} meV/atom/ns {flag}")

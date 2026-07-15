@@ -1,0 +1,15 @@
+1
+Properties=species:S:1:pos:R:3 structure_id=cu-0 parent_structure_id=cu-0
+Cu 0 0 0
+1
+Properties=species:S:1:pos:R:3 structure_id=cu-1 parent_structure_id=cu-1
+Cu 0.1 0 0
+1
+Properties=species:S:1:pos:R:3 structure_id=cu-2 parent_structure_id=cu-2
+Cu 0.2 0 0
+1
+Properties=species:S:1:pos:R:3 structure_id=cu-3 parent_structure_id=cu-3
+Cu 0.3 0 0
+1
+Properties=species:S:1:pos:R:3 structure_id=cu-4 parent_structure_id=cu-4
+Cu 0.4 0 0

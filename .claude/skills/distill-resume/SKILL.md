@@ -12,6 +12,10 @@ still exist. Explain where the run stopped and why.
 - If waiting for a scientific or cost approval, ask for it and do not execute.
 - If a stage failed, propose the smallest repair and wait when it changes
   scientific settings or cost.
+- If an intentionally edited declared input is blocking execution, summarize
+  its old and new hash and obtain researcher approval before using
+  `workflow.controller rebind-inputs`. This invalidates all earlier stage
+  results while preserving the prior audit trail.
 - If a producer artifact is complete but unregistered, verify it before using
   `complete-stage`.
 - If a gate is pending, convene the judge committee; do not silently mark PASS.

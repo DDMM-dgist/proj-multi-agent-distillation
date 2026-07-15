@@ -41,6 +41,7 @@ runs/
 # Maintainer handoff guides are shared separately
 MANUAL.md
 MANUAL_KO.md
+output/
 
 # License decision is intentionally deferred by the maintainers
 LICENSE

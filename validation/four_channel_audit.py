@@ -54,8 +54,11 @@ def r2(ref, pred):
 
 
 def channel(frames, ref_prefix, pred_prefix, per_config_type=False):
-    """Per-atom, shift-corrected energy MAE/RMSE/R2 + atom-weighted force MAE/RMSE/R2
-    for one (ref, pred) pair, e.g. ref_prefix='dft', pred_prefix='teacher'."""
+    """Raw and global-shift-aligned per-atom energy errors plus force errors.
+
+    The aligned metric is diagnostic only. For mixed compositions and surface
+    terminations, use the raw metric or a separately fitted per-element reference.
+    """
     rows = []
     for a in frames:
         e_ref = committee_mean_energy(a, ref_prefix)
@@ -74,6 +77,8 @@ def channel(frames, ref_prefix, pred_prefix, per_config_type=False):
     def summarize(subset):
         n_atoms_total = sum(r["n"] for r in subset)
         de_per_atom = np.array([(r["e_pred"] - r["e_ref"]) / r["n"] for r in subset])
+        raw_e_mae = np.abs(de_per_atom).mean()
+        raw_e_rmse = np.sqrt((de_per_atom ** 2).mean())
         shift = de_per_atom.mean()
         e_mae = np.abs(de_per_atom - shift).mean()
         e_rmse = np.sqrt(((de_per_atom - shift) ** 2).mean())
@@ -83,6 +88,8 @@ def channel(frames, ref_prefix, pred_prefix, per_config_type=False):
         f_rmse = np.sqrt(((f_pred_all - f_ref_all) ** 2).mean())
         f_r2 = r2(f_ref_all, f_pred_all)
         return dict(n_frames=len(subset), n_atoms=n_atoms_total,
+                    e_raw_mae_meV=raw_e_mae * 1000, e_raw_rmse_meV=raw_e_rmse * 1000,
+                    e_alignment_shift_meV=shift * 1000,
                     e_mae_meV=e_mae * 1000, e_rmse_meV=e_rmse * 1000,
                     f_mae=f_mae, f_rmse=f_rmse, f_r2=f_r2)
 
@@ -118,7 +125,8 @@ def main():
             continue
         a = result["all"]
         print(f"{label}: n={a['n_frames']} frames / {a['n_atoms']} atoms | "
-              f"E_MAE={a['e_mae_meV']:.2f} meV/atom E_RMSE={a['e_rmse_meV']:.2f} meV/atom | "
+              f"E_raw_MAE={a['e_raw_mae_meV']:.2f} meV/atom "
+              f"E_aligned_MAE={a['e_mae_meV']:.2f} meV/atom | "
               f"F_MAE={a['f_mae']:.4f} F_RMSE={a['f_rmse']:.4f} F_R2={a['f_r2']:.3f}")
         if args.per_config_type:
             for ct, s in result.items():

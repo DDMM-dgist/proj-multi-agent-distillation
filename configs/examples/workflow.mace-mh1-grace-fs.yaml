@@ -1,8 +1,14 @@
 run_id: ternary-mace-mh1-grace-fs
+inputs:
+  - "{project_dir}/configs/teacher.yaml"
+  - "{project_dir}/configs/student.yaml"
+  - "{project_dir}/configs/acquisition.yaml"
+  - "{project_dir}/structures/seed.extxyz"
+  - "{project_dir}/templates/student/grace-fs.input.yaml.template"
 stages:
   - name: acquisition
     command:
-      - python
+      - "{python}"
       - -m
       - adapters.acquisition
       - acquire
@@ -12,8 +18,10 @@ stages:
       - "{artifacts_dir}/acquired.extxyz"
     outputs: [artifacts/acquired.extxyz]
   - name: teacher_labeling
+    # Set env to the teacher Conda environment in the run-specific workflow.
+    # env: mace-mh1
     command:
-      - python
+      - "{python}"
       - -m
       - adapters.acquisition
       - label
@@ -23,18 +31,28 @@ stages:
       - "{artifacts_dir}/teacher_labels.manifest.json"
       - --stress
     outputs: [artifacts/teacher_labeled.extxyz, artifacts/teacher_labels.manifest.json]
+  - name: dataset_split
+    command: ["{python}", -m, workflow.steps, split-dataset,
+              "{artifacts_dir}/teacher_labeled.extxyz", "{artifacts_dir}/dataset",
+              "{artifacts_dir}/dataset/split_manifest.json", --seed, "2026",
+              --validation-fraction, "0.1", --test-fraction, "0.1"]
+    outputs: [artifacts/dataset/train.extxyz, artifacts/dataset/validation.extxyz,
+              artifacts/dataset/test.extxyz, artifacts/dataset/split_manifest.json]
   - name: training
-    command: [python, -m, workflow.steps, train-committee,
+    command: ["{python}", -m, workflow.steps, train-committee,
               "{project_dir}/configs/student.yaml",
-              "{artifacts_dir}/teacher_labeled.extxyz",
+              "{artifacts_dir}/dataset/train.extxyz",
               "{artifacts_dir}/committee", "{artifacts_dir}/student_committee.manifest.json"]
-    outputs: [artifacts/student_committee.manifest.json]
+    outputs: [artifacts/student_committee.manifest.json, artifacts/committee]
   - name: evaluation
-    command: [python, -m, workflow.steps, evaluate-committee,
+    # Set env to the GRACE/FS prediction environment when it differs.
+    # env: grace-fs
+    command: ["{python}", -m, workflow.steps, evaluate-committee,
               "{project_dir}/configs/student.yaml",
               "{artifacts_dir}/student_committee.manifest.json",
-              "{artifacts_dir}/teacher_labeled.extxyz",
-              "{artifacts_dir}/evaluated.extxyz", "{artifacts_dir}/accuracy_report.json"]
+              "{artifacts_dir}/dataset/test.extxyz",
+              "{artifacts_dir}/evaluated.extxyz", "{artifacts_dir}/accuracy_report.json",
+              --require-channel, student_vs_teacher]
     outputs: [artifacts/evaluated.extxyz, artifacts/accuracy_report.json]
   - name: md
     # Scheduler/agent-managed: register md.manifest.json with complete-stage.

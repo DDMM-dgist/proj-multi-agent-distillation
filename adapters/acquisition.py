@@ -1,6 +1,8 @@
 """Structure acquisition and teacher pseudo-labeling backends."""
 import hashlib
+import importlib.metadata
 import json
+import platform
 import subprocess
 from pathlib import Path
 
@@ -10,8 +12,8 @@ from ase.io import read, write
 from ase.md.langevin import Langevin
 from ase.md.velocitydistribution import MaxwellBoltzmannDistribution
 
-from adapters import load_config
-from adapters.teacher import load_teacher
+from adapters import load_config, resolve_config_path
+from adapters.teacher import load_teacher, teacher_model_reference
 
 
 def _sha256(path):
@@ -26,7 +28,8 @@ def run_augment_atoms(cfg, seed_path, out_path):
     """Run a configured augment-atoms wrapper without assuming its CLI version."""
     context = {"seed_path": str(Path(seed_path).resolve()), "out_path": str(Path(out_path).resolve())}
     command = [str(part).format(**context) for part in cfg["command"]]
-    subprocess.run(command, check=True, cwd=cfg.get("workdir"))
+    workdir = resolve_config_path(cfg, cfg["workdir"]) if cfg.get("workdir") else None
+    subprocess.run(command, check=True, cwd=workdir)
     if not Path(out_path).exists():
         raise FileNotFoundError(f"augment-atoms command produced no output: {out_path}")
     return Path(out_path)
@@ -38,6 +41,8 @@ def run_teacher_md(cfg, teacher_cfg, seed_path, out_path):
     calc = load_teacher(teacher_cfg)
     snapshots = []
     for seed_index, source in enumerate(seeds):
+        parent_id = source.info.get("parent_structure_id",
+                                    source.info.get("structure_id", f"seed-{seed_index:08d}"))
         atoms = source.copy()
         atoms.calc = calc
         temperature = float(cfg["temperature_K"])
@@ -51,7 +56,7 @@ def run_teacher_md(cfg, teacher_cfg, seed_path, out_path):
         def capture():
             frame = atoms.copy()
             frame.info.update(acquisition="teacher-md", seed_structure_index=seed_index,
-                              temperature_K=temperature)
+                              temperature_K=temperature, parent_structure_id=str(parent_id))
             snapshots.append(frame)
 
         dyn.attach(capture, interval=stride)
@@ -63,10 +68,23 @@ def run_teacher_md(cfg, teacher_cfg, seed_path, out_path):
 def acquire(acquisition_cfg, teacher_cfg, seed_path, out_path):
     kind = acquisition_cfg["kind"]
     if kind == "augment-atoms":
-        return run_augment_atoms(acquisition_cfg, seed_path, out_path)
+        result = run_augment_atoms(acquisition_cfg, seed_path, out_path)
+        validate_lineage(result)
+        return result
     if kind == "teacher-md":
-        return run_teacher_md(acquisition_cfg, teacher_cfg, seed_path, out_path)
+        result = run_teacher_md(acquisition_cfg, teacher_cfg, seed_path, out_path)
+        validate_lineage(result)
+        return result
     raise NotImplementedError(f"acquisition kind={kind!r} is not implemented")
+
+
+def validate_lineage(structures_path, grouping_key="parent_structure_id"):
+    frames = read(structures_path, index=":")
+    missing = [index for index, atoms in enumerate(frames) if grouping_key not in atoms.info]
+    if missing:
+        preview = ", ".join(map(str, missing[:10]))
+        raise ValueError(f"acquired structures are missing {grouping_key!r} at frames: {preview}")
+    return len(frames)
 
 
 def label_with_teacher(teacher_cfg, structures_path, out_path, manifest_path, include_stress=False):
@@ -83,17 +101,31 @@ def label_with_teacher(teacher_cfg, structures_path, out_path, manifest_path, in
         atoms.info["label_source"] = "teacher"
         atoms.calc = None
     write(out_path, frames)
+    model_value = teacher_model_reference(teacher_cfg)
+    model_path = Path(model_value).expanduser() if model_value else None
+    config_path = teacher_cfg.get("_config_path")
+    packages = {}
+    for package in ("ase", "numpy", "mace-torch", "nequip"):
+        try:
+            packages[package] = importlib.metadata.version(package)
+        except importlib.metadata.PackageNotFoundError:
+            pass
     manifest = {
         "schema_version": 1,
         "teacher_kind": teacher_cfg["kind"],
-        "teacher_model": teacher_cfg.get("model", teacher_cfg.get("checkpoint")),
+        "teacher_model": model_value,
+        "teacher_model_sha256": _sha256(model_path) if model_path and model_path.is_file() else None,
         "teacher_head": teacher_cfg.get("calculator", {}).get("kwargs", {}).get("head"),
+        "calculator": teacher_cfg.get("calculator", {}),
+        "teacher_config_sha256": _sha256(config_path) if config_path else None,
         "source": str(Path(structures_path).resolve()),
+        "source_sha256": _sha256(structures_path),
         "output": str(Path(out_path).resolve()),
         "n_frames": len(frames),
         "labels": ["energy", "forces"] + (["stress"] if include_stress else []),
         "units": {"energy": "eV", "forces": "eV/Angstrom", "stress": "eV/Angstrom^3"},
         "sha256": _sha256(out_path),
+        "environment": {"python": platform.python_version(), "packages": packages},
     }
     Path(manifest_path).write_text(json.dumps(manifest, indent=2) + "\n")
     return manifest

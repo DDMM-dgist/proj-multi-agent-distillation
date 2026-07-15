@@ -28,7 +28,30 @@ artifact paths and criteria. Each returns one JSON object without seeing the
 other votes. Apply the same tally below: any FAIL blocks; otherwise unanimous
 PASS is required; a missing/malformed vote is REVISE. Save the three JSON votes
 and aggregate JSON under `runs/<run>/gates/`, then record the aggregate through
-`python -m workflow.controller gate ...`.
+`python -m workflow.controller gate ... --votes <bundle.json>`.
+
+The saved bundle must contain the stage name, non-empty criteria, exactly three
+structured votes, the recomputed aggregate decision, and the SHA-256 mapping of
+the registered stage artifacts. The controller recomputes the decision and
+compares the hashes; a bare manual `PASS` is rejected. A researcher or Director
+may still record `REVISE` or `FAIL` directly to stop work conservatively.
+
+```json
+{
+  "stage": "dataset_split",
+  "criteria": ["train/test parent groups do not overlap"],
+  "artifact_sha256": {"/absolute/path/train.extxyz": "..."},
+  "decision": "PASS",
+  "votes": [
+    {"judge_id": "judge-1", "verdict": "PASS", "criteria_checked": [{"criterion": "...", "ok": true}],
+     "rationale": "...", "required_fix": ""},
+    {"judge_id": "judge-2", "verdict": "PASS", "criteria_checked": [{"criterion": "...", "ok": true}],
+     "rationale": "...", "required_fix": ""},
+    {"judge_id": "judge-3", "verdict": "PASS", "criteria_checked": [{"criterion": "...", "ok": true}],
+     "rationale": "...", "required_fix": ""}
+  ]
+}
+```
 
 ### Optional Workflow runtime
 
