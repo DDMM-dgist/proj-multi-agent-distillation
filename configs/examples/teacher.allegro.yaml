@@ -1,0 +1,19 @@
+# Worked example — the SiO2 reference case's teacher.
+# Copy to configs/teacher.<yours>.yaml and edit for your own model.
+kind: allegro
+checkpoint: /path/to/teacher_current_compiled.nequip.pth   # not committed — see NOTICE.md
+calculator:
+  module: nequip.ase
+  class: NequIPCalculator
+  env: distill-teacher-allegro
+architecture:
+  package_versions: {nequip: "0.15", allegro: "0.7.1"}
+  l_max: 2
+  n_layers: 4
+  hidden_features: [256, 128]
+  n_params_approx: 1_100_000
+  cutoff_angstrom: 5.0
+emits_stress: null   # UNKNOWN until checked — run adapters/teacher.py:check_stress_support()
+                     # against this checkpoint before relying on it (see Pass-1 handoff open item 1)
+fixed: true          # this teacher is NOT fine-tuned during the diagnosis phase (T0);
+                     # a remediation phase may fine-tune a COPY — see agents/ml-trainer.md

@@ -1,0 +1,14 @@
+kind: vasp
+incar_template: templates/dft/INCAR.scan.template
+# POTCAR is intentionally NOT referenced here by path — supply your own
+# licensed copy at runtime (see NOTICE.md). agents/simulation.md will refuse
+# to fabricate or fetch one.
+functional: SCAN
+encut_ev: 900
+kspacing_inv_angstrom: 0.23
+smearing: {ismear: 0, sigma: 0.1}
+relaxation: {nsw: 0, ibrion: -1}   # single-point only; no ionic relaxation
+notes: >
+  Settings must match whatever the teacher's own training data used, exactly —
+  otherwise the teacher-vs-DFT error channel is meaningless (see
+  validation/four_channel_audit.py).

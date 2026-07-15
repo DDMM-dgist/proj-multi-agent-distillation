@@ -1,0 +1,11 @@
+kind: mace-mh1
+model: /path/to/mace-mh-1.model
+calculator:
+  factory: mace.calculators.mace_mp
+  kwargs:
+    head: omat_pbe
+    default_dtype: float64
+    device: cpu
+reference_theory: PBE/PBE+U
+fixed: true
+notes: The selected MACE-MH-1 head defines the pseudo-label energy surface; record it in every dataset manifest.

@@ -1,0 +1,58 @@
+"""Uncertainty adapter: committee-based fidelity ranking.
+
+`kind: committee-force-std` (sigma_F) is architecture-agnostic by construction
+— it only needs N force predictions from N same-`kind` student seeds on the
+same structures, never touching model internals. This is why it needs no
+per-`kind` dispatch branch: any student adapter that returns per-atom forces
+can be committee-ensembled this way.
+
+Framing reminder (see configs/examples/uncertainty.yaml and the manuscript):
+sigma_F ranks student-teacher FIDELITY (where the student diverges from its
+own teacher). It is rank-correlated but only weakly magnitude-correlated with
+the teacher's own DFT error — do not sell it as calibrated uncertainty.
+"""
+import numpy as np
+
+
+def committee_force_std(forces_per_seed, aggregate="max"):
+    """forces_per_seed: array-like, shape (n_seeds, n_atoms, 3).
+    Returns per-atom sigma_F (n_atoms,) and one aggregated per-frame score.
+    """
+    F = np.asarray(forces_per_seed)
+    per_atom_std = F.std(axis=0)                      # (n_atoms, 3)
+    per_atom_sigma = np.linalg.norm(per_atom_std, axis=-1)  # (n_atoms,) magnitude of per-component std
+    if aggregate == "max":
+        frame_score = per_atom_sigma.max()
+    elif aggregate == "mean":
+        frame_score = per_atom_sigma.mean()
+    else:
+        raise ValueError(f"unknown aggregate={aggregate!r}")
+    return per_atom_sigma, frame_score
+
+
+def pearson(x, y):
+    x, y = np.asarray(x, dtype=float), np.asarray(y, dtype=float)
+    return float(np.corrcoef(x, y)[0, 1])
+
+
+def spearman(x, y):
+    def rank(v):
+        order = np.argsort(v)
+        r = np.empty_like(order, dtype=float)
+        r[order] = np.arange(len(v))
+        return r
+    return pearson(rank(np.asarray(x)), rank(np.asarray(y)))
+
+
+def top_decile_enrichment(sigma_scores, true_error_scores, fraction=0.10):
+    """What fraction of the top-error frames are recovered by ranking on
+    sigma_F alone (the "find low-fidelity regions without DFT" claim).
+    Returns (recall, enrichment_over_random, k).
+    """
+    n = len(sigma_scores)
+    k = max(1, round(fraction * n))
+    top_sigma = set(np.argsort(sigma_scores)[::-1][:k])
+    top_error = set(np.argsort(true_error_scores)[::-1][:k])
+    recall = len(top_sigma & top_error) / k
+    enrichment = recall / fraction
+    return recall, enrichment, k

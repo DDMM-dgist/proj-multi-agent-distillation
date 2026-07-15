@@ -1,0 +1,9 @@
+kind: augment-atoms
+# Keep the external tool version-specific syntax here rather than hardcoding it
+# in agents or Python. Replace this example with the verified command on the server.
+command:
+  - augment-atoms
+  - --input
+  - "{seed_path}"
+  - --output
+  - "{out_path}"

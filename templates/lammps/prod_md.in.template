@@ -1,0 +1,39 @@
+#=======================================================================
+#  Production MD template — NVT equilibration + sampling.
+#  Rendered by adapters.md_backend.render_lammps_input(), which fills
+#  {{PAIR_STYLE_BLOCK}} with the active student's pair_style/pair_coeff
+#  (see adapters/student.py:lammps_pair_style_block) and the remaining
+#  {{...}} placeholders from the run-specific `context` dict.
+#
+#  Usage (after rendering):
+#    lmp -v DATAFILE <path> -in prod_md.in
+#=======================================================================
+
+#--- Initialization ---
+units       metal
+boundary    p p p
+atom_style  atomic
+newton      on
+
+#--- Structure ---
+read_data   {DATAFILE}
+
+#--- Potential (student-specific — filled by the adapter, do not hand-edit) ---
+{PAIR_STYLE_BLOCK}
+
+#--- Settings ---
+timestep    {TIMESTEP_PS}
+
+#--- Computes ---
+compute     myT   all temp
+compute     pTens all pressure myT
+
+#--- Run: NVT equilibration + sampling ---
+velocity    all create {TEMPERATURE_K} {SEED} mom yes rot yes dist gaussian
+fix         nvt all nvt temp {TEMPERATURE_K} {TEMPERATURE_K} {TDAMP_PS}
+
+thermo_style custom step temp pe ke etotal press
+thermo      {THERMO_EVERY_STEPS}
+dump        traj all custom {DUMP_EVERY_STEPS} {DUMP_FILE} id type x y z fx fy fz
+
+run         {N_STEPS}

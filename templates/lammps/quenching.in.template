@@ -1,0 +1,36 @@
+#=======================================================================
+#  Melt-quench template — melt at high T, quench at a controlled rate to
+#  build an amorphous/glassy structure. Rendered by
+#  adapters.md_backend.render_lammps_input().
+#=======================================================================
+
+units       metal
+boundary    p p p
+atom_style  atomic
+newton      on
+
+read_data   {DATAFILE}
+
+{PAIR_STYLE_BLOCK}
+
+timestep    {TIMESTEP_PS}
+
+compute     myT   all temp
+
+# --- Melt ---
+velocity    all create {MELT_TEMPERATURE_K} {SEED} mom yes rot yes dist gaussian
+fix         melt all nvt temp {MELT_TEMPERATURE_K} {MELT_TEMPERATURE_K} {TDAMP_PS}
+thermo_style custom step temp pe
+thermo      {THERMO_EVERY_STEPS}
+run         {MELT_STEPS}
+unfix       melt
+
+# --- Quench at a controlled rate (K/ps) ---
+fix         quench all nvt temp {MELT_TEMPERATURE_K} {FINAL_TEMPERATURE_K} {TDAMP_PS}
+dump        traj all custom {DUMP_EVERY_STEPS} {DUMP_FILE} id type x y z fx fy fz
+run         {QUENCH_STEPS}
+unfix       quench
+
+# --- Hold at final temperature for validation sampling ---
+fix         hold all nvt temp {FINAL_TEMPERATURE_K} {FINAL_TEMPERATURE_K} {TDAMP_PS}
+run         {HOLD_STEPS}

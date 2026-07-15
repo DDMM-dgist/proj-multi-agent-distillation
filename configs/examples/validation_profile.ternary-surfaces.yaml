@@ -1,0 +1,24 @@
+kind: ternary-surfaces
+checks:
+  - four_channel_errors
+  - committee_fidelity_ranking
+  - surface_excess_energy
+  - deployment_trajectory_dft
+surface_energetics:
+  quantity: static_surface_excess_energy
+  unit: J/m2
+  n_surfaces: 2
+  require_same_geometry_protocol: true
+  require_composition_balance: true
+  # Set project-specific gates only after DFT/experimental baselines are chosen.
+  thresholds:
+    student_teacher_max_abs_J_m2: null
+    student_dft_max_abs_J_m2: null
+  finite_temperature:
+    enabled: false
+    temperature_K: null
+    required_terms: [vibrational, configurational, chemical_potential]
+notes: >
+  For a non-stoichiometric termination, replace the composition-matched bulk
+  reference by an explicitly documented sum of elemental chemical potentials.
+  Static total energies must not be reported as finite-temperature free energies.

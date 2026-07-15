@@ -1,0 +1,46 @@
+# Model weights — never commit (see NOTICE.md)
+*.pth
+*.pt
+potential_saved_bestmodel
+params_Si
+params_O
+pca
+scale_factor
+
+# DFT proprietary/large
+POTCAR
+WAVECAR
+CHG
+CHGCAR
+vasprun.xml
+
+# Data / run outputs (instance-specific; keep templates and configs only)
+*.extxyz
+*.xyz
+!examples/**/*.example.xyz
+*.traj
+*.dump
+*.log
+!examples/**/*.log
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+.ipynb_checkpoints/
+.DS_Store
+
+# Local overrides — never commit real credentials/paths
+configs/*.local.yaml
+.claude/settings.local.json
+
+# Per-user run configs and generated run artifacts
+configs/runs/
+runs/
+
+# Maintainer handoff guides are shared separately
+MANUAL.md
+MANUAL_KO.md
+
+# License decision is intentionally deferred by the maintainers
+LICENSE

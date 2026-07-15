@@ -1,0 +1,4 @@
+timestamp,gate,target,judge_id,verdict,rationale
+2026-01-01T00:00,student-accuracy-gate,student_committee_v1,1,PASS,"example row — force MAE 0.14 eV/A vs teacher ceiling 0.15 eV/A"
+2026-01-01T00:00,student-accuracy-gate,student_committee_v1,2,PASS,"example row — committee std reported, consistent with criterion"
+2026-01-01T00:00,student-accuracy-gate,student_committee_v1,3,PASS,"example row — all criteria demonstrably met"

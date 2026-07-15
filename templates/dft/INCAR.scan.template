@@ -1,0 +1,60 @@
+# SCAN single-point template (VASP). Rendered by
+# adapters.reference_dft.render_incar() from configs/reference_dft.yaml.
+# Two-stage protocol assumed: a PBE step provides the initial WAVECAR, then
+# this SCAN single-point restarts from it (ISTART=1, ICHARG=0) — adjust if
+# your workflow does a direct SCAN run instead.
+#
+# POTCAR is NOT part of this template — supply your own licensed copy
+# (see NOTICE.md). KPAR/NCORE below are commented as an example; retune for
+# your own core count and k-point count.
+
+ALGO = All
+
+# Accuracy
+ENCUT  = {ENCUT}
+PREC   = Accurate
+EDIFF  = 1E-6
+
+# k-mesh
+KSPACING = {KSPACING}
+KGAMMA   = .TRUE.
+
+# metaGGA SCAN
+METAGGA  = SCAN
+LASPH    = .TRUE.
+LMIXTAU  = .TRUE.
+LDIAG    = .FALSE.
+
+# Electronic structure
+ISMEAR = {ISMEAR}
+SIGMA  = {SIGMA}
+ISPIN  = 1
+
+# Job control: SCF only (single-point), no ionic relaxation
+NSW    = {NSW}
+IBRION = {IBRION}
+
+# Restart from a PBE WAVECAR (two-stage protocol — see header)
+ISTART = 1
+ICHARG = 0
+
+# Do NOT write large files
+LWAVE  = .FALSE.
+LCHARG = .FALSE.
+LAECHG = .FALSE.
+
+# Mixing (relax if your system has no gap states / defects to converge)
+AMIX    = 0.2
+BMIX    = 0.0001
+AMIN    = 0.01
+LMAXMIX = 4
+NELM    = 200
+
+# Parallelization — RETUNE for your own core/k-point count
+# KPAR should evenly divide the number of irreducible k-points; NCORE is a
+# per-node band-parallelization factor. Example only:
+# KPAR = 7
+# NCORE = 2
+
+NWRITE = 2
+LORBIT = 0

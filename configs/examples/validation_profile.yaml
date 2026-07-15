@@ -1,0 +1,14 @@
+kind: silica
+checks: [rdf, adf, coordination, density, msd, nve_drift, sq_fsdp]
+thresholds:
+  density_g_cm3: {target: 2.20, tolerance: 0.03}
+  msd_diffusive: false            # expect a non-diffusive glass plateau at the validation temperature
+  nve_drift_meV_per_atom_per_ns: {max_abs: 1.0}
+  adf_deg:
+    O-Si-O: {target: 109.4, tolerance: 3}
+    Si-O-Si: {target: 141, tolerance: 5}
+notes: >
+  A different material replaces `checks`/`thresholds` with its own
+  deployment-relevant observables (e.g. elastic constants, phonon DOS,
+  diffusion coefficients for a liquid, stacking-fault energy for a metal, ...).
+  This file, not the validation scripts, is what changes.

@@ -1,0 +1,34 @@
+# SIMPLE-NN v2 training config template. Fields below reflect the reference
+# run's known-working configuration; VERIFY every key against your installed
+# SIMPLE-NN version's schema before relying on this (SIMPLE-NN's config schema
+# has changed across versions — do not treat this as authoritative).
+#
+# Rendered/consumed by adapters.student._train_simple_nn(); values marked
+# {…} are filled from configs/student.<name>.yaml: train.*.
+
+generate_features: true
+preprocess: true
+train_model: true
+
+params:
+  Si: {SI_PARAMS_PATH}
+  O:  {O_PARAMS_PATH}
+
+neural_network:
+  method: Adam
+  nodes: "{NODES}"                 # e.g. "30-30"
+  batch_size: {BATCH_SIZE}
+  total_epoch: {TOTAL_EPOCH}
+  learning_rate: 0.001             # BPNN is LR-sensitive; anneal down (1e-4/1e-5) if error plateaus high
+  double_precision: {DOUBLE_PRECISION}   # true/false
+  use_force: true
+  use_stress: {USE_STRESS}
+  E_loss_type: 1
+  F_loss_type: 1
+  stress_loss_weight: {STRESS_LOSS_WEIGHT}   # only meaningful if use_stress: true
+
+# PCA/scaling factors are fit on the FIRST training set and must be reused
+# (fixed) for continued/incremental training on the same descriptor basis —
+# see agents/ml-trainer.md's descriptor/scaling reuse caveat. If your new data
+# is qualitatively different, delete pca/scale_factor and refit from scratch
+# instead of continuing.

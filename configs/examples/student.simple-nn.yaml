@@ -1,0 +1,40 @@
+# Worked example — the SiO2 reference case's student.
+# Copy to configs/student.<yours>.yaml and edit for your own model.
+kind: simple-nn
+train:
+  env: distill-student-simplenn
+  config_template: templates/student/simple-nn.input.yaml.template
+  descriptor_params:
+    Si: templates/student/params_Si     # 70 symmetry functions/element
+    O:  templates/student/params_O
+  total_epoch: 1500                    # cut from 2000 to keep per-seed training lightweight
+  double_precision: false              # single precision; ~2x cheaper than the original double
+  batch_size: 32
+  nodes: "30-30"
+  use_stress: true
+  read_stress: true
+  stress_loss_weight: 0.1               # starting point — tune so stress MAE converges without hurting E/F
+  target_hours_per_seed: 12
+  runner:
+    module: simple_nn.driver        # replace with the wrapper module verified for your install
+committee:
+  n_seeds: 4
+deploy:
+  lammps_pair_style: "nn"
+  elements: [Si, O]                 # LAMMPS atom-type order; never inferred alphabetically
+# Optional architecture-neutral ASE prediction hook. Supply a factory in your
+# SIMPLE-NN installation that accepts the checkpoint argument below.
+# predict:
+#   factory: your_package.simple_nn_ase.make_calculator
+#   checkpoint_arg: checkpoint
+#   kwargs: {}
+label_sources:
+  # A student's training set can mix a cheap teacher-labeled majority with a
+  # small DFT-labeled anchor set (see agents/data-curator.md and
+  # agents/ml-trainer.md `energy reference alignment` step). This is optional —
+  # a DFT-free student (teacher labels only) is the simplest starting point.
+  teacher_labeled_augmented: {approx_n: 4000, generator: augment-atoms}
+  dft_anchor:
+    approx_n: 690
+    source: "pre-existing DFT-labeled seed pool, domain-filtered — see agents/data-curator.md"
+    energy_alignment: per-element    # fit per-element reference energies over the combined set (see configs/README.md)

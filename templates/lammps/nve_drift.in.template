@@ -1,0 +1,35 @@
+#=======================================================================
+#  NVE energy-drift validation template — confirms the deployed student
+#  conserves energy under long microcanonical integration (a basic
+#  sanity check independent of the training objective). Rendered by
+#  adapters.md_backend.render_lammps_input().
+#=======================================================================
+
+units       metal
+boundary    p p p
+atom_style  atomic
+newton      on
+
+read_data   {DATAFILE}
+
+{PAIR_STYLE_BLOCK}
+
+timestep    {TIMESTEP_PS}
+
+compute     myT all temp
+
+# --- Brief NVT to reach the target temperature, then switch to NVE ---
+velocity    all create {TEMPERATURE_K} {SEED} mom yes rot yes dist gaussian
+fix         warm all nvt temp {TEMPERATURE_K} {TEMPERATURE_K} {TDAMP_PS}
+run         {WARMUP_STEPS}
+unfix       warm
+
+fix         nve all nve
+thermo_style custom step temp pe ke etotal
+thermo      {THERMO_EVERY_STEPS}
+fix         log_energy all print {THERMO_EVERY_STEPS} "$(step) $(temp) $(pe) $(ke) $(etotal)" file {ENERGY_LOG} screen no
+run         {N_STEPS}
+
+# Analyze: fit total energy vs time; drift (meV/atom/ns) should be << the
+# threshold in configs/validation_profile.yaml (nve_drift_meV_per_atom_per_ns).
+# See validation/structure_dynamics.py:compute_nve_drift.

@@ -1,0 +1,21 @@
+---
+name: distill-resume
+description: Resume an initialized distillation run from its persistent manifest after reviewing its last state.
+argument-hint: "[run name or runs/path]"
+disable-model-invocation: false
+---
+
+Locate and read the run manifest, workflow snapshot, latest logs, registered
+artifacts, and gate evidence. Verify that files referenced by the current stage
+still exist. Explain where the run stopped and why.
+
+- If waiting for a scientific or cost approval, ask for it and do not execute.
+- If a stage failed, propose the smallest repair and wait when it changes
+  scientific settings or cost.
+- If a producer artifact is complete but unregistered, verify it before using
+  `complete-stage`.
+- If a gate is pending, convene the judge committee; do not silently mark PASS.
+- If the next stage is inexpensive and already approved, continue it through
+  the controller.
+
+Never create a new run as a substitute for resuming an existing one.

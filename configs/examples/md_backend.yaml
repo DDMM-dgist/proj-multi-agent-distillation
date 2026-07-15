@@ -1,0 +1,4 @@
+kind: lammps
+binary: lmp_mpi
+template_dir: templates/lammps/
+# pair_style block is generated per student `kind` — see adapters/student.py:lammps_pair_style_block()

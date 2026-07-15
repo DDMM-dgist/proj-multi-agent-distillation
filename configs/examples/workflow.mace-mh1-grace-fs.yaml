@@ -1,0 +1,48 @@
+run_id: ternary-mace-mh1-grace-fs
+stages:
+  - name: acquisition
+    command:
+      - python
+      - -m
+      - adapters.acquisition
+      - acquire
+      - "{project_dir}/configs/acquisition.yaml"
+      - "{project_dir}/configs/teacher.yaml"
+      - "{project_dir}/structures/seed.extxyz"
+      - "{artifacts_dir}/acquired.extxyz"
+    outputs: [artifacts/acquired.extxyz]
+  - name: teacher_labeling
+    command:
+      - python
+      - -m
+      - adapters.acquisition
+      - label
+      - "{project_dir}/configs/teacher.yaml"
+      - "{artifacts_dir}/acquired.extxyz"
+      - "{artifacts_dir}/teacher_labeled.extxyz"
+      - "{artifacts_dir}/teacher_labels.manifest.json"
+      - --stress
+    outputs: [artifacts/teacher_labeled.extxyz, artifacts/teacher_labels.manifest.json]
+  - name: training
+    command: [python, -m, workflow.steps, train-committee,
+              "{project_dir}/configs/student.yaml",
+              "{artifacts_dir}/teacher_labeled.extxyz",
+              "{artifacts_dir}/committee", "{artifacts_dir}/student_committee.manifest.json"]
+    outputs: [artifacts/student_committee.manifest.json]
+  - name: evaluation
+    command: [python, -m, workflow.steps, evaluate-committee,
+              "{project_dir}/configs/student.yaml",
+              "{artifacts_dir}/student_committee.manifest.json",
+              "{artifacts_dir}/teacher_labeled.extxyz",
+              "{artifacts_dir}/evaluated.extxyz", "{artifacts_dir}/accuracy_report.json"]
+    outputs: [artifacts/evaluated.extxyz, artifacts/accuracy_report.json]
+  - name: md
+    # Scheduler/agent-managed: register md.manifest.json with complete-stage.
+    command: null
+    outputs: [artifacts/md.manifest.json]
+  - name: physical_validation
+    command: null
+    outputs: [artifacts/physical_validation.json]
+  - name: analysis
+    command: null
+    outputs: [artifacts/final_report.json]

@@ -1,0 +1,14 @@
+kind: grace-fs
+train:
+  env: distill-student-grace
+  binary: gracemaker
+  config_template: templates/student/grace-fs.input.yaml.template
+committee:
+  n_seeds: 4
+deploy:
+  lammps_pair_style: grace/fs
+  elements: [A, B, C]  # replace with the exact ternary LAMMPS atom-type order
+predict:
+  factory: pyace.asecalc.PyGRACEFSCalculator
+  checkpoint_arg: __positional__
+  kwargs: {}
