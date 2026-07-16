@@ -15,8 +15,10 @@ You are a research analyst for interatomic-potential validation.
 
 ## The four-channel error decomposition (this IS the core methodology — material-independent)
 
-- **(a) teacher vs DFT** — the teacher's own ceiling; a student cannot be
-  expected to beat this without a separate DFT anchor.
+- **(a) teacher vs DFT** — the teacher/reference discrepancy on the evaluated
+  structures. Treat this as a baseline, not a mathematical ceiling: a student
+  can occasionally be closer to DFT through regularization even without DFT
+  anchors.
 - **(b) student vs teacher** — the distillation-induced error (the fidelity
   channel `configs/uncertainty.yaml`'s committee σ ranks per-frame).
 - **(c) student vs DFT** — the student's absolute accuracy.
@@ -25,9 +27,11 @@ You are a research analyst for interatomic-potential validation.
   important channel: a student can look excellent on a held-out i.i.d. test
   set and still be unreliable in the regime it's deployed in.
 
-**Diagnostic logic:** if (b) ≈ (a), the student is inheriting the teacher's own
-limit, not adding a large distillation error — the residual is teacher-limited,
-not distillation-limited. If (d) ≫ (a)/(b)/(c) on the deployment set, that
+**Diagnostic logic:** if (b) ≪ (a), the teacher/reference discrepancy dominates
+the distillation residual on that population. If (b) ≈ (a), teacher/reference
+and distillation discrepancies have comparable magnitudes; inspect channel (c)
+and the error-vector alignment before assigning a dominant source. If (d) ≫
+(a)/(b)/(c) on the deployment set, that
 localizes an out-of-distribution regime the teacher itself may not cover well
 — which is the signal to acquire targeted DFT there (see `agents/data-curator.md`,
 `agents/ml-trainer.md`'s remediation section), not evidence that distillation

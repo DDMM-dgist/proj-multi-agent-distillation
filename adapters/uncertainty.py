@@ -18,10 +18,16 @@ from scipy.stats import spearmanr
 def committee_force_std(forces_per_seed, aggregate="max"):
     """forces_per_seed: array-like, shape (n_seeds, n_atoms, 3).
     Returns per-atom sigma_F (n_atoms,) and one aggregated per-frame score.
+
+    sigma_F is the RMS standard deviation over the three Cartesian force
+    components, matching the manuscript definition
+    sqrt(sum_{m,alpha}(F_malpha-Fbar_alpha)^2 / (3 M)).
     """
     F = np.asarray(forces_per_seed)
+    if F.ndim != 3 or F.shape[0] < 2 or F.shape[2] != 3:
+        raise ValueError("forces_per_seed must have shape (n_seeds>=2, n_atoms, 3)")
     per_atom_std = F.std(axis=0)                      # (n_atoms, 3)
-    per_atom_sigma = np.linalg.norm(per_atom_std, axis=-1)  # (n_atoms,) magnitude of per-component std
+    per_atom_sigma = np.sqrt(np.mean(per_atom_std ** 2, axis=-1))
     if aggregate == "max":
         frame_score = per_atom_sigma.max()
     elif aggregate == "mean":

@@ -7,13 +7,14 @@ train:
   descriptor_params:
     Si: templates/student/params_Si     # 70 symmetry functions/element
     O:  templates/student/params_O
-  total_epoch: 1500                    # cut from 2000 to keep per-seed training lightweight
-  double_precision: false              # single precision; ~2x cheaper than the original double
+  total_epoch: 2000
+  learning_rate: 0.0001
+  double_precision: true
   batch_size: 32
   nodes: "30-30"
-  use_stress: true
-  read_stress: true
-  stress_loss_weight: 0.1               # starting point — tune so stress MAE converges without hurting E/F
+  use_stress: false
+  read_stress: false
+  stress_loss_weight: 0.0
   target_hours_per_seed: 12
   runner:
     module: simple_nn.driver        # replace with the wrapper module verified for your install
@@ -29,12 +30,5 @@ deploy:
 #   checkpoint_arg: checkpoint
 #   kwargs: {}
 label_sources:
-  # A student's training set can mix a cheap teacher-labeled majority with a
-  # small DFT-labeled anchor set (see agents/data-curator.md and
-  # agents/ml-trainer.md `energy reference alignment` step). This is optional —
-  # a DFT-free student (teacher labels only) is the simplest starting point.
-  teacher_labeled_augmented: {approx_n: 4000, generator: augment-atoms}
-  dft_anchor:
-    approx_n: 690
-    source: "pre-existing DFT-labeled seed pool, domain-filtered — see agents/data-curator.md"
-    energy_alignment: per-element    # fit per-element reference energies over the combined set (see configs/README.md)
+  teacher_labeled_augmented: {approx_n: 10000, generator: augment-atoms}
+  dft_anchor: {approx_n: 0}

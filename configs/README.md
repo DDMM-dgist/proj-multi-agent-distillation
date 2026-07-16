@@ -1,16 +1,13 @@
 # configs/ — the adapter layer
 
-This is the only place that should change when you port the workflow to a new
-teacher, student, or material. Nothing in `agents/`, `gates/`, or `validation/`
-should need editing.
+This directory contains the run-facing adapter and validation configuration.
+New model kinds may also require an implementation under `adapters/`, and new
+observables may require a validator under `validation/`.
 
 Six config files define the workflow's model-independent interfaces. Each has
 a `kind` field that `adapters/` dispatches on, plus interface-specific fields.
-Support is reported at three levels: **verified** means an end-to-end reference
-run exists outside this lightweight distribution; **implemented** means an
-adapter code path exists but portability has not been demonstrated here;
-**adapter-ready** means only the interface is documented. Do not collapse
-these levels into a single "supported" claim.
+The table separates a completed reference case, implemented adapter paths, and
+documented interface examples.
 
 | File | Required interface | Implemented `kind`s | Documented-only examples |
 |---|---|---|---|
@@ -34,9 +31,7 @@ calculator:
   model_is_path: true             # false only for package-defined names such as a built-in model ID
 emits_stress: true                # confirm empirically before relying on this (see adapters/teacher.py:check_stress_support)
 ```
-Any teacher with an ASE `Calculator` satisfies this — that covers essentially
-every modern MLIP (NequIP/Allegro, MACE, GAP via quippy, ACE via pyace, and
-foundation models like MACE-MP-0/MatterSim/Orb).
+Teacher models exposed through an ASE `Calculator` can use this interface.
 
 ### `student.<name>.yaml`
 ```yaml
@@ -90,11 +85,12 @@ duplicated. Every stage rechecks both copied snapshots and original sources.
 
 ### `uncertainty.yaml`
 ```yaml
-kind: committee-force-std     # sigma_F: per-atom force std across the student committee
-aggregate: max                # or mean — how per-atom sigma_F rolls up to a per-frame score
+kind: committee-force-std     # Cartesian-RMS force std across the student committee
+aggregate: mean               # manuscript definition; max is available for worst-atom acquisition
 ```
-This is already architecture-agnostic: it only needs N models of the same
-student `kind` and doesn't inspect the student's internals.
+The calculation uses predictions from N models of the same student `kind`.
+Record `aggregate` in every report because `mean` and `max` have different
+absolute scales.
 
 ### `md_backend.yaml`
 ```yaml
@@ -120,9 +116,33 @@ checks: [rdf, adf, coordination, density, msd, nve_drift, sq_fsdp]
 # observables (e.g. elastic constants, phonon DOS, diffusion coefficients)
 ```
 
-## Why this split (and what it does NOT claim)
+External validation stage는 범용 `validation_manifest` contract를 사용합니다.
+Observable-specific 검사는 core controller가 아니라 `validation.*` callable로
+dispatch합니다. 예를 들어 surface 사례는 다음처럼 연결되지만, EOS·diffusion·phonon
+등은 각자 validator를 지정할 수 있습니다.
 
-Splitting the interface this way lets the SAME agent prompts and gate logic
-target a different teacher/student pair. This is an implemented interface
-property, not empirical proof of portability. The verified scope remains the
-reference Allegro→SIMPLE-NN case until a second architecture is run end to end.
+```yaml
+contract:
+  kind: validation_manifest
+  manifest: artifacts/physical_validation.json
+  validator: validation.surface_energy.validate_surface_manifest
+  options:
+    required_methods: [teacher, student, dft]
+```
+
+External MD stage는 checkpoint binding과 함께 역할 기반 evidence를 등록합니다.
+필수 역할은 workflow config에서 선택합니다.
+
+```yaml
+contract:
+  kind: md_manifest
+  manifest: artifacts/md.manifest.json
+  committee_manifest: artifacts/student_committee.manifest.json
+  required_evidence: [input, trajectory, thermo_log]
+```
+
+## Adapter scope
+
+The interface keeps model-specific configuration outside the controller. The
+Allegro→SIMPLE-NN case is the completed reference case; other implemented paths
+still require their own server integration run.

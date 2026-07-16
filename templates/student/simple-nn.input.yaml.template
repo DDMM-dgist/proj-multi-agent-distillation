@@ -19,7 +19,7 @@ neural_network:
   nodes: "{NODES}"                 # e.g. "30-30"
   batch_size: {BATCH_SIZE}
   total_epoch: {TOTAL_EPOCH}
-  learning_rate: 0.001             # BPNN is LR-sensitive; anneal down (1e-4/1e-5) if error plateaus high
+  learning_rate: {LEARNING_RATE}
   double_precision: {DOUBLE_PRECISION}   # true/false
   use_force: true
   use_stress: {USE_STRESS}

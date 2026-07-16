@@ -22,13 +22,15 @@ a duplicate.
 Use a short conversational exchange. Ask no more than three related questions
 at a time. Determine:
 
-- run name and ternary element order;
-- teacher kind, checkpoint/model path, and MACE-MH-1 head when applicable;
+- run name, chemical system, and exact element/type order;
+- teacher kind, checkpoint/model path, and model variant/head when applicable;
 - student kind and version-matched training config/template;
 - initial structure path;
 - acquisition choice: augment-atoms, teacher MD, or both;
 - DFT, MD, uncertainty, and validation-profile config choices;
-- the main deployment observable, such as surface energetics;
+- the deployment domain and required accuracy, energetics, structure, dynamics,
+  stability, and performance observables;
+- observable-specific protocols and acceptance thresholds;
 - which actions require explicit approval (always include costly training,
   production MD, and DFT submissions).
 
@@ -40,7 +42,7 @@ Create run-specific configs under `configs/runs/<run_name>/`; never overwrite
 the examples. Start from the closest files in `configs/examples/` and replace
 all placeholders that can be resolved from the conversation. Keep unresolved
 scientific choices explicit as `null` or a clearly labeled TODO; do not invent
-paths, elements, thresholds, surfaces, or hyperparameters.
+paths, elements, thresholds, observable protocols, or hyperparameters.
 
 Create a run-specific workflow config whose commands point to those configs and
 the supplied structures. If both acquisition backends are requested, create
@@ -61,8 +63,10 @@ Verify acquisition output has a parent ID before teacher labeling or splitting.
 
 ## 4. Preflight and initialize
 
-Run schema-only preflight first. Run full preflight only if the relevant model
-environment is active. Report missing external files as a short checklist.
+Run schema-only preflight across the teacher, student, acquisition, and
+validation configs first. Before the pilot, run it with `--require-ready` and
+run full file/import checks only if the relevant model environment is active.
+Report missing external files and unresolved thresholds as a short checklist.
 When the minimum paths and configs required for initialization exist, run:
 
 ```bash

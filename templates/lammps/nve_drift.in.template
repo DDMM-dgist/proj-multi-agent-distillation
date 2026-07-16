@@ -27,7 +27,7 @@ unfix       warm
 fix         nve all nve
 thermo_style custom step temp pe ke etotal
 thermo      {THERMO_EVERY_STEPS}
-fix         log_energy all print {THERMO_EVERY_STEPS} "$(step) $(temp) $(pe) $(ke) $(etotal)" file {ENERGY_LOG} screen no
+fix         log_energy all print {THERMO_EVERY_STEPS} "$(step),$(temp),$(pe),$(ke),$(etotal)" file {ENERGY_LOG} screen no title "step,temperature,potential_energy,kinetic_energy,total_energy"
 run         {N_STEPS}
 
 # Analyze: fit total energy vs time; drift (meV/atom/ns) should be << the

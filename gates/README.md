@@ -6,9 +6,7 @@ contexts**, read the **same** artifact, and vote **blind to each other**. The
 Director convenes them, tallies, and records **every individual vote** — so
 split votes show up in the audit trail.
 
-This mechanism is model-independent as shipped — it never needs to change when
-you port the workflow to a new teacher/student/material. Only the *criteria*
-you pass in change, and those should come from that run's `configs/*.yaml`.
+Gate criteria are supplied from the active run configuration.
 
 ## Pieces
 
@@ -62,7 +60,7 @@ Workflow({ name: 'gate-vote', args: {
   artifact: 'held-out E/F errors at <path>; teacher error at <path>',
   criteria: [
     'student-vs-teacher force MAE <= <threshold from configs/student.yaml or validation_profile.yaml>',
-    'teacher-vs-DFT force MAE reported alongside as the ceiling',
+    'teacher-vs-DFT force MAE reported alongside as a reference baseline',
     'committee force-std (sigma_F) reported, not just a point metric',
   ],
   n: 3,

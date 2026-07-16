@@ -10,6 +10,7 @@ for what implementing one of them actually involves (usually: a training
 subprocess call + a checkpoint loader + a one-line LAMMPS pair_style string).
 """
 import importlib
+import re
 import subprocess
 import sys
 from pathlib import Path
@@ -61,13 +62,14 @@ def _train_simple_nn(cfg, dataset_path, out_dir, seed):
     v2 in your environment (this is a template, verify before relying on it).
     """
     train_cfg = cfg["train"]
+    rendered_config = _render_simple_nn_config(cfg, out_dir)
     runner = train_cfg.get("runner", {})
     module = runner.get("module", "simple_nn.driver")
     env = train_cfg.get("env")
     prefix = ["conda", "run", "-n", env, "python"] if env else [sys.executable]
     cmd = prefix + [
         "-m", module,  # override train.runner.module for the installed SIMPLE-NN wrapper
-        "--config", str(resolve_config_path(cfg, train_cfg["config_template"])),
+        "--config", str(rendered_config),
     ]
     for element, path in train_cfg["descriptor_params"].items():
         cmd += ["--descriptor-param", f"{element}={resolve_config_path(cfg, path)}"]
@@ -86,6 +88,33 @@ def _train_simple_nn(cfg, dataset_path, out_dir, seed):
     print("  ", " ".join(cmd))
     subprocess.run(cmd, check=True)
     return out_dir / "potential_saved_bestmodel"
+
+
+def _render_simple_nn_config(cfg, out_dir):
+    """Render the packaged SIMPLE-NN wrapper template without silent placeholders."""
+    train_cfg = cfg["train"]
+    text = resolve_config_path(cfg, train_cfg["config_template"]).read_text()
+    replacements = {
+        "NODES": train_cfg["nodes"],
+        "BATCH_SIZE": train_cfg["batch_size"],
+        "TOTAL_EPOCH": train_cfg["total_epoch"],
+        "LEARNING_RATE": train_cfg.get("learning_rate", 1e-4),
+        "DOUBLE_PRECISION": str(bool(train_cfg.get("double_precision"))).lower(),
+        "USE_STRESS": str(bool(train_cfg.get("use_stress"))).lower(),
+        "STRESS_LOSS_WEIGHT": train_cfg.get("stress_loss_weight", 0.0),
+    }
+    for element, path in train_cfg["descriptor_params"].items():
+        token = re.sub(r"[^A-Za-z0-9]", "_", element).upper() + "_PARAMS_PATH"
+        replacements[token] = str(resolve_config_path(cfg, path))
+    for key, value in replacements.items():
+        text = text.replace("{" + key + "}", str(value))
+    unresolved = sorted(set(re.findall(r"\{[A-Z][A-Z0-9_]*\}", text)))
+    if unresolved:
+        raise ValueError("unresolved SIMPLE-NN template placeholders: " + ", ".join(unresolved))
+    output = Path(out_dir) / "input.yaml"
+    output.parent.mkdir(parents=True, exist_ok=True)
+    output.write_text(text)
+    return output
 
 
 def _train_grace_fs(cfg, dataset_path, out_dir, seed):

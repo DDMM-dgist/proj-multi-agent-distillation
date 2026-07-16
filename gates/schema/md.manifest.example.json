@@ -1,0 +1,28 @@
+{
+  "schema_version": 1,
+  "selected_seed": 2,
+  "checkpoint": "/absolute/run/path/artifacts/committee/seed-2/FS_model.yaml",
+  "checkpoint_integrity": {
+    "kind": "file",
+    "size": 1234,
+    "sha256": "replace-with-current-sha256"
+  },
+  "committee_manifest": "/absolute/run/path/artifacts/student_committee.manifest.json",
+  "evidence": [
+    {
+      "role": "input",
+      "path": "/absolute/run/path/artifacts/prod_md.in",
+      "integrity": {"kind": "file", "size": 1234, "sha256": "replace-with-current-sha256"}
+    },
+    {
+      "role": "trajectory",
+      "path": "/absolute/run/path/artifacts/trajectory.dump",
+      "integrity": {"kind": "file", "size": 1234, "sha256": "replace-with-current-sha256"}
+    },
+    {
+      "role": "thermo_log",
+      "path": "/absolute/run/path/artifacts/thermo.csv",
+      "integrity": {"kind": "file", "size": 1234, "sha256": "replace-with-current-sha256"}
+    }
+  ]
+}

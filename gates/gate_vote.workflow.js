@@ -22,8 +22,8 @@ export const meta = {
 //   target:   string   e.g. "cell_023"  (what is being judged)
 //   artifact: string   free text: the paths to read + what the artifact is
 //   criteria: string[] the explicit gate criteria + thresholds, one per line
-//   n:        number    judges (default 3)
-//   rule:     string    "unanimous" (default) | "majority"
+//   n:        number    must be 3 (matches the persistent controller)
+//   rule:     string    must be "unanimous"
 // }
 //
 // Returns { gate, target, n, rule, decision, tally, votes[] }.
@@ -38,8 +38,8 @@ const criteria = Array.isArray(args?.criteria) ? args.criteria : []
 const N        = args?.n ?? 3
 const rule     = args?.rule || 'unanimous'
 
-if (!Number.isInteger(N) || N < 1) throw new Error(`n must be a positive integer; got ${N}`)
-if (!['unanimous', 'majority'].includes(rule)) throw new Error(`unknown decision rule: ${rule}`)
+if (N !== 3) throw new Error(`the persistent controller requires exactly 3 judges; got ${N}`)
+if (rule !== 'unanimous') throw new Error(`the persistent controller requires unanimous rule; got ${rule}`)
 if (criteria.length === 0) throw new Error('gate criteria must not be empty')
 
 const VERDICT_SCHEMA = {
@@ -115,15 +115,12 @@ for (const v of votes) tally[v.verdict] = (tally[v.verdict] || 0) + 1
 // Decision rule. Conservative escalation in both modes:
 //   any FAIL          -> FAIL  (an invalid/unphysical artifact blocks regardless)
 //   unanimous: all PASS -> PASS else REVISE
-//   majority:  PASS is the strict majority (> n/2) and no FAIL -> PASS else REVISE
 let decision
 if (votes.length !== N) {
   // Fail closed: a missing/failed judge is not evidence of consensus.
   decision = 'REVISE'
 } else if (tally.FAIL > 0) {
   decision = 'FAIL'
-} else if (rule === 'majority') {
-  decision = tally.PASS > N / 2 ? 'PASS' : 'REVISE'
 } else {
   decision = tally.PASS === votes.length && votes.length > 0 ? 'PASS' : 'REVISE'
 }

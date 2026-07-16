@@ -111,13 +111,31 @@ def evaluate_committee(student_config, committee_manifest, frames_path, labeled_
     return results
 
 
-def run_md(md_config, student_config, checkpoint, template_name, context_yaml, input_path, run_dir, manifest):
+def run_md(md_config, student_config, checkpoint, template_name, context_yaml, input_path, run_dir,
+           manifest, committee_manifest=None, selected_seed=None, evidence_paths=None):
     md_cfg, student_cfg = load_config(md_config), load_config(student_config)
     context = yaml.safe_load(Path(context_yaml).read_text())
     render_lammps_input(md_cfg, student_cfg, checkpoint, template_name, context, input_path)
     run_md_backend(md_cfg, input_path, run_dir, mpi_ranks=int(context.get("MPI_RANKS", 1)))
+    checkpoint = Path(checkpoint).resolve()
+    evidence = [{"role": "input", "path": str(Path(input_path).resolve()),
+                 "integrity": artifact_digest(input_path)}]
+    for item in evidence_paths or []:
+        if "=" not in item:
+            raise ValueError("MD evidence must use ROLE=PATH")
+        role, raw_path = item.split("=", 1)
+        path = Path(raw_path).expanduser().resolve()
+        if not role or not path.exists():
+            raise ValueError(f"invalid MD evidence: {item}")
+        evidence.append({"role": role, "path": str(path),
+                         "integrity": artifact_digest(path)})
     result = {"schema_version": 1, "input": str(Path(input_path).resolve()),
-              "run_dir": str(Path(run_dir).resolve()), "checkpoint": str(Path(checkpoint).resolve())}
+              "run_dir": str(Path(run_dir).resolve()), "checkpoint": str(checkpoint),
+              "checkpoint_integrity": artifact_digest(checkpoint), "evidence": evidence}
+    if committee_manifest is not None:
+        result["committee_manifest"] = str(Path(committee_manifest).resolve())
+    if selected_seed is not None:
+        result["selected_seed"] = int(selected_seed)
     _write_json(manifest, result)
     return result
 
@@ -144,6 +162,9 @@ def main():
     md.add_argument("md_config"); md.add_argument("student_config"); md.add_argument("checkpoint")
     md.add_argument("template"); md.add_argument("context_yaml"); md.add_argument("input_path")
     md.add_argument("run_dir"); md.add_argument("manifest")
+    md.add_argument("--committee-manifest")
+    md.add_argument("--selected-seed", type=int)
+    md.add_argument("--evidence", action="append", default=[], metavar="ROLE=PATH")
     validate = sub.add_parser("capture-validation")
     validate.add_argument("report"); validate.add_argument("command", nargs=argparse.REMAINDER)
     split = sub.add_parser("split-dataset")
@@ -165,7 +186,8 @@ def main():
                            args.labeled_output, args.report, args.require_channel)
     elif args.action == "run-md":
         run_md(args.md_config, args.student_config, args.checkpoint, args.template,
-               args.context_yaml, args.input_path, args.run_dir, args.manifest)
+               args.context_yaml, args.input_path, args.run_dir, args.manifest,
+               args.committee_manifest, args.selected_seed, args.evidence)
     else:
         if not args.command:
             p.error("capture-validation requires a command after --")

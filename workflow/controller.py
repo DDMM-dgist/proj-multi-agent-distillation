@@ -11,6 +11,7 @@ from pathlib import Path
 import yaml
 
 from workflow.integrity import artifact_digest, sha256_file, verify_artifact
+from workflow.contracts import validate_md_manifest, validate_validation_manifest
 
 
 def now():
@@ -67,7 +68,7 @@ class RunController:
         for item in cfg["stages"]:
             stages.append({"name": item["name"], "status": "pending", "gate": "pending",
                            "command": item.get("command"), "outputs": item.get("outputs", []),
-                           "env": item.get("env"),
+                           "env": item.get("env"), "contract": item.get("contract"),
                            "started_at": None, "completed_at": None, "attempts": 0})
         state = {"schema_version": 2, "run_id": cfg["run_id"], "created_at": now(),
                  "updated_at": now(), "workflow_config": str(snapshot), "artifacts": [],
@@ -233,6 +234,39 @@ class RunController:
         self.state["artifacts"].append(record)
         return record
 
+    def _registered_artifact(self, path):
+        path = str(Path(path).resolve())
+        matches = [record for record in self.state["artifacts"] if record["path"] == path]
+        if len(matches) != 1:
+            raise ValueError(f"required upstream artifact is not uniquely registered: {path}")
+        verify_artifact(path, matches[0])
+        return matches[0]
+
+    def _validate_external_contract(self, stage, artifacts):
+        contract = stage.get("contract")
+        if not contract:
+            return None
+        context = {"run_dir": str(self.run_dir), "artifacts_dir": str(self.run_dir / "artifacts"),
+                   "project_dir": self.state["project_dir"]}
+        manifest = Path(str(contract["manifest"]).format(**context))
+        if not manifest.is_absolute():
+            manifest = self.run_dir / manifest
+        manifest = manifest.resolve()
+        if manifest not in {Path(path).resolve() for path in artifacts}:
+            raise ValueError("external contract manifest must be included in --artifact")
+        kind = contract.get("kind")
+        if kind == "md_manifest":
+            committee = Path(str(contract["committee_manifest"]).format(**context))
+            if not committee.is_absolute():
+                committee = self.run_dir / committee
+            self._registered_artifact(committee)
+            return validate_md_manifest(manifest, committee, artifacts,
+                                        contract.get("required_evidence"))
+        if kind == "validation_manifest":
+            return validate_validation_manifest(manifest, contract.get("validator"),
+                                                contract.get("options"))
+        raise ValueError(f"unknown external stage contract: {kind!r}")
+
     def complete_external_stage(self, name, artifacts):
         """Register artifacts produced by an agent, scheduler, or external tool."""
         self.verify_inputs()
@@ -240,20 +274,26 @@ class RunController:
         stage = self.stage(name)
         if not artifacts:
             raise ValueError("at least one artifact is required")
-        self.invalidate_from(name)
-        self.quarantine_artifacts({name})
-        self.state["artifacts"] = [a for a in self.state["artifacts"] if a["stage"] != name]
-        stage.update(status="completed", started_at=stage.get("started_at") or now(),
-                     completed_at=now(), attempts=stage["attempts"] + 1, gate="pending")
+        resolved = []
         for path in artifacts:
             path = Path(path)
             if not path.is_absolute():
                 path = self.run_dir / path
             if not path.exists():
                 raise FileNotFoundError(f"external artifact is missing: {path}")
+            resolved.append(path.resolve())
+        contract_result = self._validate_external_contract(stage, resolved)
+        self.invalidate_from(name)
+        self.quarantine_artifacts({name})
+        self.state["artifacts"] = [a for a in self.state["artifacts"] if a["stage"] != name]
+        stage.update(status="completed", started_at=stage.get("started_at") or now(),
+                     completed_at=now(), attempts=stage["attempts"] + 1, gate="pending")
+        for path in resolved:
             self.register_artifact(name, path)
         self.state["events"].append({"at": now(), "type": "external_stage_completed",
-                                     "stage": name, "artifacts": [str(x) for x in artifacts]})
+                                     "stage": name, "artifacts": [str(x) for x in resolved],
+                                     "contract": stage.get("contract"),
+                                     "contract_validated": contract_result is not None})
         self.save()
 
     def _validate_vote_bundle(self, name, votes_path):

@@ -14,6 +14,7 @@ Usage:
         [--timestep-fs 1.0] [--temperature-log energies.csv]
 """
 import argparse
+import csv
 import itertools
 
 import numpy as np
@@ -106,6 +107,33 @@ def compute_nve_drift(energies, timestep_fs, n_atoms, sample_interval_steps=1, s
     return float(slope), float(resid.std())
 
 
+def read_energy_log(path):
+    """Read the CSV emitted by nve_drift.in.template.
+
+    A whitespace-delimited ``step temp pe ke etotal`` file is also accepted for
+    compatibility with runs made before the template was standardized.
+    """
+    with open(path) as handle:
+        lines = [line.strip() for line in handle
+                 if line.strip() and not line.lstrip().startswith("#")]
+    if not lines:
+        raise ValueError(f"energy log is empty: {path}")
+    if "," in lines[0]:
+        rows = list(csv.DictReader(lines))
+        required = {"step", "total_energy"}
+        if not rows or not required <= set(rows[0]):
+            raise ValueError("energy CSV requires step and total_energy columns")
+        return (np.array([int(float(row["step"])) for row in rows]),
+                np.array([float(row["total_energy"]) for row in rows]))
+    parsed = [line.split() for line in lines]
+    if parsed[0][0].lower() == "step":
+        parsed = parsed[1:]
+    if not parsed or any(len(row) < 5 for row in parsed):
+        raise ValueError("whitespace energy log requires step temp pe ke etotal columns")
+    return (np.array([int(float(row[0])) for row in parsed]),
+            np.array([float(row[4]) for row in parsed]))
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("trajectory")
@@ -148,11 +176,7 @@ def main():
 
     if "nve_drift" in checks:
         if args.temperature_log:
-            import csv
-            with open(args.temperature_log) as f:
-                rows = list(csv.DictReader(f))
-            energies = np.array([float(row["total_energy"]) for row in rows])
-            steps = np.array([int(row["step"]) for row in rows])
+            steps, energies = read_energy_log(args.temperature_log)
         else:
             energies = np.array([a.get_total_energy() for a in frames])
             steps = None

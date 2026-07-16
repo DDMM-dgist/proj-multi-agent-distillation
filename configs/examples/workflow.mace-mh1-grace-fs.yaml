@@ -1,8 +1,14 @@
 run_id: ternary-mace-mh1-grace-fs
 inputs:
+  - path: /path/to/mace-mh-1.model
+    copy: false
   - "{project_dir}/configs/teacher.yaml"
   - "{project_dir}/configs/student.yaml"
   - "{project_dir}/configs/acquisition.yaml"
+  - "{project_dir}/configs/uncertainty.yaml"
+  - "{project_dir}/configs/md_backend.yaml"
+  - "{project_dir}/configs/reference_dft.yaml"
+  - "{project_dir}/configs/validation_profile.yaml"
   - "{project_dir}/structures/seed.extxyz"
   - "{project_dir}/templates/student/grace-fs.input.yaml.template"
 stages:
@@ -29,7 +35,6 @@ stages:
       - "{artifacts_dir}/acquired.extxyz"
       - "{artifacts_dir}/teacher_labeled.extxyz"
       - "{artifacts_dir}/teacher_labels.manifest.json"
-      - --stress
     outputs: [artifacts/teacher_labeled.extxyz, artifacts/teacher_labels.manifest.json]
   - name: dataset_split
     command: ["{python}", -m, workflow.steps, split-dataset,
@@ -54,13 +59,30 @@ stages:
               "{artifacts_dir}/evaluated.extxyz", "{artifacts_dir}/accuracy_report.json",
               --require-channel, student_vs_teacher]
     outputs: [artifacts/evaluated.extxyz, artifacts/accuracy_report.json]
+  - name: uncertainty
+    command: ["{python}", "{project_dir}/validation/committee_uncertainty.py",
+              "{artifacts_dir}/evaluated.extxyz", --config,
+              "{project_dir}/configs/uncertainty.yaml", --output,
+              "{artifacts_dir}/uncertainty_report.json"]
+    outputs: [artifacts/uncertainty_report.json]
   - name: md
     # Scheduler/agent-managed: register md.manifest.json with complete-stage.
     command: null
     outputs: [artifacts/md.manifest.json]
+    contract:
+      kind: md_manifest
+      manifest: artifacts/md.manifest.json
+      committee_manifest: artifacts/student_committee.manifest.json
+      required_evidence: [input, trajectory, thermo_log]
   - name: physical_validation
     command: null
     outputs: [artifacts/physical_validation.json]
+    contract:
+      kind: validation_manifest
+      manifest: artifacts/physical_validation.json
+      validator: validation.surface_energy.validate_surface_manifest
+      options:
+        required_methods: [teacher, student, dft]
   - name: analysis
     command: null
     outputs: [artifacts/final_report.json]

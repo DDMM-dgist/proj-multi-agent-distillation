@@ -50,7 +50,7 @@ be asked to judge (the specific numbers are always supplied, never assumed):
   interatomic distance not violated — a carving artifact gives unphysical
   energy and huge forces).
 - **Student-accuracy gates** — student-vs-teacher error within the agreed
-  threshold; the teacher's own error (the ceiling) reported beside it;
+  threshold; the teacher/reference error baseline reported beside it;
   committee spread reported, not just a point metric; in-distribution vs
   extrapolation separated.
 - **Physical-validation gates** — whatever `configs/validation_profile.yaml`

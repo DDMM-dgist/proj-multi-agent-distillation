@@ -136,8 +136,9 @@ def main():
                       f"E_MAE={s['e_mae_meV']:6.2f}  F_MAE={s['f_mae']:.4f}  F_R2={s['f_r2']:.3f}")
 
     print(
-        "\nDiagnostic reminder: if (b) ~ (a), the residual is teacher-limited, not "
-        "distillation-limited (see agents/analyst.md). Channel (d) — student-MD "
+        "\nDiagnostic reminder: if (b) << (a), the teacher/reference discrepancy "
+        "dominates the distillation residual. If (b) ~ (a), inspect channel (c) "
+        "and vector alignment before assigning a dominant source. Channel (d) — student-MD "
         "trajectory vs DFT single-points on carved snapshots — is computed "
         "separately once production trajectories exist; see agents/simulation.md's "
         "small-cell recipe."

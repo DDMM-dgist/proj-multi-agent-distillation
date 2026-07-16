@@ -18,9 +18,11 @@ backend does what is config-driven — read `configs/reference_dft.yaml` and
 2. Build inputs from a validated structure (ASE). State convergence-aware
    parameters (DFT: cutoff, k-density, smearing, tolerances — pull from
    `configs/reference_dft.yaml`; MD: ensemble, timestep, thermostat, rate).
-   **The DFT settings must match whatever the teacher's own training data
-   used, exactly** — otherwise the teacher-vs-DFT and student-vs-DFT error
-   channels are meaningless.
+   When the goal is to isolate model error relative to the teacher's training
+   theory, match its DFT settings as closely as provenance permits. A different
+   reference theory can still be scientifically useful, but then the reported
+   teacher--DFT and student--DFT channels combine model error with a
+   reference-theory difference and must be labelled that way.
 3. Render inputs via `adapters.reference_dft.render_incar(...)` /
    `adapters.md_backend.render_lammps_input(...)` rather than hand-writing
    them — this is what keeps them config-driven instead of hardcoded to one

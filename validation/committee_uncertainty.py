@@ -10,11 +10,13 @@ Usage:
     python validation/committee_uncertainty.py labeled_frames.extxyz
 """
 import argparse
+import json
 import re
 import sys
 from pathlib import Path
 
 import numpy as np
+import yaml
 from ase.io import read
 
 # Work whether or not `pip install -e .` was run (see pyproject.toml).
@@ -32,9 +34,17 @@ def _seed_force_stack(atoms, prefix):
 def main():
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("frames")
-    ap.add_argument("--aggregate", choices=["max", "mean"], default="max")
+    ap.add_argument("--aggregate", choices=["max", "mean"], default=None,
+                    help="atom-to-frame reduction; mean matches the SiO2 manuscript")
+    ap.add_argument("--config", help="optional configs/uncertainty.yaml")
     ap.add_argument("--top-fraction", type=float, default=0.10)
+    ap.add_argument("--output", help="optional JSON report path")
     args = ap.parse_args()
+    aggregate = args.aggregate
+    if args.config:
+        with open(args.config) as handle:
+            aggregate = aggregate or yaml.safe_load(handle).get("aggregate")
+    aggregate = aggregate or "mean"
 
     frames = read(args.frames, index=":")
     sigma_scores, true_errors = [], []
@@ -45,7 +55,7 @@ def main():
         if seed_forces is None or teacher_forces is None:
             skipped += 1
             continue
-        _, frame_sigma = committee_force_std(seed_forces, aggregate=args.aggregate)
+        _, frame_sigma = committee_force_std(seed_forces, aggregate=aggregate)
         student_mean = seed_forces.mean(axis=0)
         true_frame_error = np.abs(student_mean - teacher_forces).mean()
         sigma_scores.append(frame_sigma)
@@ -61,7 +71,15 @@ def main():
     rho = spearman(sigma_scores, true_errors)
     recall, enrichment, k = top_decile_enrichment(sigma_scores, true_errors, args.top_fraction)
 
+    result = {"schema_version": 1, "n_frames": len(sigma_scores),
+              "aggregate": aggregate, "pearson": r, "spearman": rho,
+              "top_fraction": args.top_fraction, "top_k": k,
+              "top_error_recall": recall, "enrichment_over_random": enrichment}
+    if args.output:
+        Path(args.output).write_text(json.dumps(result, indent=2) + "\n")
+
     print(f"n_frames={len(sigma_scores)}")
+    print(f"aggregate={aggregate}")
     print(f"sigma_F <-> student-teacher force error:  Pearson r={r:.3f}  Spearman rho={rho:.3f}")
     print(f"top-{args.top_fraction:.0%} sigma_F recall of top-{args.top_fraction:.0%} true error: "
           f"{recall:.1%}  ({enrichment:.1f}x over random)  k={k}")

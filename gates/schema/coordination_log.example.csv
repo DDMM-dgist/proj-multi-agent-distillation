@@ -1,3 +1,3 @@
 timestamp,gate,target,decision,PASS,REVISE,FAIL,note
-2026-01-01T00:00,student-accuracy-gate,student_committee_v1,PASS,3,0,0,"example row — unanimous; force MAE within threshold, teacher ceiling reported"
+2026-01-01T00:00,student-accuracy-gate,student_committee_v1,PASS,3,0,0,"example row — unanimous; force MAE within threshold, teacher baseline reported"
 2026-01-01T01:15,data-provenance-gate,cell_014,REVISE,2,1,0,"example row — one judge flagged an unverifiable k-density setting"

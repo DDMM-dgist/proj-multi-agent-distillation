@@ -24,6 +24,20 @@ def _sha256(path):
     return h.hexdigest()
 
 
+def langevin_friction(cfg):
+    """Return friction in inverse ASE time units from an explicitly unit-tagged config."""
+    if "friction_per_fs" in cfg:
+        return float(cfg["friction_per_fs"]) / units.fs
+    if "friction_ase_time_inverse" in cfg:
+        return float(cfg["friction_ase_time_inverse"])
+    if "friction" in cfg:
+        raise ValueError(
+            "ambiguous teacher-MD field 'friction'; use friction_per_fs or "
+            "friction_ase_time_inverse"
+        )
+    raise ValueError("teacher-MD config requires friction_per_fs")
+
+
 def run_augment_atoms(cfg, seed_path, out_path):
     """Run a configured augment-atoms wrapper without assuming its CLI version."""
     context = {"seed_path": str(Path(seed_path).resolve()), "out_path": str(Path(out_path).resolve())}
@@ -49,7 +63,7 @@ def run_teacher_md(cfg, teacher_cfg, seed_path, out_path):
         MaxwellBoltzmannDistribution(atoms, temperature_K=temperature,
                                      rng=np.random.default_rng(int(cfg.get("seed", 0)) + seed_index))
         dyn = Langevin(atoms, float(cfg.get("timestep_fs", 1.0)) * units.fs,
-                       temperature_K=temperature, friction=float(cfg.get("friction", 0.01)))
+                       temperature_K=temperature, friction=langevin_friction(cfg))
         stride = int(cfg.get("snapshot_interval", 100))
         n_steps = int(cfg["n_steps"])
 

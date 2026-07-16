@@ -1,3 +1,4 @@
+import json
 import tempfile
 import unittest
 from pathlib import Path
@@ -8,14 +9,18 @@ from ase import Atoms
 from ase.io import read, write
 
 from adapters import load_config
+from adapters.acquisition import langevin_friction
 from adapters.contracts import PredictionBatch
 from adapters.reference_dft import render_incar
-from adapters.preflight import check_student_config
-from adapters.student import _train_grace_fs, lammps_pair_style_block, load_student
+from adapters.preflight import (check_acquisition_config, check_student_config,
+                                check_teacher_config, check_validation_profile)
+from adapters.student import (_render_simple_nn_config, _train_grace_fs,
+                              lammps_pair_style_block, load_student)
 from adapters.teacher import teacher_model_reference
-from adapters.uncertainty import spearman
-from validation.structure_dynamics import compute_msd, compute_nve_drift
-from validation.surface_energy import surface_energy
+from adapters.uncertainty import committee_force_std, spearman
+from validation.structure_dynamics import compute_msd, compute_nve_drift, read_energy_log
+from validation.surface_energy import surface_energy, validate_surface_manifest
+from workflow.contracts import validate_validation_manifest
 from workflow.steps import split_dataset
 
 
@@ -64,8 +69,51 @@ class AdapterContractTests(unittest.TestCase):
                "deploy": {"elements": ["Mo", "Nb", "Ta"]}}
         self.assertIn("training environment=remote-env", check_student_config(cfg, check_files=False))
 
+    def test_pilot_preflight_rejects_placeholders_and_missing_mace_head(self):
+        student = {"kind": "grace-fs", "train": {"config_template": "unused"},
+                   "deploy": {"elements": ["A", "B", "C"]}}
+        with self.assertRaisesRegex(ValueError, "placeholder"):
+            check_student_config(student, check_files=False, require_ready=True)
+        teacher = {"kind": "mace-mh1", "model": "model", "calculator": {
+            "factory": "mace.calculators.mace_mp", "kwargs": {}}}
+        with self.assertRaisesRegex(ValueError, "head"):
+            check_teacher_config(teacher, check_files=False)
+
+    def test_preflight_requires_teacher_md_friction_units_and_resolved_thresholds(self):
+        acquisition = {"kind": "teacher-md", "temperature_K": 1000, "timestep_fs": 1,
+                       "n_steps": 10, "snapshot_interval": 1, "friction": 0.01}
+        with self.assertRaisesRegex(ValueError, "friction"):
+            check_acquisition_config(acquisition)
+        profile = {"kind": "x", "checks": ["surface_excess_energy"],
+                   "surface_energetics": {"thresholds": {"student_dft": None}}}
+        with self.assertRaisesRegex(ValueError, "unresolved"):
+            check_validation_profile(profile, require_ready=True)
+
     def test_surface_energy_uses_all_exposed_surfaces(self):
         self.assertAlmostEqual(surface_energy(12.0, 10.0, 5.0, 2), 0.2)
+
+    def test_surface_manifest_requires_comparable_protocols_and_recomputes_values(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "surface.json"
+            base = {
+                "orientation": "(1 1 0)", "termination": "t1", "area_a2": 10.0,
+                "n_surfaces": 2, "geometry_protocol": "g1",
+                "reference_convention": "bulk-v1", "composition_balance_confirmed": True,
+                "nonstoichiometric": False, "slab_energy_ev": 12.0,
+                "bulk_reference_ev": 10.0, "surface_energy_J_m2": 1.602176634,
+            }
+            entries = [dict(base, method=method) for method in ("teacher", "student", "dft")]
+            path.write_text(json.dumps({"quantity": "static_surface_excess_energy",
+                                        "unit": "J/m2", "entries": entries}))
+            validate_surface_manifest(path, ["teacher", "student", "dft"])
+            validate_validation_manifest(
+                path, "validation.surface_energy.validate_surface_manifest",
+                {"required_methods": ["teacher", "student", "dft"]})
+            entries[1]["orientation"] = "(1 0 0)"
+            path.write_text(json.dumps({"quantity": "static_surface_excess_energy",
+                                        "unit": "J/m2", "entries": entries}))
+            with self.assertRaisesRegex(ValueError, "same geometry"):
+                validate_surface_manifest(path, ["teacher", "student", "dft"])
 
     def test_msd_unwraps_periodic_boundary_crossing(self):
         first = Atoms("H", positions=[[9.9, 0, 0]], cell=[10, 10, 10], pbc=True)
@@ -80,6 +128,30 @@ class AdapterContractTests(unittest.TestCase):
 
     def test_spearman_uses_average_ranks_for_ties(self):
         self.assertAlmostEqual(spearman([1, 1, 2], [1, 2, 3]), 0.8660254037844387)
+
+    def test_committee_sigma_matches_cartesian_rms_definition(self):
+        forces = np.array([[[1.0, 0.0, 0.0]], [[-1.0, 0.0, 0.0]]])
+        per_atom, frame = committee_force_std(forces, aggregate="mean")
+        self.assertAlmostEqual(per_atom[0], 1.0 / np.sqrt(3.0))
+        self.assertAlmostEqual(frame, per_atom[0])
+
+    def test_teacher_md_friction_is_explicitly_per_fs(self):
+        from ase import units
+        self.assertAlmostEqual(langevin_friction({"friction_per_fs": 0.01}), 0.01 / units.fs)
+        with self.assertRaisesRegex(ValueError, "ambiguous"):
+            langevin_friction({"friction": 0.01})
+
+    def test_energy_log_reader_accepts_standard_csv_and_legacy_whitespace(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            csv_path = root / "energy.csv"
+            csv_path.write_text("step,temperature,potential_energy,kinetic_energy,total_energy\n0,300,-2,1,-1\n10,300,-1.9,1,-0.9\n")
+            old_path = root / "energy.dat"
+            old_path.write_text("step temp pe ke etotal\n0 300 -2 1 -1\n10 300 -1.9 1 -0.9\n")
+            for path in (csv_path, old_path):
+                steps, energies = read_energy_log(path)
+                np.testing.assert_array_equal(steps, [0, 10])
+                np.testing.assert_allclose(energies, [-1.0, -0.9])
 
     def test_grace_fs_runner_preserves_seed_in_train_and_export(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -102,6 +174,23 @@ class AdapterContractTests(unittest.TestCase):
                 self.assertEqual(_train_grace_fs(cfg, dataset, out, 3), artifact)
             self.assertEqual(run.call_args_list[0].args[0][:3], ["gracemaker", "--seed", "3"])
             self.assertIn("-sf", run.call_args_list[1].args[0])
+
+    def test_simple_nn_template_is_rendered_without_placeholders(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            template = root / "template.yaml"
+            params = root / "params_X"
+            template.write_text("params: {X_PARAMS_PATH}\nepochs: {TOTAL_EPOCH}\nprecision: {DOUBLE_PRECISION}\nrate: {LEARNING_RATE}\n")
+            params.write_text("descriptor")
+            cfg = {"_project_dir": str(root), "train": {
+                "config_template": str(template), "descriptor_params": {"X": str(params)},
+                "nodes": "10-10", "batch_size": 4, "total_epoch": 20,
+                "learning_rate": 0.001, "double_precision": True, "use_stress": False}}
+            rendered = _render_simple_nn_config(cfg, root / "out")
+            text = rendered.read_text()
+            self.assertIn("epochs: 20", text)
+            self.assertIn("precision: true", text)
+            self.assertNotRegex(text, r"\{[A-Z_]+\}")
 
     def test_dataset_split_keeps_parent_groups_disjoint(self):
         with tempfile.TemporaryDirectory() as tmp:

@@ -1,8 +1,8 @@
 # Worked example: SiO2, Allegro → SIMPLE-NN
 
 This is the instance this toolkit was extracted from — the one case run
-end-to-end so far (see the manuscript, *"An Autonomous, Auditable Multi-Agent
-Workflow for MLIP Distillation"*, target: Digital Discovery).
+end-to-end so far (see the manuscript, *"Auditable Multi-Agent Orchestration
+for MLIP Distillation"*).
 
 ## What's here vs. what isn't
 
@@ -42,4 +42,4 @@ If you have access to it, the mapping is:
    silica-specific checks with your material's.
 2. If your teacher/student `kind` isn't implemented yet in `adapters/`, add it
    there (see `configs/README.md` for the interface each adapter function needs
-   to satisfy) — this is usually the only code that needs writing.
+   to satisfy).
