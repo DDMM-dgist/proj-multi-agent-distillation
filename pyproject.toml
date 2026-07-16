@@ -6,7 +6,7 @@ build-backend = "setuptools.build_meta"
 name = "distillation-agents"
 version = "0.1.0"
 description = "Genericized multi-agent workflow for teacher->student MLIP distillation"
-requires-python = ">=3.9"
+requires-python = ">=3.10"
 dependencies = [
     "ase>=3.22",
     "numpy>=1.24",

@@ -22,4 +22,6 @@ still exist. Explain where the run stopped and why.
 - If the next stage is inexpensive and already approved, continue it through
   the controller.
 
-Never create a new run as a substitute for resuming an existing one.
+Resume an intact run when its bound inputs and code are unchanged. If the code
+revision changed, explain why the controller blocks continuation and propose a
+new, explicitly linked run; do not silently treat it as the old run.

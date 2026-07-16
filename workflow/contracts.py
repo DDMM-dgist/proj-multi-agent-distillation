@@ -1,5 +1,6 @@
 """Deterministic contracts for scheduler/agent-produced external stages."""
 import importlib
+import inspect
 import json
 from pathlib import Path
 
@@ -75,16 +76,25 @@ def validate_md_manifest(manifest_path, expected_committee_manifest, submitted_a
     return payload
 
 
-def validate_validation_manifest(manifest_path, validator, options=None):
+def validate_validation_manifest(manifest_path, validator, options=None, submitted_artifacts=None,
+                                 allowed_evidence=None, enforce_required_pass=False):
     """Dispatch an external validation artifact to a config-selected validator.
 
-    The core knows only the validation contract. Observable-specific logic lives
-    under ``validation/`` and is selected by dotted callable path.
+    The core knows only the validation contract. Observable-specific logic is
+    selected by a hash-bound dotted callable path; built-ins live under
+    ``validation/`` and external adapters may live in their own package.
     """
-    if not isinstance(validator, str) or not validator.startswith("validation."):
-        raise ValueError("validation contract requires a validator under validation.*")
+    if not isinstance(validator, str) or "." not in validator:
+        raise ValueError("validation contract requires a dotted validator callable")
     module_name, callable_name = validator.rsplit(".", 1)
     function = getattr(importlib.import_module(module_name), callable_name, None)
     if not callable(function):
         raise ValueError(f"validation contract callable is invalid: {validator}")
-    return function(manifest_path, **dict(options or {}))
+    kwargs = dict(options or {})
+    if "submitted_artifacts" in inspect.signature(function).parameters:
+        kwargs["submitted_artifacts"] = submitted_artifacts
+    if "allowed_evidence" in inspect.signature(function).parameters:
+        kwargs["allowed_evidence"] = allowed_evidence
+    if "enforce_required_pass" in inspect.signature(function).parameters:
+        kwargs["enforce_required_pass"] = enforce_required_pass
+    return function(manifest_path, **kwargs)

@@ -1,5 +1,6 @@
 """Structure acquisition and teacher pseudo-labeling backends."""
 import hashlib
+import importlib
 import importlib.metadata
 import json
 import platform
@@ -8,12 +9,14 @@ from pathlib import Path
 
 import numpy as np
 from ase import units
+from ase.constraints import FixCom
 from ase.io import read, write
 from ase.md.langevin import Langevin
 from ase.md.velocitydistribution import MaxwellBoltzmannDistribution
 
 from adapters import load_config, resolve_config_path
 from adapters.teacher import load_teacher, teacher_model_reference
+from workflow.integrity import artifact_digest
 
 
 def _sha256(path):
@@ -58,19 +61,37 @@ def run_teacher_md(cfg, teacher_cfg, seed_path, out_path):
         parent_id = source.info.get("parent_structure_id",
                                     source.info.get("structure_id", f"seed-{seed_index:08d}"))
         atoms = source.copy()
+        fix_center_of_mass = cfg.get("fix_center_of_mass", True)
+        if fix_center_of_mass and not any(isinstance(item, FixCom)
+                                          for item in atoms.constraints):
+            atoms.set_constraint([*atoms.constraints, FixCom()])
         atoms.calc = calc
         temperature = float(cfg["temperature_K"])
+        random_seed = int(cfg.get("seed", 0)) + seed_index
+        rng = np.random.default_rng(random_seed)
         MaxwellBoltzmannDistribution(atoms, temperature_K=temperature,
-                                     rng=np.random.default_rng(int(cfg.get("seed", 0)) + seed_index))
+                                     rng=rng)
+        friction = langevin_friction(cfg)
         dyn = Langevin(atoms, float(cfg.get("timestep_fs", 1.0)) * units.fs,
-                       temperature_K=temperature, friction=langevin_friction(cfg))
+                       temperature_K=temperature, friction=friction, rng=rng,
+                       fixcm=False)
         stride = int(cfg.get("snapshot_interval", 100))
         n_steps = int(cfg["n_steps"])
 
         def capture():
             frame = atoms.copy()
             frame.info.update(acquisition="teacher-md", seed_structure_index=seed_index,
-                              temperature_K=temperature, parent_structure_id=str(parent_id))
+                              temperature_K=temperature, parent_structure_id=str(parent_id),
+                              random_seed=random_seed,
+                              fix_center_of_mass=bool(fix_center_of_mass),
+                              timestep_fs=float(cfg.get("timestep_fs", 1.0)),
+                              n_steps=n_steps, snapshot_interval=stride)
+            if "friction_per_fs" in cfg:
+                frame.info["friction_per_fs"] = float(cfg["friction_per_fs"])
+            else:
+                frame.info["friction_ase_time_inverse"] = float(
+                    cfg["friction_ase_time_inverse"]
+                )
             snapshots.append(frame)
 
         dyn.attach(capture, interval=stride)
@@ -81,6 +102,15 @@ def run_teacher_md(cfg, teacher_cfg, seed_path, out_path):
 
 def acquire(acquisition_cfg, teacher_cfg, seed_path, out_path):
     kind = acquisition_cfg["kind"]
+    adapter = acquisition_cfg.get("adapter", {}).get("acquire")
+    if adapter:
+        module_name, name = adapter.rsplit(".", 1)
+        function = getattr(importlib.import_module(module_name), name, None)
+        if not callable(function):
+            raise TypeError(f"configured acquisition callable is invalid: {adapter}")
+        result = Path(function(acquisition_cfg, teacher_cfg, seed_path, out_path))
+        validate_lineage(result)
+        return result
     if kind == "augment-atoms":
         result = run_augment_atoms(acquisition_cfg, seed_path, out_path)
         validate_lineage(result)
@@ -89,7 +119,9 @@ def acquire(acquisition_cfg, teacher_cfg, seed_path, out_path):
         result = run_teacher_md(acquisition_cfg, teacher_cfg, seed_path, out_path)
         validate_lineage(result)
         return result
-    raise NotImplementedError(f"acquisition kind={kind!r} is not implemented")
+    raise NotImplementedError(
+        f"acquisition kind={kind!r} requires adapter.acquire or a built-in recipe"
+    )
 
 
 def validate_lineage(structures_path, grouping_key="parent_structure_id"):
@@ -119,7 +151,10 @@ def label_with_teacher(teacher_cfg, structures_path, out_path, manifest_path, in
     model_path = Path(model_value).expanduser() if model_value else None
     config_path = teacher_cfg.get("_config_path")
     packages = {}
-    for package in ("ase", "numpy", "mace-torch", "nequip"):
+    package_names = list(dict.fromkeys(
+        ["ase", "numpy", *teacher_cfg.get("provenance", {}).get("packages", [])]
+    ))
+    for package in package_names:
         try:
             packages[package] = importlib.metadata.version(package)
         except importlib.metadata.PackageNotFoundError:
@@ -128,9 +163,13 @@ def label_with_teacher(teacher_cfg, structures_path, out_path, manifest_path, in
         "schema_version": 1,
         "teacher_kind": teacher_cfg["kind"],
         "teacher_model": model_value,
-        "teacher_model_sha256": _sha256(model_path) if model_path and model_path.is_file() else None,
+        "teacher_model_integrity": (artifact_digest(model_path)
+                                    if model_path and model_path.exists() else None),
+        "teacher_model_sha256": (_sha256(model_path)
+                                 if model_path and model_path.is_file() else None),
         "teacher_head": teacher_cfg.get("calculator", {}).get("kwargs", {}).get("head"),
         "calculator": teacher_cfg.get("calculator", {}),
+        "teacher_config_integrity": artifact_digest(config_path) if config_path else None,
         "teacher_config_sha256": _sha256(config_path) if config_path else None,
         "source": str(Path(structures_path).resolve()),
         "source_sha256": _sha256(structures_path),

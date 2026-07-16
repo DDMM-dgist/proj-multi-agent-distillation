@@ -1,0 +1,4 @@
+kind: mock-structure
+checks: [coordination]
+thresholds:
+  coordination_cutoffs_angstrom: {default: 3.0}

@@ -1,5 +1,7 @@
 kind: committee-force-std   # sigma_F: per-atom force std across the N student-committee seeds
 aggregate: mean             # manuscript definition; use max for a worst-atom acquisition score
+top_fraction: 0.10          # fraction used for top-error recall/enrichment
+require_complete: true      # fail if any evaluation frame lacks committee/teacher forces
 # Honesty note (see validation/committee_uncertainty.py and the manuscript SI):
 # sigma_F ranks WHERE the student diverges from ITS OWN TEACHER (fidelity), and is
 # only rank-correlated (not magnitude-correlated) with the teacher's own DFT error.

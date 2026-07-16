@@ -1,0 +1,14 @@
+kind: null
+adapter:
+  train: null
+  load: null
+  deploy: null
+  preflight: null
+committee:
+  n_seeds: 4
+predict:
+  factory: null
+  checkpoint_arg: checkpoint
+  kwargs: {}
+deploy:
+  elements: []

@@ -1,0 +1,9 @@
+kind: null
+model: null
+calculator:
+  factory: null
+  model_arg: model
+  kwargs: {}
+provenance:
+  packages: []
+emits_stress: null

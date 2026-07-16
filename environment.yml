@@ -1,63 +1,15 @@
-# Conda environment — versions verified for the SiO2 / Allegro / SIMPLE-NN
-# reference case. If you plug in a different teacher/student `kind`, you will
-# likely need a DIFFERENT environment for that model (e.g. a MACE install) —
-# see the note in configs/README.md. Multiple environments (one per model
-# family) is normal and expected; adapters/ resolves which python interpreter
-# to invoke per `configs/*.yaml` (see the `env` field in each config).
-#
-# This project historically used THREE separate conda envs rather than one
-# shared one, because the teacher/student/augmentation tools pin conflicting
-# dependency versions:
-#   - teacher (nequip/allegro) training + inference
-#   - student (simple-nn) training + inference
-#   - augmentation (augment-atoms) — an older, separate nequip install
-#
-# Adjust names/channels for your own teacher/student combination.
+# Minimal environment for the model-independent controller, adapters, mock
+# workflow, and validation utilities. Teacher/student/MD/reference packages
+# belong in run- or case-specific environments selected by workflow stage `env`.
 
-name: distill-teacher-allegro
-channels:
-  - conda-forge
-  - pytorch
-  - nvidia
+name: distillation-workflow
+channels: [conda-forge]
 dependencies:
   - python=3.10
   - pip
-  - pytorch=2.6
-  - pytorch-cuda=12.1
+  - numpy>=1.24
+  - scipy>=1.10
+  - pyyaml>=6.0
   - ase>=3.22
-  - numpy
-  - scipy
-  - pyyaml
   - pip:
-      - nequip==0.15.*
-      - allegro==0.7.1
-
-# --- second env, save as environment.student.yml if you keep them separate ---
-# name: distill-student-simplenn
-# channels: [conda-forge]
-# dependencies:
-#   - python=3.10
-#   - pip
-#   - numpy
-#   - ase>=3.22
-#   - pip:
-#       - simple-nn  # SIMPLE-NN v2; install per its own docs (not on PyPI as of writing)
-
-# --- third env, save as environment.augment.yml if needed ---
-# name: distill-augment
-# channels: [conda-forge]
-# dependencies:
-#   - python=3.9
-#   - pip
-#   - ase
-#   - pip:
-#       - augment-atoms
-#       - nequip==0.6.*   # older nequip pin — augment-atoms's calculator import
-#                          # path differs from the training env; not a bug, see
-#                          # agents/data-curator.md
-
-# --- external, not pip/conda-installable ---
-# - LAMMPS, built with the pair_style your student `kind` needs
-#     (pair_style nn for SIMPLE-NN, pair_style allegro for an Allegro-family
-#     model, pair_style mace for MACE, ...). Build per that package's docs.
-# - VASP (or QE/CP2K/...) for DFT reference labels + your own POTCAR license.
+      - -e .

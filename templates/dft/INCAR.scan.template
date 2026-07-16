@@ -1,5 +1,5 @@
 # SCAN single-point template (VASP). Rendered by
-# adapters.reference_dft.render_incar() from configs/reference_dft.yaml.
+# adapters.reference_dft.render_incar() from the active reference config.
 # Two-stage protocol assumed: a PBE step provides the initial WAVECAR, then
 # this SCAN single-point restarts from it (ISTART=1, ICHARG=0) — adjust if
 # your workflow does a direct SCAN run instead.
@@ -19,11 +19,8 @@ EDIFF  = 1E-6
 KSPACING = {KSPACING}
 KGAMMA   = .TRUE.
 
-# metaGGA SCAN
-METAGGA  = SCAN
-LASPH    = .TRUE.
-LMIXTAU  = .TRUE.
-LDIAG    = .FALSE.
+# Exchange-correlation protocol supplied by the active DFT config
+{XC_BLOCK}
 
 # Electronic structure
 ISMEAR = {ISMEAR}

@@ -5,3 +5,4 @@ friction_per_fs: 0.01
 n_steps: 10000
 snapshot_interval: 100
 seed: 2026
+fix_center_of_mass: true

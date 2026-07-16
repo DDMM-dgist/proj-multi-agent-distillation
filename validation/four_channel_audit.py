@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Four-channel error audit: teacher-vs-DFT, student-vs-teacher, student-vs-DFT,
 and (optionally) student-MD-trajectory-vs-DFT. This is the core diagnostic
-methodology (see agents/analyst.md) and is fully material/architecture-
+methodology (see agents/analyst.md) and is material/architecture-
 independent — it only reads labels off structures, never model internals.
 
 Expected input: one extxyz file where each frame carries whichever of the
@@ -53,24 +53,32 @@ def r2(ref, pred):
     return 1 - ss_res / ss_tot if ss_tot else float("nan")
 
 
-def channel(frames, ref_prefix, pred_prefix, per_config_type=False):
+def channel(frames, ref_prefix, pred_prefix, per_config_type=False, require_complete=False):
     """Raw and global-shift-aligned per-atom energy errors plus force errors.
 
     The aligned metric is diagnostic only. For mixed compositions and surface
     terminations, use the raw metric or a separately fitted per-element reference.
     """
     rows = []
-    for a in frames:
+    missing = []
+    for index, a in enumerate(frames):
         e_ref = committee_mean_energy(a, ref_prefix)
         e_pred = committee_mean_energy(a, pred_prefix)
         f_ref = committee_mean_forces(a, ref_prefix)
         f_pred = committee_mean_forces(a, pred_prefix)
         if e_ref is None or e_pred is None or f_ref is None or f_pred is None:
+            missing.append(index)
             continue
         rows.append(dict(
             n=len(a), e_ref=e_ref, e_pred=e_pred, f_ref=f_ref, f_pred=f_pred,
             config_type=a.info.get("config_type", "unlabeled"),
         ))
+    if require_complete and missing:
+        preview = ", ".join(map(str, missing[:10]))
+        raise RuntimeError(
+            f"required channel {ref_prefix}_vs_{pred_prefix} is incomplete: "
+            f"{len(rows)}/{len(frames)} frames; missing frame indices: {preview}"
+        )
     if not rows:
         return None
 
@@ -139,7 +147,7 @@ def main():
         "\nDiagnostic reminder: if (b) << (a), the teacher/reference discrepancy "
         "dominates the distillation residual. If (b) ~ (a), inspect channel (c) "
         "and vector alignment before assigning a dominant source. Channel (d) — student-MD "
-        "trajectory vs DFT single-points on carved snapshots — is computed "
+        "trajectory vs DFT single-points on reviewed deployment-relevant snapshots — is computed "
         "separately once production trajectories exist; see agents/simulation.md's "
         "small-cell recipe."
     )

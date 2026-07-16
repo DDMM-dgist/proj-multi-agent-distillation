@@ -29,6 +29,3 @@ deploy:
 #   factory: your_package.simple_nn_ase.make_calculator
 #   checkpoint_arg: checkpoint
 #   kwargs: {}
-label_sources:
-  teacher_labeled_augmented: {approx_n: 10000, generator: augment-atoms}
-  dft_anchor: {approx_n: 0}

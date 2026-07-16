@@ -1,8 +1,7 @@
 """Concrete stage commands used by the persistent run controller."""
 import argparse
+import hashlib
 import json
-import subprocess
-import sys
 from pathlib import Path
 
 import numpy as np
@@ -10,7 +9,7 @@ import yaml
 from ase.io import read, write
 
 from adapters import load_config
-from adapters.md_backend import render_lammps_input, run as run_md_backend
+from adapters.md_backend import render_input as render_md_input, run as run_md_backend
 from adapters.student import load_student, predict_student, train_student
 from validation.four_channel_audit import channel
 from workflow.integrity import artifact_digest, sha256_file, verify_artifact
@@ -71,6 +70,75 @@ def split_dataset(dataset, output_dir, manifest, seed=2026, validation_fraction=
     return result
 
 
+def _structure_fingerprint(atoms):
+    """Exact geometry fingerprint for duplicate control; no tolerance is implied."""
+    payload = {
+        "numbers": atoms.numbers.tolist(), "positions": atoms.positions.tolist(),
+        "cell": atoms.cell.array.tolist(), "pbc": atoms.pbc.tolist(),
+    }
+    return hashlib.sha256(json.dumps(payload, sort_keys=True,
+                                     separators=(",", ":")).encode()).hexdigest()
+
+
+def merge_datasets(sources, output, manifest, grouping_key="parent_structure_id",
+                   duplicate_policy="error"):
+    """Merge acquisition outputs while preserving lineage and recording schemas.
+
+    This intentionally does not align labels or mix reference conventions.
+    Such transformations require an explicit, reviewed project-specific stage.
+    """
+    if duplicate_policy not in {"error", "keep-first", "keep"}:
+        raise ValueError("duplicate_policy must be error, keep-first, or keep")
+    merged, seen, duplicate_count, source_records = [], {}, 0, []
+    for source_index, raw_path in enumerate(sources):
+        path = Path(raw_path).resolve()
+        frames = read(path, index=":")
+        schemas = set()
+        accepted = 0
+        for frame_index, atoms in enumerate(frames):
+            if grouping_key not in atoms.info:
+                raise ValueError(
+                    f"{path} frame {frame_index} is missing lineage key {grouping_key!r}"
+                )
+            fingerprint = _structure_fingerprint(atoms)
+            if fingerprint in seen:
+                duplicate_count += 1
+                if duplicate_policy == "error":
+                    raise ValueError(
+                        f"exact duplicate structure in {path} frame {frame_index}; "
+                        f"first seen at {seen[fingerprint]}"
+                    )
+                if duplicate_policy == "keep-first":
+                    continue
+            else:
+                seen[fingerprint] = f"source {source_index} frame {frame_index}"
+            original_id = atoms.info.get("structure_id", f"frame-{frame_index:08d}")
+            atoms.info["source_structure_id"] = str(original_id)
+            atoms.info["structure_id"] = (
+                f"source-{source_index:03d}:frame-{frame_index:08d}:{original_id}"
+            )
+            atoms.info["acquisition_source"] = str(path)
+            schemas.add((tuple(sorted(atoms.info)), tuple(sorted(atoms.arrays))))
+            merged.append(atoms)
+            accepted += 1
+        source_records.append({"path": str(path), "integrity": artifact_digest(path),
+                               "n_frames": len(frames), "n_accepted": accepted,
+                               "schemas": [{"info": list(info), "arrays": list(arrays)}
+                                           for info, arrays in sorted(schemas)]})
+    if not merged:
+        raise ValueError("dataset merge produced no structures")
+    output = Path(output)
+    output.parent.mkdir(parents=True, exist_ok=True)
+    write(output, merged)
+    result = {"schema_version": 1, "operation": "merge-acquisitions",
+              "grouping_key": grouping_key, "duplicate_policy": duplicate_policy,
+              "n_frames": len(merged), "n_exact_duplicates": duplicate_count,
+              "sources": source_records, "output": str(output.resolve()),
+              "output_integrity": artifact_digest(output)}
+    _write_json(manifest, result)
+    return result
+
+
 def train_committee(student_config, dataset, output_dir, manifest):
     cfg = load_config(student_config)
     output_dir = Path(output_dir)
@@ -78,9 +146,12 @@ def train_committee(student_config, dataset, output_dir, manifest):
     for seed in range(1, int(cfg.get("committee", {}).get("n_seeds", 4)) + 1):
         artifact = train_student(cfg, dataset, output_dir / f"seed-{seed}", seed)
         models.append({"kind": artifact.kind, "seed": seed, "path": str(artifact.path),
-                       "integrity": artifact_digest(artifact.path)})
+                       "integrity": artifact_digest(artifact.path),
+                       "metadata": artifact.metadata})
     result = {"schema_version": 1, "student_config": str(Path(student_config).resolve()),
-              "dataset": str(Path(dataset).resolve()), "models": models}
+              "student_config_integrity": artifact_digest(student_config),
+              "dataset": str(Path(dataset).resolve()),
+              "dataset_integrity": artifact_digest(dataset), "models": models}
     _write_json(manifest, result)
     return result
 
@@ -94,17 +165,30 @@ def evaluate_committee(student_config, committee_manifest, frames_path, labeled_
     frames = read(frames_path, index=":")
     for model in committee["models"]:
         prediction = predict_student(cfg, load_student(cfg, model["path"]), frames)
+        if len(prediction.energies) != len(frames):
+            raise RuntimeError(
+                f"committee seed {model['seed']} returned {len(prediction.energies)} predictions "
+                f"for {len(frames)} held-out frames"
+            )
+        for index, (atoms, forces) in enumerate(zip(frames, prediction.forces)):
+            if np.asarray(forces).shape != (len(atoms), 3):
+                raise RuntimeError(
+                    f"committee seed {model['seed']} returned invalid force shape at frame "
+                    f"{index}: {np.asarray(forces).shape}"
+                )
         key = f"{int(model['seed']):02d}"
         for atoms, energy, forces in zip(frames, prediction.energies, prediction.forces):
             atoms.info[f"student_energy_seed{key}"] = float(energy)
             atoms.arrays[f"student_forces_seed{key}"] = np.asarray(forces)
     write(labeled_output, frames)
     results = {}
+    required_channels = set(required_channels or [])
     for label, ref, pred in (("teacher_vs_dft", "dft", "teacher"),
                              ("student_vs_teacher", "teacher", "student"),
                              ("student_vs_dft", "dft", "student")):
-        results[label] = channel(frames, ref, pred, per_config_type=True)
-    missing = [name for name in (required_channels or []) if results.get(name) is None]
+        results[label] = channel(frames, ref, pred, per_config_type=True,
+                                 require_complete=label in required_channels)
+    missing = [name for name in required_channels if results.get(name) is None]
     if missing:
         raise RuntimeError("required evaluation channels have missing labels: " + ", ".join(missing))
     _write_json(report, results)
@@ -115,7 +199,7 @@ def run_md(md_config, student_config, checkpoint, template_name, context_yaml, i
            manifest, committee_manifest=None, selected_seed=None, evidence_paths=None):
     md_cfg, student_cfg = load_config(md_config), load_config(student_config)
     context = yaml.safe_load(Path(context_yaml).read_text())
-    render_lammps_input(md_cfg, student_cfg, checkpoint, template_name, context, input_path)
+    render_md_input(md_cfg, student_cfg, checkpoint, template_name, context, input_path)
     run_md_backend(md_cfg, input_path, run_dir, mpi_ranks=int(context.get("MPI_RANKS", 1)))
     checkpoint = Path(checkpoint).resolve()
     evidence = [{"role": "input", "path": str(Path(input_path).resolve()),
@@ -140,14 +224,6 @@ def run_md(md_config, student_config, checkpoint, template_name, context_yaml, i
     return result
 
 
-def capture_validation(command, report):
-    result = subprocess.run(command, check=True, text=True, capture_output=True)
-    payload = {"schema_version": 1, "command": command, "stdout": result.stdout,
-               "stderr": result.stderr, "returncode": result.returncode}
-    _write_json(report, payload)
-    return payload
-
-
 def main():
     p = argparse.ArgumentParser(description=__doc__)
     sub = p.add_subparsers(dest="action", required=True)
@@ -165,8 +241,6 @@ def main():
     md.add_argument("--committee-manifest")
     md.add_argument("--selected-seed", type=int)
     md.add_argument("--evidence", action="append", default=[], metavar="ROLE=PATH")
-    validate = sub.add_parser("capture-validation")
-    validate.add_argument("report"); validate.add_argument("command", nargs=argparse.REMAINDER)
     split = sub.add_parser("split-dataset")
     split.add_argument("dataset"); split.add_argument("output_dir"); split.add_argument("manifest")
     split.add_argument("--seed", type=int, default=2026)
@@ -174,11 +248,20 @@ def main():
     split.add_argument("--test-fraction", type=float, default=0.1)
     split.add_argument("--grouping-key", default="parent_structure_id")
     split.add_argument("--allow-unique-parent-fallback", action="store_true")
+    merge = sub.add_parser("merge-datasets")
+    merge.add_argument("output"); merge.add_argument("manifest")
+    merge.add_argument("--source", action="append", required=True)
+    merge.add_argument("--grouping-key", default="parent_structure_id")
+    merge.add_argument("--duplicate-policy", choices=["error", "keep-first", "keep"],
+                       default="error")
     args = p.parse_args()
     if args.action == "split-dataset":
         split_dataset(args.dataset, args.output_dir, args.manifest, args.seed,
                       args.validation_fraction, args.test_fraction, args.grouping_key,
                       args.allow_unique_parent_fallback)
+    elif args.action == "merge-datasets":
+        merge_datasets(args.source, args.output, args.manifest, args.grouping_key,
+                       args.duplicate_policy)
     elif args.action == "train-committee":
         train_committee(args.student_config, args.dataset, args.output_dir, args.manifest)
     elif args.action == "evaluate-committee":
@@ -188,10 +271,6 @@ def main():
         run_md(args.md_config, args.student_config, args.checkpoint, args.template,
                args.context_yaml, args.input_path, args.run_dir, args.manifest,
                args.committee_manifest, args.selected_seed, args.evidence)
-    else:
-        if not args.command:
-            p.error("capture-validation requires a command after --")
-        capture_validation(args.command, args.report)
 
 
 if __name__ == "__main__":

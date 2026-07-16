@@ -14,11 +14,6 @@ surface_energetics:
   thresholds:
     student_teacher_max_abs_J_m2: null
     student_dft_max_abs_J_m2: null
-  finite_temperature:
-    enabled: false
-    temperature_K: null
-    required_terms: [vibrational, configurational, chemical_potential]
-notes: >
-  For a non-stoichiometric termination, replace the composition-matched bulk
-  reference by an explicitly documented sum of elemental chemical potentials.
-  Static total energies must not be reported as finite-temperature free energies.
+required_pass_observables:
+  - surface_delta:student_teacher
+  - surface_delta:student_dft

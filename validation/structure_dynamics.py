@@ -5,8 +5,7 @@ internals, so it needs no per-teacher/student-`kind` adapter.
 
 Implements the checks common across the toolkit's worked examples:
   rdf, coordination, density, msd, nve_drift
-(adf and sq_fsdp are left as extension points — same pattern, see the
-`# TODO` markers below — because their exact form is more material-specific
+(adf and sq_fsdp are left as extension points because their exact form is more material-specific
 than the others.)
 
 Usage:
@@ -16,25 +15,32 @@ Usage:
 import argparse
 import csv
 import itertools
+import json
+import sys
+from pathlib import Path
 
 import numpy as np
 import yaml
 from ase.io import read
-from ase.geometry.analysis import Analysis
+from ase.geometry.rdf import get_rdf
+
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+from validation.report import evidence_record, make_check
 
 
 def compute_rdf(frames, elements, r_max=6.0, nbins=200):
     """Partial RDFs for each element pair present, averaged over frames."""
     pairs = list(itertools.combinations_with_replacement(sorted(elements), 2))
     out = {}
+    r = None
     for e1, e2 in pairs:
         rdfs = []
         for atoms in frames:
-            ana = Analysis(atoms)
-            rdf = ana.get_rdf(r_max, nbins, elements=[e1, e2])[0]
+            rdf, distances = get_rdf(atoms, r_max, nbins, elements=[e1, e2])
             rdfs.append(rdf)
+            if r is None:
+                r = distances
         out[f"{e1}-{e2}"] = np.mean(rdfs, axis=0)
-    r = np.linspace(0, r_max, nbins)
     return r, out
 
 
@@ -79,6 +85,12 @@ def compute_msd(frames):
     """Per-species MSD relative to the first frame — a coarse, single-run
     estimate; for a real drift/diffusion analysis average over multiple
     committee seeds and independent trajectories."""
+    if not frames:
+        raise ValueError("MSD requires at least one trajectory frame")
+    symbols = frames[0].get_chemical_symbols()
+    if any(len(atoms) != len(frames[0]) or atoms.get_chemical_symbols() != symbols
+           for atoms in frames[1:]):
+        raise ValueError("MSD requires a fixed atom count and atom ordering")
     ref = frames[0].get_positions()
     syms = np.array(frames[0].get_chemical_symbols())
     previous_scaled = frames[0].get_scaled_positions(wrap=True)
@@ -98,9 +110,19 @@ def compute_msd(frames):
 def compute_nve_drift(energies, timestep_fs, n_atoms, sample_interval_steps=1, steps=None):
     """energies: array of total energy per frame (eV). Returns drift in
     meV/atom/ns via a linear fit."""
+    energies = np.asarray(energies, dtype=float)
+    if energies.ndim != 1 or len(energies) < 2 or not np.isfinite(energies).all():
+        raise ValueError("NVE drift requires at least two finite energy samples")
+    if float(timestep_fs) <= 0 or int(n_atoms) <= 0:
+        raise ValueError("NVE drift requires positive timestep and atom count")
+    if int(sample_interval_steps) <= 0:
+        raise ValueError("NVE drift sample interval must be positive")
     if steps is None:
         steps = np.arange(len(energies)) * int(sample_interval_steps)
-    t_ns = np.asarray(steps, dtype=float) * timestep_fs * 1e-6
+    steps = np.asarray(steps, dtype=float)
+    if steps.shape != energies.shape or not np.isfinite(steps).all() or len(np.unique(steps)) < 2:
+        raise ValueError("NVE drift steps must be finite, distinct, and match the energies")
+    t_ns = steps * timestep_fs * 1e-6
     e_per_atom_meV = (energies - energies.mean()) / n_atoms * 1000
     slope, intercept = np.polyfit(t_ns, e_per_atom_meV, 1)
     resid = e_per_atom_meV - (slope * t_ns + intercept)
@@ -140,6 +162,7 @@ def main():
     ap.add_argument("validation_profile", help="configs/validation_profile.yaml")
     ap.add_argument("--timestep-fs", type=float, default=1.0)
     ap.add_argument("--temperature-log", help="optional CSV with a total-energy column, for NVE drift")
+    ap.add_argument("--output", help="optional common ValidationReport JSON path")
     args = ap.parse_args()
 
     with open(args.validation_profile) as f:
@@ -148,12 +171,21 @@ def main():
     thresholds = profile.get("thresholds", {})
 
     frames = read(args.trajectory, index=":")
+    if not frames:
+        raise ValueError("validation trajectory contains no frames")
     elements = sorted(set(frames[0].get_chemical_symbols()))
+    report_checks = []
     print(f"loaded {len(frames)} frames, elements={elements}, checks={checks}")
 
     if "density" in checks:
         mean_d, std_d = compute_density(frames)
         target = thresholds.get("density_g_cm3", {})
+        criterion = None
+        if target.get("target") is not None and target.get("tolerance") is not None:
+            criterion = {"operator": "target_tolerance", "target": float(target["target"]),
+                         "tolerance": float(target["tolerance"])}
+        report_checks.append(make_check("structure", "density", mean_d, "g/cm3", criterion,
+                                        details={"standard_deviation": std_d}))
         print(f"density: {mean_d:.4f} +/- {std_d:.4f} g/cm3"
               + (f"  (target {target.get('target')} +/- {target.get('tolerance')})" if target else ""))
 
@@ -161,16 +193,23 @@ def main():
         r, rdfs = compute_rdf(frames, elements)
         for pair, g in rdfs.items():
             peak_r = r[np.argmax(g)]
+            report_checks.append(make_check("structure", f"rdf_peak:{pair}", float(peak_r),
+                                            "Angstrom", details={"max_g_r": float(g.max())}))
             print(f"rdf[{pair}]: first-peak r ~= {peak_r:.3f} A (max g(r)={g.max():.2f})")
 
     if "coordination" in checks:
         cutoffs = thresholds.get("coordination_cutoffs_angstrom", {"default": 3.0})
         cn = compute_coordination(frames, elements, cutoffs)
+        for element, value in cn.items():
+            report_checks.append(make_check("structure", f"coordination:{element}", value,
+                                            "neighbors"))
         print(f"coordination: {cn}")
 
     if "msd" in checks:
         msd = compute_msd(frames)
         for el, series in msd.items():
+            report_checks.append(make_check("dynamics", f"msd_final:{el}",
+                                            float(series[-1]), "Angstrom^2"))
             print(f"msd[{el}]: final={series[-1]:.4f} A^2 "
                   f"(non-diffusive plateau expected: {thresholds.get('msd_diffusive', 'unspecified')})")
 
@@ -182,15 +221,29 @@ def main():
             steps = None
         drift, resid_std = compute_nve_drift(energies, args.timestep_fs, len(frames[0]), steps=steps)
         max_abs = thresholds.get("nve_drift_meV_per_atom_per_ns", {}).get("max_abs")
-        flag = "" if max_abs is None else ("PASS" if abs(drift) < max_abs else "FAIL")
+        criterion = None if max_abs is None else {"operator": "max_abs",
+                                                  "threshold": float(max_abs)}
+        report_checks.append(make_check("stability", "nve_drift", drift,
+                                        "meV/atom/ns", criterion,
+                                        details={"residual_std": resid_std}))
+        flag = "" if max_abs is None else ("PASS" if abs(drift) <= max_abs else "FAIL")
         print(f"nve_drift: {drift:+.4f} +/- {resid_std:.4f} meV/atom/ns {flag}")
 
     for c in ("adf", "sq_fsdp"):
         if c in checks:
-            print(f"{c}: not implemented in this generic script — see the "
-                  f"# TODO markers in validation/structure_dynamics.py to add "
-                  f"a material-specific implementation, or port one from your "
+            report_checks.append(make_check("structure", c, reason="no generic implementation"))
+            print(f"{c}: not implemented in this generic script — add "
+                  f"a material-specific validator, or port one from your "
                   f"own analysis pipeline.")
+
+    if args.output:
+        evidence = [evidence_record("trajectory", args.trajectory),
+                    evidence_record("validation_profile", args.validation_profile)]
+        if args.temperature_log:
+            evidence.append(evidence_record("energy_log", args.temperature_log))
+        payload = {"schema_version": 1, "profile": str(Path(args.validation_profile).resolve()),
+                   "checks": report_checks, "evidence": evidence}
+        Path(args.output).write_text(json.dumps(payload, indent=2, allow_nan=False) + "\n")
 
 
 if __name__ == "__main__":

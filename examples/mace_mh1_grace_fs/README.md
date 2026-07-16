@@ -2,6 +2,11 @@
 
 이 예제는 실제 서버 integration을 위한 pilot 절차입니다. 모델, 구조, GRACE/FS
 version-specific input과 surface threshold는 저장소에 임의로 고정하지 않습니다.
+이 사례는 범용 core의 기본 경로가 아니며, case-specific workflow와 validation
+profile은 이 디렉터리에만 둡니다.
+`workflow.yaml`은 stage 구성을 보여주는 case template이며 그대로 실행하는 파일이
+아닙니다. `/distill-start`가 실제 run config 경로와 서버 환경을 반영한 workflow를
+별도로 만듭니다.
 
 저장소 루트에서 Claude Code를 실행한 뒤 다음처럼 시작합니다.
 
@@ -29,5 +34,6 @@ Run-specific config를 만들 때 다음 항목을 확인합니다.
 3. GRACE/FS 한 seed가 학습·export·ASE reload되고 held-out prediction을 생성함
 4. 통과 후에만 나머지 committee seed를 학습함
 5. 선택 checkpoint로 작은 LAMMPS MD가 실행되고 `md.manifest.json` binding을 통과함
-6. teacher/student/DFT surface manifest가 동일 protocol과 reference convention을 사용함
+6. teacher/student/DFT slab·bulk raw output이 evidence hash로 제출되고, surface
+   delta가 active profile threshold와 일치하는 공통 ValidationReport를 통과함
 7. Judge gate 결과와 연구자의 PASS/REVISE 결정이 run manifest에 남음

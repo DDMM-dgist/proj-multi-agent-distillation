@@ -1,10 +1,10 @@
-"""Thin adapter layer: dispatch on a config's `kind` to the concrete model /
-backend implementation. Agents and validation scripts import from here rather
-than importing a specific teacher/student package directly — that's the whole
-point of the adapter layer (see configs/README.md).
+"""Thin adapter layer for config-selected model and backend implementations.
+Agents and validation scripts import from here rather than importing a specific
+teacher/student package directly (see configs/README.md).
 
-Each module exposes a small function surface; adding support for a new `kind`
-means adding a branch here, not touching agents/ or validation/.
+Each interface accepts configured callables/commands. Built-in recipes may use
+local registries, but a new external `kind` does not require a controller or
+agent-prompt branch.
 """
 from pathlib import Path
 
@@ -16,6 +16,8 @@ def load_config(path):
     path = Path(path).resolve()
     with path.open() as f:
         cfg = yaml.safe_load(f)
+    if not isinstance(cfg, dict):
+        raise ValueError(f"{path}: config must contain a YAML mapping")
     if "kind" not in cfg:
         raise ValueError(f"{path}: config must declare a `kind` (see configs/README.md)")
     cfg["_config_path"] = str(path)

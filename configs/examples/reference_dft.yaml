@@ -3,11 +3,17 @@ incar_template: templates/dft/INCAR.scan.template
 # POTCAR is intentionally NOT referenced here by path — supply your own
 # licensed copy at runtime (see NOTICE.md). agents/simulation.md will refuse
 # to fabricate or fetch one.
-functional: SCAN
+reference_theory: SCAN
 encut_ev: 900
 kspacing_inv_angstrom: 0.23
 smearing: {ismear: 0, sigma: 0.1}
 relaxation: {nsw: 0, ibrion: -1}   # single-point only; no ionic relaxation
+template_variables:
+  XC_BLOCK: |
+    METAGGA  = SCAN
+    LASPH    = .TRUE.
+    LMIXTAU  = .TRUE.
+    LDIAG    = .FALSE.
 notes: >
   Matching the teacher's training theory isolates model error. A different
   reference theory is allowed, but teacher/student-vs-DFT then includes both

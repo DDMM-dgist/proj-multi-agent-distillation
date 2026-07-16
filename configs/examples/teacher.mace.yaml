@@ -6,10 +6,12 @@ checkpoint: /path/to/mace-mp-0.model     # or a fine-tuned checkpoint of your ow
 calculator:
   module: mace.calculators
   class: MACECalculator
-  env: distill-teacher-mace
+  model_arg: model_paths
   kwargs: {device: cpu}          # change explicitly to cuda for a GPU run
 architecture:
   variant: MACE-MP-0            # or your own fine-tune
   cutoff_angstrom: 6.0           # check the specific release's default
 emits_stress: true               # MACE calculators generally expose stress; verify for your checkpoint
 fixed: true
+provenance:
+  packages: [mace-torch]

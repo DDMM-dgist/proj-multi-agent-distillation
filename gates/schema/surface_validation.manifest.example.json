@@ -1,49 +1,63 @@
 {
   "schema_version": 1,
-  "quantity": "static_surface_excess_energy",
-  "unit": "J/m2",
-  "entries": [
+  "profile": "/absolute/path/to/configs/validation_profile.yaml",
+  "checks": [
     {
-      "method": "teacher",
-      "orientation": "(1 1 0)",
-      "termination": "termination-1",
-      "area_a2": 100.0,
-      "n_surfaces": 2,
-      "geometry_protocol": "slab-protocol-v1",
-      "reference_convention": "composition-matched-bulk-v1",
-      "composition_balance_confirmed": true,
-      "nonstoichiometric": false,
-      "slab_energy_ev": -998.0,
-      "bulk_reference_ev": -1000.0,
-      "surface_energy_J_m2": 0.1602176634
+      "domain": "energetics",
+      "observable": "surface_delta:student_teacher",
+      "status": "PASS",
+      "value": 0.0,
+      "unit": "J/m2",
+      "criterion": {"operator": "max_abs", "threshold": 0.1}
     },
     {
-      "method": "student",
-      "orientation": "(1 1 0)",
-      "termination": "termination-1",
-      "area_a2": 100.0,
-      "n_surfaces": 2,
-      "geometry_protocol": "slab-protocol-v1",
-      "reference_convention": "composition-matched-bulk-v1",
-      "composition_balance_confirmed": true,
-      "nonstoichiometric": false,
-      "slab_energy_ev": -998.0,
-      "bulk_reference_ev": -1000.0,
-      "surface_energy_J_m2": 0.1602176634
-    },
-    {
-      "method": "dft",
-      "orientation": "(1 1 0)",
-      "termination": "termination-1",
-      "area_a2": 100.0,
-      "n_surfaces": 2,
-      "geometry_protocol": "slab-protocol-v1",
-      "reference_convention": "composition-matched-bulk-v1",
-      "composition_balance_confirmed": true,
-      "nonstoichiometric": false,
-      "slab_energy_ev": -998.0,
-      "bulk_reference_ev": -1000.0,
-      "surface_energy_J_m2": 0.1602176634
+      "domain": "energetics",
+      "observable": "surface_delta:student_dft",
+      "status": "PASS",
+      "value": 0.0,
+      "unit": "J/m2",
+      "criterion": {"operator": "max_abs", "threshold": 0.1}
     }
-  ]
+  ],
+  "evidence": [
+    {"role": "teacher_slab", "path": "/absolute/path/teacher-slab.out", "integrity": {"kind": "file", "size": 1, "sha256": "replace-with-real-hash"}},
+    {"role": "teacher_bulk", "path": "/absolute/path/teacher-bulk.out", "integrity": {"kind": "file", "size": 1, "sha256": "replace-with-real-hash"}},
+    {"role": "student_slab", "path": "/absolute/path/student-slab.out", "integrity": {"kind": "file", "size": 1, "sha256": "replace-with-real-hash"}},
+    {"role": "student_bulk", "path": "/absolute/path/student-bulk.out", "integrity": {"kind": "file", "size": 1, "sha256": "replace-with-real-hash"}},
+    {"role": "dft_slab", "path": "/absolute/path/dft-slab.out", "integrity": {"kind": "file", "size": 1, "sha256": "replace-with-real-hash"}},
+    {"role": "dft_bulk", "path": "/absolute/path/dft-bulk.out", "integrity": {"kind": "file", "size": 1, "sha256": "replace-with-real-hash"}}
+  ],
+  "surface": {
+    "quantity": "static_surface_excess_energy",
+    "unit": "J/m2",
+    "entries": [
+      {
+        "method": "teacher", "orientation": "(1 1 0)", "termination": "termination-1",
+        "area_a2": 100.0, "n_surfaces": 2, "geometry_protocol": "slab-protocol-v1",
+        "reference_convention": "composition-matched-bulk-v1",
+        "composition_balance_confirmed": true, "nonstoichiometric": false,
+        "slab_energy_ev": -998.0, "bulk_reference_ev": -1000.0,
+        "surface_energy_J_m2": 0.1602176634,
+        "slab_evidence_role": "teacher_slab", "bulk_evidence_role": "teacher_bulk"
+      },
+      {
+        "method": "student", "orientation": "(1 1 0)", "termination": "termination-1",
+        "area_a2": 100.0, "n_surfaces": 2, "geometry_protocol": "slab-protocol-v1",
+        "reference_convention": "composition-matched-bulk-v1",
+        "composition_balance_confirmed": true, "nonstoichiometric": false,
+        "slab_energy_ev": -998.0, "bulk_reference_ev": -1000.0,
+        "surface_energy_J_m2": 0.1602176634,
+        "slab_evidence_role": "student_slab", "bulk_evidence_role": "student_bulk"
+      },
+      {
+        "method": "dft", "orientation": "(1 1 0)", "termination": "termination-1",
+        "area_a2": 100.0, "n_surfaces": 2, "geometry_protocol": "slab-protocol-v1",
+        "reference_convention": "composition-matched-bulk-v1",
+        "composition_balance_confirmed": true, "nonstoichiometric": false,
+        "slab_energy_ev": -998.0, "bulk_reference_ev": -1000.0,
+        "surface_energy_J_m2": 0.1602176634,
+        "slab_evidence_role": "dft_slab", "bulk_evidence_role": "dft_bulk"
+      }
+    ]
+  }
 }

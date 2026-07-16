@@ -1,0 +1,5 @@
+kind: null
+adapter:
+  acquire: null
+  preflight: null
+# Built-in kinds augment-atoms and teacher-md do not require adapter callables.

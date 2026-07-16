@@ -1,16 +1,31 @@
-"""DFT reference adapter: render an INCAR (or equivalent) from a config +
-overrides. Only renders the input — never fetches or writes a POTCAR (see
-NOTICE.md); the caller supplies their own licensed copy.
-"""
+"""Reference-calculation input adapters selected by config."""
+import importlib
 from pathlib import Path
 
 from adapters import resolve_config_path
 
 
+def _callable(path):
+    module_name, name = path.rsplit(".", 1)
+    value = getattr(importlib.import_module(module_name), name, None)
+    if not callable(value):
+        raise TypeError(f"configured callable is invalid: {path}")
+    return value
+
+
+def render_reference_input(dft_cfg, out_path, overrides=None):
+    renderer = dft_cfg.get("adapter", {}).get("renderer")
+    if renderer:
+        return _callable(renderer)(dft_cfg, out_path, overrides=overrides)
+    if dft_cfg["kind"] == "vasp":
+        return render_incar(dft_cfg, out_path, overrides)
+    raise NotImplementedError(
+        f"reference backend {dft_cfg['kind']!r} requires adapter.renderer"
+    )
+
+
 def render_incar(dft_cfg, out_path, overrides=None):
-    kind = dft_cfg["kind"]
-    if kind != "vasp":
-        raise NotImplementedError(f"reference_dft kind={kind!r} is not implemented (only 'vasp' is).")
+    """Built-in VASP input renderer; never fetches or writes POTCAR."""
 
     template_path = resolve_config_path(dft_cfg, dft_cfg["incar_template"])
     text = template_path.read_text()
@@ -22,6 +37,7 @@ def render_incar(dft_cfg, out_path, overrides=None):
         "NSW": dft_cfg["relaxation"]["nsw"],
         "IBRION": dft_cfg["relaxation"]["ibrion"],
     }
+    ctx.update(dft_cfg.get("template_variables", {}))
     if overrides:
         ctx.update(overrides)
     text = text.format(**ctx)

@@ -1,0 +1,5 @@
+kind: generic
+checks: []
+thresholds: {}
+# Each selected observable must have an implemented validator and a reviewed
+# protocol/reference convention. A YAML name alone does not implement it.

@@ -1,0 +1,21 @@
+# Case-specific environments used by the SiO2 Allegro -> SIMPLE-NN reference.
+# Split these blocks into separate files when the package pins conflict.
+
+name: distill-teacher-allegro
+channels: [conda-forge, pytorch, nvidia]
+dependencies:
+  - python=3.10
+  - pip
+  - pytorch=2.6
+  - pytorch-cuda=12.1
+  - ase>=3.22
+  - numpy
+  - scipy
+  - pyyaml
+  - pip:
+      - nequip==0.15.*
+      - allegro==0.7.1
+
+# Student and acquisition tools historically used separate environments:
+# - SIMPLE-NN v2 with its project-specific wrapper and descriptor parameters
+# - augment-atoms with the NequIP version required by that installation

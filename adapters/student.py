@@ -1,14 +1,4 @@
-"""Student adapter: train, load, and deploy a student model from
-configs/student.<name>.yaml. This is the adapter with the most real work in
-it, because "student" bundles three different concerns: training recipe,
-checkpoint loading, and MD deployment (LAMMPS pair_style).
-
-The `simple-nn` path is the extracted reference runner, but its wrapper module
-must be verified for the installed SIMPLE-NN version. `mtp`/`ace`/`compact-gnn`
-are documented stubs — see configs/README.md
-for what implementing one of them actually involves (usually: a training
-subprocess call + a checkpoint loader + a one-line LAMMPS pair_style string).
-"""
+"""Config-driven student training, loading, prediction, and deployment adapters."""
 import importlib
 import re
 import subprocess
@@ -21,34 +11,66 @@ from adapters import resolve_config_path
 from adapters.contracts import ModelArtifact, PredictionBatch
 
 
+def _callable(path):
+    module_name, name = path.rsplit(".", 1)
+    value = getattr(importlib.import_module(module_name), name, None)
+    if not callable(value):
+        raise TypeError(f"configured callable is invalid: {path}")
+    return value
+
+
+def _artifact(value, kind, seed=None):
+    if isinstance(value, ModelArtifact):
+        return value.require_exists()
+    return ModelArtifact(kind=kind, path=Path(value), seed=seed).require_exists()
+
+
 def train_student(cfg, dataset_path, out_dir, seed):
     """Train one committee member.
 
     cfg: configs/student.<name>.yaml, already loaded.
-    dataset_path: path to the (already merged + energy-aligned, if mixing
-        teacher-labeled + DFT-anchor data — see agents/data-curator.md) training set.
+    dataset_path: path to the reviewed training set. If multiple label sources
+        are combined, any reference transformation must already have been
+        performed by an explicit project-specific stage.
     out_dir: where to write the checkpoint + logs for this seed.
     seed: int, the committee member's random seed.
     """
     kind = cfg["kind"]
     out_dir = Path(out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
-
-    if kind == "simple-nn":
-        checkpoint = _train_simple_nn(cfg, dataset_path, out_dir, seed)
-        return ModelArtifact(kind=kind, path=checkpoint, seed=seed).require_exists()
-    elif kind == "grace-fs":
-        checkpoint = _train_grace_fs(cfg, dataset_path, out_dir, seed)
-        return ModelArtifact(kind=kind, path=checkpoint, seed=seed).require_exists()
-    elif kind == "mock":
-        checkpoint = out_dir / "mock-model.json"
-        checkpoint.write_text(f'{{"seed": {int(seed)}}}\n')
-        return ModelArtifact(kind=kind, path=checkpoint, seed=seed).require_exists()
-    else:
+    adapter = cfg.get("adapter", {})
+    if adapter.get("train"):
+        return _artifact(_callable(adapter["train"])(cfg, dataset_path, out_dir, int(seed)),
+                         kind, int(seed))
+    if cfg.get("train", {}).get("command"):
+        context = {"dataset_path": str(Path(dataset_path).resolve()),
+                   "out_dir": str(out_dir.resolve()), "seed": int(seed),
+                   "project_dir": cfg.get("_project_dir", str(Path.cwd()))}
+        command = [str(part).format(**context) for part in cfg["train"]["command"]]
+        env = cfg["train"].get("env")
+        if env:
+            command = ["conda", "run", "--no-capture-output", "-n", env, *command]
+        subprocess.run(command, check=True, cwd=out_dir)
+        artifact = cfg["train"].get("artifact")
+        if not artifact:
+            raise ValueError("train.command requires train.artifact")
+        artifact_path = Path(str(artifact).format(**context))
+        if not artifact_path.is_absolute():
+            artifact_path = out_dir / artifact_path
+        return _artifact(artifact_path, kind, int(seed))
+    trainers = {"simple-nn": _train_simple_nn, "grace-fs": _train_grace_fs,
+                "mock": _train_mock}
+    if kind not in trainers:
         raise NotImplementedError(
-            f"student kind={kind!r} training is not implemented in adapters/student.py. "
-            f"Add a _train_<kind>(...) function following the _train_simple_nn shape below."
+            f"student kind={kind!r} requires adapter.train or train.command"
         )
+    return _artifact(trainers[kind](cfg, dataset_path, out_dir, seed), kind, int(seed))
+
+
+def _train_mock(cfg, dataset_path, out_dir, seed):
+    checkpoint = Path(out_dir) / "mock-model.json"
+    checkpoint.write_text(f'{{"seed": {int(seed)}}}\n')
+    return checkpoint
 
 
 def _train_simple_nn(cfg, dataset_path, out_dir, seed):
@@ -138,17 +160,18 @@ def load_student(cfg, checkpoint):
     kind = cfg["kind"]
     if isinstance(checkpoint, ModelArtifact):
         return checkpoint.require_exists()
+    loader = cfg.get("adapter", {}).get("load")
+    if loader:
+        return _artifact(_callable(loader)(cfg, checkpoint), kind)
     checkpoint = Path(checkpoint)
-    if kind == "simple-nn":
-        path = checkpoint if checkpoint.name == "potential_saved_bestmodel" else checkpoint / "potential_saved_bestmodel"
+    names = {"simple-nn": "potential_saved_bestmodel", "grace-fs": "FS_model.yaml",
+             "mock": "mock-model.json"}
+    if kind in names:
+        path = checkpoint if checkpoint.name == names[kind] else checkpoint / names[kind]
         return ModelArtifact(kind=kind, path=path).require_exists()
-    if kind == "grace-fs":
-        path = checkpoint if checkpoint.name == "FS_model.yaml" else checkpoint / "FS_model.yaml"
-        return ModelArtifact(kind=kind, path=path).require_exists()
-    if kind == "mock":
-        path = checkpoint if checkpoint.name == "mock-model.json" else checkpoint / "mock-model.json"
-        return ModelArtifact(kind=kind, path=path).require_exists()
-    raise NotImplementedError(f"student kind={kind!r} loading is not implemented.")
+    # For callable/command adapters the committee manifest already stores the
+    # exact checkpoint path, so no architecture-specific path convention is needed.
+    return ModelArtifact(kind=kind, path=checkpoint).require_exists()
 
 
 def _calculator_from_predict_config(cfg, artifact):
@@ -199,24 +222,23 @@ def lammps_pair_style_block(cfg, checkpoint_path):
 
     Used by adapters/md_backend.py when rendering templates/lammps/*.in.template.
     """
-    kind = cfg["kind"]
     if isinstance(checkpoint_path, ModelArtifact):
         checkpoint_path = checkpoint_path.require_exists().path
     deploy = cfg.get("deploy", {})
+    renderer = cfg.get("adapter", {}).get("deploy") or deploy.get("renderer")
+    if renderer:
+        return str(_callable(renderer)(cfg, Path(checkpoint_path)))
     elements = deploy.get("elements")
     if not elements:
         raise ValueError("student config deploy.elements must list the LAMMPS atom-type order")
     element_order = " ".join(elements)
-    if kind == "simple-nn":
-        style = deploy.get("lammps_pair_style", "nn")
-        return f"pair_style {style}\npair_coeff * * {checkpoint_path} {element_order}\n"
-    elif kind == "grace-fs":
-        style = deploy.get("lammps_pair_style", "grace/fs")
-        return f"pair_style {style}\npair_coeff * * {checkpoint_path} {element_order}\n"
-    elif kind == "mtp":
-        return f"pair_style mlip load_from={checkpoint_path}\npair_coeff * *\n"
-    else:
-        raise NotImplementedError(
-            f"student kind={kind!r} has no LAMMPS pair_style recipe yet — add one "
-            f"(usually 1-2 lines) here and in configs/README.md."
-        )
+    style = deploy.get("lammps_pair_style")
+    if not style:
+        raise ValueError("deployment requires deploy.lammps_pair_style or adapter.deploy")
+    context = {"checkpoint": str(checkpoint_path), "elements": element_order,
+               "pair_style": style}
+    pair_style_line = deploy.get("pair_style_template", "pair_style {pair_style}")
+    pair_coeff_line = deploy.get(
+        "pair_coeff_template", "pair_coeff * * {checkpoint} {elements}"
+    )
+    return pair_style_line.format(**context) + "\n" + pair_coeff_line.format(**context) + "\n"

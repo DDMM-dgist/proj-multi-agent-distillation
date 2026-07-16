@@ -13,6 +13,8 @@ inputs:
   - "{project_dir}/templates/student/grace-fs.input.yaml.template"
 stages:
   - name: acquisition
+    gate:
+      criteria: [every acquired frame has explicit parent lineage]
     command:
       - "{python}"
       - -m
@@ -24,6 +26,8 @@ stages:
       - "{artifacts_dir}/acquired.extxyz"
     outputs: [artifacts/acquired.extxyz]
   - name: teacher_labeling
+    gate:
+      criteria: [teacher labels and model provenance are complete]
     # Set env to the teacher Conda environment in the run-specific workflow.
     # env: mace-mh1
     command:
@@ -37,6 +41,8 @@ stages:
       - "{artifacts_dir}/teacher_labels.manifest.json"
     outputs: [artifacts/teacher_labeled.extxyz, artifacts/teacher_labels.manifest.json]
   - name: dataset_split
+    gate:
+      criteria: [train validation and test parent groups are disjoint]
     command: ["{python}", -m, workflow.steps, split-dataset,
               "{artifacts_dir}/teacher_labeled.extxyz", "{artifacts_dir}/dataset",
               "{artifacts_dir}/dataset/split_manifest.json", --seed, "2026",
@@ -44,12 +50,16 @@ stages:
     outputs: [artifacts/dataset/train.extxyz, artifacts/dataset/validation.extxyz,
               artifacts/dataset/test.extxyz, artifacts/dataset/split_manifest.json]
   - name: training
+    gate:
+      criteria: [committee checkpoints and training provenance are complete]
     command: ["{python}", -m, workflow.steps, train-committee,
               "{project_dir}/configs/student.yaml",
               "{artifacts_dir}/dataset/train.extxyz",
               "{artifacts_dir}/committee", "{artifacts_dir}/student_committee.manifest.json"]
     outputs: [artifacts/student_committee.manifest.json, artifacts/committee]
   - name: evaluation
+    gate:
+      criteria: [held-out student versus teacher error channel is complete]
     # Set env to the GRACE/FS prediction environment when it differs.
     # env: grace-fs
     command: ["{python}", -m, workflow.steps, evaluate-committee,
@@ -60,12 +70,16 @@ stages:
               --require-channel, student_vs_teacher]
     outputs: [artifacts/evaluated.extxyz, artifacts/accuracy_report.json]
   - name: uncertainty
+    gate:
+      criteria: [committee uncertainty coverage and aggregation are reported]
     command: ["{python}", "{project_dir}/validation/committee_uncertainty.py",
               "{artifacts_dir}/evaluated.extxyz", --config,
               "{project_dir}/configs/uncertainty.yaml", --output,
               "{artifacts_dir}/uncertainty_report.json"]
     outputs: [artifacts/uncertainty_report.json]
   - name: md
+    gate:
+      criteria: [MD evidence is bound to the selected approved checkpoint]
     # Scheduler/agent-managed: register md.manifest.json with complete-stage.
     command: null
     outputs: [artifacts/md.manifest.json]
@@ -75,14 +89,19 @@ stages:
       committee_manifest: artifacts/student_committee.manifest.json
       required_evidence: [input, trajectory, thermo_log]
   - name: physical_validation
+    gate:
+      criteria: [required surface validation observables pass the bound profile]
     command: null
     outputs: [artifacts/physical_validation.json]
     contract:
       kind: validation_manifest
       manifest: artifacts/physical_validation.json
-      validator: validation.surface_energy.validate_surface_manifest
+      validator: validation.surface_energy.validate_surface_report
       options:
+        profile_path: "{project_dir}/configs/validation_profile.yaml"
         required_methods: [teacher, student, dft]
   - name: analysis
+    gate:
+      criteria: [final report is consistent with registered run artifacts]
     command: null
     outputs: [artifacts/final_report.json]

@@ -1,6 +1,6 @@
 ---
 name: judge
-description: Independently evaluates one artifact against explicit criteria and returns a conservative structured verdict.
+description: Evaluates one artifact in a separate, mutually blind context and returns a conservative structured verdict.
 tools: Read, Grep, Glob, Bash
 model: inherit
 ---

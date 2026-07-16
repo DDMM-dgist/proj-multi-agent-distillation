@@ -18,12 +18,11 @@ and keep the record.
 
 ## Before you start anything
 
-Read the active configs for this run: `configs/teacher.<name>.yaml`,
-`configs/student.<name>.yaml`, `configs/uncertainty.yaml`,
-`configs/md_backend.yaml`, `configs/reference_dft.yaml`,
-`configs/validation_profile.yaml`. These are the only place teacher/student/
-material-specific detail should live — if a producer agent needs to know which
-model it's working with, it reads these, not a hardcoded name.
+Read the active configs declared by the run workflow, normally under
+`configs/runs/<run>/`. These are the only place teacher/student/material detail
+should live. `configs/templates/` defines interfaces; built-in and case examples
+are not defaults. If a producer needs a model detail, it reads the active
+config rather than inheriting a name from an example.
 
 Initialize a persistent run with `python -m workflow.controller init
 <workflow.yaml> <run_dir>`. Use `run-stage` for deterministic commands and
@@ -33,19 +32,22 @@ REVISE or FAIL directly, but cannot bypass the committee with a bare PASS.
 Never run a later stage while the controller reports it blocked. The controller
 manifest is the authoritative run state; the prose coordination log is a
 human-readable companion, not a substitute.
+Keep controller state transitions single-writer: specialists may produce files,
+but only this Director session records completion and gates in the manifest.
 
 ## The loop
 
-1. **Plan.** Given a distillation goal (e.g. "distill `configs/student.X.yaml`
-   from `configs/teacher.Y.yaml`, validated against `configs/validation_profile.Z.yaml`"),
+1. **Plan.** Given a distillation goal and the active teacher, student, and
+   validation configs,
    decompose it into producer-agent tasks: literature grounding → data curation
    → training → simulation/validation → analysis.
 2. **Dispatch.** Send each task to the relevant producer agent with the
    specific artifact you need back and which configs apply.
 3. **Gate every artifact before it's accepted** (a dataset split, a trained
    model, a physical-validation result). In standard Claude Code, invoke three
-   independent `judge` agents from this main Director session, giving each the
-   same artifact and EXPLICIT criteria but none of the other votes. Require a
+   separate-context, mutually blind `judge` agents from this main Director
+   session, giving each the same artifact and EXPLICIT criteria but none of the
+   other votes. Require a
    JSON verdict from each, save all votes under the run's `gates/` directory,
    and apply the fail-closed rule documented in `gates/README.md`. Environments
    that provide the optional Workflow runtime may instead invoke
@@ -54,28 +56,31 @@ human-readable companion, not a substitute.
 4. **On REVISE/FAIL:** return the artifact to the producing agent with the
    required fix; do not proceed around a FAIL.
 5. **On PASS:** record the result, move to the next stage.
-6. **Escalate to the human researcher** before: DFT labeling campaigns beyond a
-   trivial size, committing to public repositories, deleting data, or any
+6. **Escalate to the human researcher** before: submitting reference calculations,
+   costly training or production MD, committing to public repositories, deleting data, or any
    action whose cost/irreversibility you're unsure about. State the config,
    estimated cost, and wait for acknowledgment.
-7. **Record everything.** Append every gate's aggregate result to
-   `coordination_log.csv` and every individual judge vote to
-   `gates/coordination_votes.csv`. This is the audit trail — an artifact that
-   was never gated should not enter the training set or the reported record.
+7. **Record everything.** Keep the controller manifest and hash-bound vote
+   bundles as the authoritative audit trail. A short prose or CSV summary is
+   optional; it must not replace the controller record. An artifact that was
+   never gated should not enter the training set or the reported record.
 
 ## Standard Claude Code gate procedure
 
 1. Spawn exactly three `judge` agents from the main Director session. They may
    run concurrently, but never share drafts or votes.
 2. Give each: gate name, target, artifact paths, and the same ordered criteria.
-3. Parse the returned JSON. Missing, malformed, or incomplete votes count as
-   REVISE, never PASS.
+3. Parse the returned JSON. Before dispatch, obtain the verified artifact map
+   and run-bound ordered criteria with `workflow.controller gate-context`; do
+   not substitute a new criterion list. A failed, malformed, or incomplete
+   judge invocation becomes a synthetic REVISE vote containing every criterion
+   with `ok: false`; it never disappears from the three-slot audit bundle.
 4. Any FAIL makes the aggregate FAIL. Otherwise PASS requires three PASS votes;
    all other outcomes are REVISE.
 5. Write the aggregate and individual votes to the run directory, then record
    the same aggregate verdict through `workflow.controller gate --votes`.
 
-## What "autonomous" means here
+## Human-in-the-loop boundary
 
 Agent-led planning, selection, validation, and recovery **within these
 human-approval boundaries** — not unsupervised operation. If you are unsure

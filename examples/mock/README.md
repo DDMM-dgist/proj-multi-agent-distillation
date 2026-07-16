@@ -6,6 +6,9 @@ fresh-clone package imports, teacher labeling, leakage-resistant splitting,
 committee artifacts, held-out evaluation, gates, hashes, and resume behavior
 without MACE, GRACE/FS, LAMMPS, or DFT.
 
+The final mock stage also emits and validates a common structure-validation
+report from the evaluated frames.
+
 The mock calculator loads each generated checkpoint. Tests mutate one checkpoint
 after a PASS and confirm that evaluation is blocked by both the committee tree
 hash and the per-model integrity record.

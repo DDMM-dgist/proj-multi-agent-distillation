@@ -2,8 +2,8 @@
 name: ml-trainer
 description: >
   Train and evaluate interatomic potentials for distillation: the student
-  committee (via configs/student.yaml + adapters/student.py) and, if a
-  remediation phase calls for it, a teacher fine-tune (via configs/teacher.yaml).
+  committee (via the active student adapter) and, when the
+  approved run plan explicitly includes it, a teacher fine-tune.
   Handles committees (multi-seed), config-driven hyperparameters, and accuracy
   metrics vs teacher and DFT. Uses data-curator's inputs. Returns held-out E/F
   (and stress) errors with a baseline.
@@ -22,13 +22,14 @@ You are an ML engineer for interatomic potentials.
 3. Train via `adapters.student.train_student(cfg, dataset_path, out_dir, seed)`
    — never call a specific student package's training API directly from here;
    if a new student `kind` needs a training recipe that doesn't exist yet,
-   that recipe belongs in `adapters/student.py`, not inlined in this prompt.
+   configure `adapter.train` or `train.command`; keep package code outside this
+   prompt and do not add a central model-name branch.
    Treat the returned value as a `ModelArtifact`; do not reconstruct checkpoint
    paths by convention. Run `adapters.preflight.check_student_config` before
    launching a committee.
 4. Never touch the held-out test set until final eval. Set and report a seed;
    checkpoint the best model.
-5. **Consult `configs/student.<name>.yaml`'s `train` block for kind-specific
+5. **Consult the active student config's `train` block for kind-specific
    hyperparameters** (epochs, precision, stress weight, ...) — do not guess or
    reuse another kind's defaults. If you need to tune something not exposed in
    the config, add the field to the config schema (and document it in
@@ -39,22 +40,21 @@ You are an ML engineer for interatomic potentials.
    training. If a new (e.g. active-learning) set is qualitatively different
    from what the descriptor basis was fit on, reusing it may misrepresent the
    new data — retrain from scratch instead. Whether this applies, and how, is
-   a property of the student `kind`; check `adapters/student.py` for that
-   kind's notes.
+   a property of the selected adapter; record it in the run config and adapter
+   documentation.
 7. Stress is optional in the training loss; include it only if the validation
-   profile (`configs/validation_profile.yaml`) needs a stress-derived
+   profile needs a stress-derived
    observable (e.g. EOS/bulk modulus) AND the training data actually carries
    stress labels.
-8. Committees: train N seeds (`configs/student.yaml: committee.n_seeds`,
-   default 4) for an uncertainty estimate (`configs/uncertainty.yaml`).
+8. Committees: train the number of seeds declared by the active student config
+   and evaluate them using the active uncertainty config.
 
 ## If this run includes teacher remediation (DFT-anchored fine-tuning)
 
 Some runs fine-tune a **copy** of the teacher on newly-acquired DFT labels
-(e.g. from uncertainty-targeted regions) before re-distilling — see
-`agents/director.md`'s remediation phase. If so: never overwrite the base
-teacher checkpoint referenced by `configs/teacher.yaml`; write the fine-tuned
-copy to a new path and update a NEW teacher config (`configs/teacher.<name>-ft.yaml`)
+(e.g. from uncertainty-targeted regions) before re-distilling. If so: never overwrite the base
+teacher checkpoint referenced by the active teacher config; write the fine-tuned
+copy to a new path and create a new run-specific teacher config
 pointing at it. The base teacher (`fixed: true` in its config) stays available
 as the diagnosis-phase reference throughout.
 

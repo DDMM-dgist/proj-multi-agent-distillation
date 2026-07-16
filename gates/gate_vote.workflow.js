@@ -1,19 +1,19 @@
 export const meta = {
   name: 'gate-vote',
-  description: 'Convene N independent blind judges on one artifact and tally PASS/REVISE/FAIL',
+  description: 'Convene three separate-context, mutually blind judges and tally PASS/REVISE/FAIL',
   phases: [
-    { title: 'Judge', detail: 'N independent judges read the artifact and vote, blind to each other' },
+    { title: 'Judge', detail: 'Three mutually blind judge instances read the same artifact' },
   ],
 }
 
 // ---------------------------------------------------------------------------
-// Independent validation gate. Already model-independent — do not add
+// Separate-context validation gate. Already model-independent — do not add
 // teacher/student-specific logic here. All instance-specific detail (which
 // criteria apply) is passed in by the caller (the Director), typically pulled
 // from that run's configs/*.yaml.
 //
-// Spawns N judge subagents (default 3) IN PARALLEL. Each runs in its own context
-// (genuinely independent), reads the SAME artifact, and returns a structured vote.
+// Spawns exactly three judge subagents IN PARALLEL. Each runs in its own context
+// and mutually blind, reads the SAME artifact, and returns a structured vote.
 // The Director tallies the result and records EVERY individual vote (so split
 // votes are visible in the audit trail, not just unanimous tallies).
 //
@@ -21,19 +21,21 @@ export const meta = {
 //   gate:     string   e.g. "dft-label-judge-gate"
 //   target:   string   e.g. "cell_023"  (what is being judged)
 //   artifact: string   free text: the paths to read + what the artifact is
+//   artifact_sha256: object  exact path -> SHA-256 map from controller gate-context
 //   criteria: string[] the explicit gate criteria + thresholds, one per line
 //   n:        number    must be 3 (matches the persistent controller)
 //   rule:     string    must be "unanimous"
 // }
 //
-// Returns { gate, target, n, rule, decision, tally, votes[] }.
-// The Director appends the result to gates/coordination_votes.csv (per-judge)
-// and coordination_log.csv (aggregate) after this workflow completes.
+// Returns { gate, target, criteria, artifact_sha256, decision, tally, votes[] }.
+// The Director stores the returned bundle under the run's gates/ directory
+// and records it through workflow.controller gate --votes.
 // ---------------------------------------------------------------------------
 
 const gate     = args?.gate     || 'unnamed-gate'
 const target   = args?.target   || 'unnamed-target'
 const artifact = args?.artifact || '(no artifact description provided)'
+const artifactSha256 = args?.artifact_sha256
 const criteria = Array.isArray(args?.criteria) ? args.criteria : []
 const N        = args?.n ?? 3
 const rule     = args?.rule || 'unanimous'
@@ -41,6 +43,10 @@ const rule     = args?.rule || 'unanimous'
 if (N !== 3) throw new Error(`the persistent controller requires exactly 3 judges; got ${N}`)
 if (rule !== 'unanimous') throw new Error(`the persistent controller requires unanimous rule; got ${rule}`)
 if (criteria.length === 0) throw new Error('gate criteria must not be empty')
+if (!artifactSha256 || typeof artifactSha256 !== 'object' || Array.isArray(artifactSha256) ||
+    Object.keys(artifactSha256).length === 0) {
+  throw new Error('artifact_sha256 must be the non-empty map from controller gate-context')
+}
 
 const VERDICT_SCHEMA = {
   type: 'object',
@@ -95,7 +101,21 @@ function judgePrompt(idx) {
   ].join('\n')
 }
 
-log(`Convening ${N} independent judges on gate "${gate}" / target "${target}" (rule=${rule})`)
+function invocationFailureVote(idx, error) {
+  return {
+    id: idx + 1,
+    verdict: 'REVISE',
+    criteria_checked: criteria.map(criterion => ({
+      criterion,
+      value_read: 'judge invocation failed',
+      ok: false,
+    })),
+    rationale: `Judge invocation failed: ${String(error?.message || error)}`,
+    required_fix: 'Re-run the failed judge invocation before recording PASS.',
+  }
+}
+
+log(`Convening ${N} mutually blind judge instances on gate "${gate}" / target "${target}" (rule=${rule})`)
 
 const raw = await parallel(
   Array.from({ length: N }, (_, i) => () =>
@@ -105,6 +125,7 @@ const raw = await parallel(
       agentType: 'judge',
       schema: VERDICT_SCHEMA,
     }).then(v => ({ id: i + 1, ...v }))
+      .catch(error => invocationFailureVote(i, error))
   )
 )
 
@@ -127,4 +148,7 @@ if (votes.length !== N) {
 
 log(`Tally PASS=${tally.PASS} REVISE=${tally.REVISE} FAIL=${tally.FAIL} -> ${decision}`)
 
-return { gate, target, criteria, requested_n: N, received_n: votes.length, rule, decision, tally, votes }
+return {
+  gate, target, criteria, artifact_sha256: artifactSha256,
+  requested_n: N, received_n: votes.length, rule, decision, tally, votes,
+}

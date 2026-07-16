@@ -6,10 +6,9 @@ same structures, never touching model internals. This is why it needs no
 per-`kind` dispatch branch: any student adapter that returns per-atom forces
 can be committee-ensembled this way.
 
-Framing reminder (see configs/examples/uncertainty.yaml and the manuscript):
-sigma_F ranks student-teacher FIDELITY (where the student diverges from its
-own teacher). It is rank-correlated but only weakly magnitude-correlated with
-the teacher's own DFT error — do not sell it as calibrated uncertainty.
+The committee score measures student disagreement. Its relationship to
+student-teacher error is evaluated separately, and it is not by itself a
+calibrated estimate of teacher-reference error.
 """
 import numpy as np
 from scipy.stats import spearmanr

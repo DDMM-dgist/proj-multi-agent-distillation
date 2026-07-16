@@ -3,10 +3,9 @@ calculator. Any teacher exposing an ASE Calculator satisfies this interface —
 that already covers NequIP/Allegro, MACE, GAP (via quippy), ACE (via pyace),
 and foundation models (MACE-MP-0, MatterSim, Orb, ...).
 
-Adding a new `kind`: import the calculator class dynamically (already generic
-below) and add any `kind`-specific construction quirks as a branch in
-`load_teacher`. Most teachers need NO new code here at all — only a new
-configs/teacher.<name>.yaml with the right `calculator.module`/`calculator.class`.
+Adding a new `kind` normally needs only a config with `calculator.factory` or
+`module`/`class` plus optional `constructor` and `model_arg`; the core does not
+dispatch on a teacher name.
 """
 import importlib
 
@@ -35,27 +34,24 @@ def load_teacher(cfg):
         factory = getattr(importlib.import_module(module_name), callable_name)
         kwargs = dict(calc_cfg.get("kwargs", {}))
         model_arg = calc_cfg.get("model_arg", "model")
+        model = teacher_model_reference(cfg)
+        if model_arg == "__positional__":
+            return factory(model, **kwargs)
         if model_arg:
-            kwargs[model_arg] = teacher_model_reference(cfg)
+            kwargs[model_arg] = model
         return factory(**kwargs)
     module = importlib.import_module(calc_cfg["module"])
     calc_cls = getattr(module, calc_cfg["class"])
-
-    kind = cfg["kind"]
-    if kind == "allegro":
-        # nequip/allegro calculators are constructed from a compiled checkpoint path.
-        return calc_cls.from_deployed_model(teacher_model_reference(cfg))
-    elif kind == "mace":
-        # MACE's calculator takes the checkpoint path + configurable kwargs.
-        kwargs = dict(calc_cfg.get("kwargs", {}))
-        kwargs.setdefault("device", "cpu")
-        return calc_cls(model_paths=teacher_model_reference(cfg), **kwargs)
-    else:
-        raise NotImplementedError(
-            f"teacher kind={kind!r} has no construction recipe in adapters/teacher.py yet. "
-            f"Add one here (usually a few lines — see the `allegro`/`mace` branches above) "
-            f"and update configs/README.md."
-        )
+    constructor = getattr(calc_cls, calc_cfg["constructor"]) \
+        if calc_cfg.get("constructor") else calc_cls
+    kwargs = dict(calc_cfg.get("kwargs", {}))
+    model_arg = calc_cfg.get("model_arg", "model")
+    model = teacher_model_reference(cfg)
+    if model_arg == "__positional__":
+        return constructor(model, **kwargs)
+    if model_arg:
+        kwargs[model_arg] = model
+    return constructor(**kwargs)
 
 
 def check_stress_support(cfg, test_atoms):
@@ -63,8 +59,8 @@ def check_stress_support(cfg, test_atoms):
 
     Do NOT assume `emits_stress` in the config is correct — verify against the
     actual compiled/deployed checkpoint (different builds of the same
-    architecture may or may not include the stress head). See the Pass-1
-    handoff's open item 1.
+    architecture may or may not include the stress head). Confirm it against
+    the actual checkpoint before using stress-derived observables.
 
     test_atoms: one ase.Atoms with a sensible cell (periodic), for a quick probe.
     Returns True/False and prints what it found.

@@ -1,0 +1,33 @@
+run_id: null
+inputs: []
+stages:
+  - name: acquisition
+    command: null
+    outputs: []
+    gate:
+      criteria: []  # fill before initialization; criteria are snapshot-bound
+  - name: teacher_labeling
+    command: null
+    outputs: []
+    gate:
+      criteria: []
+  - name: dataset_split
+    command: null
+    outputs: []
+    gate:
+      criteria: []
+  - name: training
+    command: null
+    outputs: []
+    gate:
+      criteria: []
+  - name: evaluation
+    command: null
+    outputs: []
+    gate:
+      criteria: []
+  - name: physical_validation
+    command: null
+    outputs: []
+    gate:
+      criteria: []
