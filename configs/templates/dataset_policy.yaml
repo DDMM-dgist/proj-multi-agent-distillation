@@ -1,3 +1,4 @@
+kind: generic
 teacher_training_data_access: null  # full | representative | unavailable
 sources: []
 # Each source declares category, path/selection rule, label_sources, target count,

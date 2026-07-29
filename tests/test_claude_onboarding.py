@@ -1,4 +1,6 @@
 import json
+import subprocess
+import sys
 import unittest
 from pathlib import Path
 
@@ -42,7 +44,9 @@ class ClaudeOnboardingTests(unittest.TestCase):
         self.assertTrue(expected <= {path.name for path in template_dir.glob("*.yaml")})
         text = ""
         for path in template_dir.glob("*.yaml"):
-            yaml.safe_load(path.read_text())
+            payload = yaml.safe_load(path.read_text())
+            if path.name != "workflow.yaml":
+                self.assertIn("kind", payload, path)
             text += path.read_text()
         for case_token in ("MACE", "GRACE", "Allegro", "SIMPLE-NN", "SiO2", "SiO₂"):
             self.assertNotIn(case_token, text)
@@ -52,6 +56,22 @@ class ClaudeOnboardingTests(unittest.TestCase):
         stage_names = {stage["name"] for stage in workflow["stages"]}
         self.assertTrue({"uncertainty", "deployment_md", "reference_validation",
                          "physical_validation", "analysis"} <= stage_names)
+
+    def test_packaged_mock_passes_ready_preflight_cli(self):
+        command = [
+            sys.executable, "-m", "adapters.preflight",
+            "examples/mock/student.yaml",
+            "--teacher-config", "examples/mock/teacher.yaml",
+            "--validation-profile", "examples/mock/validation.yaml",
+            "--scope-config", "examples/mock/distillation_scope.yaml",
+            "--dataset-policy", "examples/mock/dataset_policy.yaml",
+            "--require-ready",
+        ]
+        completed = subprocess.run(command, cwd=ROOT, text=True,
+                                   capture_output=True, check=False)
+        self.assertEqual(completed.returncode, 0, completed.stderr)
+        self.assertIn("PASS: scope teacher-data access=unavailable", completed.stdout)
+        self.assertIn("PASS: dataset sources=proposed_acquisition", completed.stdout)
 
     def test_canonical_agent_prompts_do_not_select_case_models(self):
         text = "\n".join(path.read_text() for path in (ROOT / "agents").glob("*.md"))

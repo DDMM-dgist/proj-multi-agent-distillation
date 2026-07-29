@@ -1,3 +1,4 @@
+kind: generic
 teacher_training_data_access: unavailable
 sources:
   - category: proposed_acquisition
