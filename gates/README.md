@@ -11,7 +11,7 @@ configuration and are snapshot-bound when the run is initialized.
 
 ## Pieces
 
-- `../agents/judge.md` — the judge agent (Read/Grep/Glob/Bash, model=sonnet;
+- `../agents/judge.md` — the runtime-neutral judge instructions (read-only evaluator;
   evaluator only, never the producer, conservative default).
 - `gate_vote.workflow.js` — the orchestration: spawns three judges in parallel with a
   forced structured verdict, applies the decision rule, returns the tally + votes.
@@ -41,6 +41,10 @@ and Judge bundle, names the responsible agent and return stage, and states data
 changes, Teacher/DFT labeling, Student retraining, revalidation, and cost. The
 Director records explicit human approval and starts a new iteration. Command or
 scheduler failures that never reached a scientific gate remain ordinary retries.
+The formerly failed gate cannot PASS until `verify-recovery` accepts a
+`RecoveryExecutionReport`. The report maps the approved changes and labeling,
+training, and revalidation actions to completed stages; their registered
+artifacts are compared with the previous iteration baseline.
 
 Before convening the judges, obtain the verified hash map and ordered criteria with
 `python -m workflow.controller gate-context <run_dir> <stage>`. Pass its

@@ -130,6 +130,8 @@ Teacher 학습 데이터 접근 수준은 `full`, `representative`, `unavailable
 남기며 임의의 coverage 점수를 만들지 않습니다. 생성 구조, Teacher-training replay,
 기존·신규 DFT anchor와 deployment high-risk 구조의 parent/frame 수, label source,
 선택 규칙과 혼합 비율도 함께 기록합니다.
+ASE dataset 또는 검증된 JSON manifest를 evidence로 지정하면 source별 parent/frame/label
+통계를 validator가 다시 계산하여 보고값과 대조합니다.
 
 진행 상황 확인:
 
@@ -240,6 +242,10 @@ REVISE/FAIL 뒤에는 바로 계산을 다시 돌리지 않습니다. Director�
 agent, 돌아갈 stage, 데이터·설정 변경, Teacher/DFT labeling, Student retraining,
 재검증 항목과 예상 비용을 `RecoveryPlan`으로 제안합니다. 연구자가 승인하면 controller가
 이 계획을 실패 당시 artifact와 Judge evidence에 결합하고 새 iteration을 시작합니다.
+새 iteration에서 실패했던 gate를 다시 PASS시키기 전에는 `RecoveryExecutionReport`가
+승인된 변경, Teacher/DFT labeling, Student retraining과 재검증에 사용된 stage를
+지정해야 합니다. Controller는 해당 stage의 등록 artifact를 이전 iteration 기준선과
+대조하며, 변경하기로 한 artifact가 동일하면 PASS를 차단합니다.
 단순 command·scheduler 실패는 설정을 바꾸지 않는 실행 재시도로 처리하며 과학적
 closed-loop iteration으로 세지 않습니다.
 
@@ -269,6 +275,7 @@ closed-loop iteration으로 세지 않습니다.
 - Teacher applicability와 reference purpose를 구분하는 TeacherBaselineReport
 - Teacher-data access, replay/source mixture와 deployment gap을 기록하는 DataCoverageReport
 - REVISE/FAIL artifact에 결합된 RecoveryPlan, human approval와 iteration history
+- 승인 계획 대비 실제 변경 stage와 artifact delta를 검증하는 RecoveryExecutionReport
 - 공통 structure/dynamics ValidationReport와 evidence hash
 - teacher/student/acquisition/uncertainty/MD/DFT/validation/scope/dataset-policy preflight
 - 임의의 새 student/MD/reference adapter가 중앙 분기 수정 없이 연결되는 contract test

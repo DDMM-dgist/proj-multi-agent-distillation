@@ -321,6 +321,12 @@ class RunControllerTests(unittest.TestCase):
             cfg.write_text(yaml.safe_dump({"run_id": "recovery", "stages": [
                 {"name": "data", "command": None, "outputs": ["artifacts/data.txt"],
                  "gate": {"criteria": [self.GATE_CRITERION]}},
+                {"name": "teacher_labeling", "command": None,
+                 "outputs": ["artifacts/labels.txt"],
+                 "gate": {"criteria": [self.GATE_CRITERION]}},
+                {"name": "training", "command": None,
+                 "outputs": ["artifacts/model.txt"],
+                 "gate": {"criteria": [self.GATE_CRITERION]}},
                 {"name": "validation", "command": None,
                  "outputs": ["artifacts/validation.txt"],
                  "gate": {"criteria": [self.GATE_CRITERION]}},
@@ -330,6 +336,14 @@ class RunControllerTests(unittest.TestCase):
             data.write_text("data")
             controller.complete_external_stage("data", [data])
             self.pass_gate(controller, "data")
+            labels = controller.run_dir / "artifacts/labels.txt"
+            labels.write_text("labels")
+            controller.complete_external_stage("teacher_labeling", [labels])
+            self.pass_gate(controller, "teacher_labeling")
+            model = controller.run_dir / "artifacts/model.txt"
+            model.write_text("model")
+            controller.complete_external_stage("training", [model])
+            self.pass_gate(controller, "training")
             validation = controller.run_dir / "artifacts/validation.txt"
             validation.write_text("failed evidence")
             controller.complete_external_stage("validation", [validation])
@@ -364,10 +378,34 @@ class RunControllerTests(unittest.TestCase):
             data.write_text("data iteration 2")
             controller.complete_external_stage("data", [data])
             self.pass_gate(controller, "data")
+            labels.write_text("labels iteration 2")
+            controller.complete_external_stage("teacher_labeling", [labels])
+            self.pass_gate(controller, "teacher_labeling")
+            model.write_text("model iteration 2")
+            controller.complete_external_stage("training", [model])
+            self.pass_gate(controller, "training")
             validation.write_text("revalidated evidence")
             controller.complete_external_stage("validation", [validation])
+            with self.assertRaisesRegex(RuntimeError, "recovery execution"):
+                self.pass_gate(controller, "validation")
+            execution = root / "recovery-execution.json"
+            execution.write_text(json.dumps({
+                "schema_version": 1, "recovery_id": recovery["id"],
+                "previous_iteration": 1, "current_iteration": 2,
+                "changes": [{"type": "add_deployment_frames", "status": "APPLIED",
+                             "evidence_artifacts": ["artifacts/data.txt"]}],
+                "labeling": {"teacher_relabel": True,
+                             "teacher_relabel_stage": "teacher_labeling",
+                             "new_dft": False, "new_dft_stage": None},
+                "student_training": {"retrain": True, "mode": "from_scratch",
+                                     "stage": "training"},
+                "revalidation": {"targets": ["validation"],
+                                 "stages": ["validation"]},
+            }))
+            controller.verify_recovery_execution(execution)
             self.pass_gate(controller, "validation")
             self.assertEqual(controller.stage("validation")["gate"], "PASS")
+            self.assertEqual(controller.state["recoveries"][-1]["status"], "resolved")
 
     def test_mutated_recovery_proposal_cannot_be_approved(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -397,6 +435,50 @@ class RunControllerTests(unittest.TestCase):
             Path(recovery["path"]).write_text("tampered")
             with self.assertRaisesRegex(RuntimeError, "integrity"):
                 controller.approve_recovery("researcher")
+
+    def test_recovery_execution_rejects_unchanged_artifacts(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            cfg = root / "workflow.yaml"
+            cfg.write_text(yaml.safe_dump({"run_id": "unchanged-recovery", "stages": [{
+                "name": "validation", "command": None,
+                "outputs": ["artifacts/result.txt"],
+                "gate": {"criteria": [self.GATE_CRITERION]},
+            }]}))
+            controller = RunController.initialize(cfg, root / "run")
+            result = controller.run_dir / "artifacts/result.txt"
+            result.write_text("same")
+            controller.complete_external_stage("validation", [result])
+            controller.record_gate("validation", "REVISE")
+            plan = root / "plan.json"
+            plan.write_text(json.dumps({
+                "schema_version": 1, "failed_stage": "validation",
+                "failure_category": "physical_validation", "root_cause": "revise protocol",
+                "responsible_agent": "simulation", "return_stage": "validation",
+                "proposed_changes": [{"type": "fix_protocol"}],
+                "labeling": {"teacher_relabel": False, "new_dft": False},
+                "student_training": {"retrain": False, "mode": "none"},
+                "revalidation": {"reuse_profile": True, "targets": ["stability"]},
+                "estimated_cost": {},
+            }))
+            recovery = controller.propose_recovery(plan)
+            controller.approve_recovery("researcher")
+            controller.start_iteration()
+            result.write_text("same")
+            controller.complete_external_stage("validation", [result])
+            execution = root / "execution.json"
+            execution.write_text(json.dumps({
+                "schema_version": 1, "recovery_id": recovery["id"],
+                "previous_iteration": 1, "current_iteration": 2,
+                "changes": [{"type": "fix_protocol", "status": "APPLIED",
+                             "evidence_artifacts": ["artifacts/result.txt"]}],
+                "labeling": {"teacher_relabel": False, "teacher_relabel_stage": None,
+                             "new_dft": False, "new_dft_stage": None},
+                "student_training": {"retrain": False, "mode": "none", "stage": None},
+                "revalidation": {"targets": ["stability"], "stages": ["validation"]},
+            }))
+            with self.assertRaisesRegex(ValueError, "did not change artifacts"):
+                controller.verify_recovery_execution(execution)
 
     def test_gate_rejects_unfinished_stage(self):
         with tempfile.TemporaryDirectory() as tmp:

@@ -14,6 +14,9 @@ Do not rerun or rebind while it is required, proposed, or merely approved.
 Prepare the missing proposal, obtain explicit human approval, or activate the
 approved iteration as appropriate. Confirm the responsible agent, return stage,
 labeling/retraining choices, cost, and frozen revalidation targets.
+If the current iteration was activated by a recovery, inspect its
+`recovery_execution` status. Before retrying the formerly failed gate, create
+and verify the execution report from the completed stage artifacts.
 
 - If waiting for a scientific or cost approval, ask for it and do not execute.
 - If a stage failed, propose the smallest repair and wait when it changes

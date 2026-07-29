@@ -19,5 +19,5 @@ jobs:
           cache: pip
       - run: python -m pip install --upgrade pip
       - run: python -m pip install -e .
-      - run: python -m compileall -q adapters validation workflow tests
+      - run: python -m compileall -q adapters orchestration validation workflow tests examples/mock
       - run: python -m unittest discover -s tests -v

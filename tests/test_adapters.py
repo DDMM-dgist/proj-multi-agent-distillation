@@ -222,7 +222,9 @@ class AdapterContractTests(unittest.TestCase):
                       check_validation_profile(profile, require_ready=True))
         policy = {"teacher_training_data_access": "unavailable", "sources": [{
             "category": "generated_teacher_labeled", "label_sources": ["teacher"],
-        }], "replay_policy": {"enabled": False}, "duplicate_policy": "error"}
+            "selection": "project seed structures",
+        }], "replay_policy": {"enabled": False}, "duplicate_policy": "error",
+            "coverage_dimensions": []}
         self.assertIn("dataset sources=generated_teacher_labeled",
                       check_dataset_policy(policy, require_ready=True))
 

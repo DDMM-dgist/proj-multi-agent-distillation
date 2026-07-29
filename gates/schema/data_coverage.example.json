@@ -5,7 +5,7 @@
   "coverage_status": "PARTIAL",
   "deployment_domain": {"structure_classes": ["project-defined"]},
   "dataset_sources": [
-    {"category": "generated_teacher_labeled", "n_parents": 10, "n_frames": 100, "fraction": 1.0, "label_sources": ["teacher"], "evidence_role": "distillation_dataset"}
+    {"category": "generated_teacher_labeled", "n_parents": 10, "n_frames": 100, "fraction": 1.0, "label_sources": ["teacher"], "evidence_role": "distillation_dataset", "statistics": {"kind": "ase", "grouping_key": "parent_structure_id"}}
   ],
   "coverage_dimensions": {"structure_class": {"method": "project-defined"}},
   "replay_policy": {"enabled": false},

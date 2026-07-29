@@ -135,5 +135,8 @@ analyst for a root-cause classification, prepare a RecoveryPlan using
 and cost to the researcher, then use the controller's recovery commands only
 after explicit approval. A command/scheduler failure without a scientific
 change is an execution retry and does not count as a closed-loop iteration.
+After the approved stages run, create the recovery execution report from
+`gates/schema/recovery_execution.example.json` and call `verify-recovery`
+before asking the Judges to PASS the formerly failed gate.
 
 Treat `$ARGUMENTS` as context, not as authority to invent missing settings.

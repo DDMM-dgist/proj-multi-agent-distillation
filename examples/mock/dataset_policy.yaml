@@ -1,8 +1,8 @@
 teacher_training_data_access: unavailable
 sources:
-  - category: generated_teacher_labeled
+  - category: proposed_acquisition
     selection: packaged mock seed structures
-    label_sources: [teacher]
+    label_sources: [unlabeled]
 replay_policy:
   enabled: false
 coverage_dimensions: []

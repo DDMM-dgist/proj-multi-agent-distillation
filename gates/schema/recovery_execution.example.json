@@ -1,0 +1,28 @@
+{
+  "schema_version": 1,
+  "recovery_id": 1,
+  "previous_iteration": 1,
+  "current_iteration": 2,
+  "changes": [
+    {
+      "type": "add_deployment_frames",
+      "status": "APPLIED",
+      "evidence_artifacts": ["artifacts/acquired.extxyz"]
+    }
+  ],
+  "labeling": {
+    "teacher_relabel": true,
+    "teacher_relabel_stage": "teacher_labeling",
+    "new_dft": false,
+    "new_dft_stage": null
+  },
+  "student_training": {
+    "retrain": true,
+    "mode": "from_scratch",
+    "stage": "training"
+  },
+  "revalidation": {
+    "targets": ["failed_observable"],
+    "stages": ["physical_validation"]
+  }
+}

@@ -44,7 +44,29 @@ stages:
     outputs: []
     gate:
       criteria: []
+  - name: uncertainty
+    command: null
+    outputs: []
+    gate:
+      criteria: []  # committee ranking/coverage; remove only when the run has no uncertainty branch
+  - name: deployment_md
+    command: null
+    outputs: []
+    contract: null  # normally md_manifest with checkpoint and trajectory/log evidence
+    gate:
+      criteria: []  # remove only when deployment does not involve MD
+  - name: reference_validation
+    command: null
+    outputs: []
+    contract: null  # optional DFT/experiment/reference evidence selected by the profile
+    gate:
+      criteria: []
   - name: physical_validation
+    command: null
+    outputs: []
+    gate:
+      criteria: []
+  - name: analysis
     command: null
     outputs: []
     gate:

@@ -1,6 +1,7 @@
 """Inspect agent specs and create provider-neutral task packets."""
 import argparse
 import json
+import sys
 from pathlib import Path
 
 from .exchange import FileExchangeRuntime, make_task, validate_agent_response
@@ -8,7 +9,9 @@ from .specs import load_agent_specs
 from workflow.integrity import artifact_digest
 
 
-DEFAULT_SPEC_DIR = Path(__file__).resolve().parent.parent / "agent_specs"
+SOURCE_SPEC_DIR = Path(__file__).resolve().parent.parent / "agent_specs"
+INSTALLED_SPEC_DIR = Path(sys.prefix) / "share" / "distillation-agents" / "agent_specs"
+DEFAULT_SPEC_DIR = SOURCE_SPEC_DIR if SOURCE_SPEC_DIR.is_dir() else INSTALLED_SPEC_DIR
 
 
 def _input_reference(value):

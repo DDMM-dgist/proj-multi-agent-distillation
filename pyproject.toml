@@ -23,6 +23,10 @@ distill-agent = "orchestration.cli:main"
 [tool.setuptools]
 packages = ["adapters", "orchestration", "validation", "workflow"]
 
+[tool.setuptools.data-files]
+"share/distillation-agents/agent_specs" = ["agent_specs/*.yaml"]
+"share/distillation-agents/agents" = ["agents/*.md"]
+
 # Install in editable mode so project packages and the runtime-neutral agent
 # registry remain available from run directories:
 #   pip install -e .

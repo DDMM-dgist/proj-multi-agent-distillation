@@ -240,12 +240,28 @@ contract:
 `unavailable`), deployment 영역, dataset source별 parent/frame/label count, replay
 정책, coverage gap과 limitation을 기록합니다. Teacher 학습 데이터가 비공개이면
 `NOT_ASSESSABLE`로 명시할 수 있으며 임의의 coverage 수치를 만들지 않습니다.
+각 dataset source는 `statistics.kind: ase`와 lineage/label field를 선언하거나,
+검증된 JSON manifest의 count field를 `statistics.kind: json`으로 지정합니다.
+Validator는 evidence 파일에서 parent/frame/label 통계를 다시 읽어 보고값과 대조합니다.
 
 ```yaml
 contract:
   kind: validation_manifest
   manifest: artifacts/data_coverage.json
   validator: validation.data_coverage.validate_data_coverage_report
+```
+
+```yaml
+dataset_sources:
+  - category: generated_teacher_labeled
+    n_parents: 50
+    n_frames: 5000
+    label_sources: [teacher]
+    evidence_role: distillation_dataset
+    statistics:
+      kind: ase
+      grouping_key: parent_structure_id
+      label_source_field: label_source
 ```
 
 ## Adapter scope

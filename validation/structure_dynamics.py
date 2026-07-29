@@ -161,6 +161,8 @@ def main():
     ap.add_argument("trajectory")
     ap.add_argument("validation_profile", help="configs/validation_profile.yaml")
     ap.add_argument("--timestep-fs", type=float, default=1.0)
+    ap.add_argument("--sample-interval-steps", type=int, default=1,
+                    help="MD steps between trajectory frames when no energy log supplies step values")
     ap.add_argument("--temperature-log", help="optional CSV with a total-energy column, for NVE drift")
     ap.add_argument("--output", help="optional common ValidationReport JSON path")
     args = ap.parse_args()
@@ -219,7 +221,10 @@ def main():
         else:
             energies = np.array([a.get_total_energy() for a in frames])
             steps = None
-        drift, resid_std = compute_nve_drift(energies, args.timestep_fs, len(frames[0]), steps=steps)
+        drift, resid_std = compute_nve_drift(
+            energies, args.timestep_fs, len(frames[0]),
+            sample_interval_steps=args.sample_interval_steps, steps=steps,
+        )
         max_abs = thresholds.get("nve_drift_meV_per_atom_per_ns", {}).get("max_abs")
         criterion = None if max_abs is None else {"operator": "max_abs",
                                                   "threshold": float(max_abs)}

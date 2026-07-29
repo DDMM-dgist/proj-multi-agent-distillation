@@ -47,9 +47,10 @@ def data_coverage(dataset_policy, dataset, output):
         "coverage_status": "NOT_ASSESSABLE",
         "deployment_domain": {"structure_classes": ["mock-seed-neighborhood"]},
         "dataset_sources": [{
-            "category": "generated_teacher_labeled", "n_parents": len(parents),
-            "n_frames": len(frames), "fraction": 1.0, "label_sources": ["teacher"],
+            "category": "proposed_acquisition", "n_parents": len(parents),
+            "n_frames": len(frames), "fraction": 1.0, "label_sources": ["unlabeled"],
             "evidence_role": "proposed_distillation_structures",
+            "statistics": {"kind": "ase", "grouping_key": "parent_structure_id"},
         }],
         "coverage_dimensions": {},
         "replay_policy": {"enabled": False},

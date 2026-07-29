@@ -232,6 +232,12 @@ def check_dataset_policy(cfg, require_ready=False):
         if source["category"] in categories:
             raise ValueError(f"dataset policy source category is duplicated: {source['category']}")
         categories.add(source["category"])
+        if require_ready and not any(
+                isinstance(source.get(field), str) and source[field].strip()
+                for field in ("path", "selection", "selection_rule")):
+            raise ValueError(
+                f"dataset policy source requires path or selection rule: {source['category']}"
+            )
         labels = source.get("label_sources")
         if (not isinstance(labels, list) or not labels or
                 any(not isinstance(label, str) or not label.strip() for label in labels)):
@@ -247,6 +253,12 @@ def check_dataset_policy(cfg, require_ready=False):
             raise ValueError("enabled replay requires selection_method and target_count")
     if cfg.get("duplicate_policy") not in {"error", "keep-first", "keep"}:
         raise ValueError("dataset policy duplicate_policy must be error, keep-first, or keep")
+    dimensions = _require(cfg, "coverage_dimensions")
+    if (not isinstance(dimensions, list) or
+            any(not isinstance(item, str) or not item.strip() for item in dimensions)):
+        raise ValueError("dataset policy coverage_dimensions must contain strings")
+    if require_ready and access != "unavailable" and not dimensions:
+        raise ValueError("assessable dataset policy requires coverage_dimensions")
     return ["dataset sources=" + ",".join(sorted(categories))]
 
 

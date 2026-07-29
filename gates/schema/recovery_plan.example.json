@@ -5,7 +5,7 @@
   "root_cause": "Describe the evidence-supported cause.",
   "responsible_agent": "data-curator",
   "return_stage": "acquisition",
-  "proposed_changes": [{"type": "add_deployment_frames", "n_parents": 0}],
+  "proposed_changes": [{"type": "add_deployment_frames", "n_parents": 10}],
   "labeling": {"teacher_relabel": true, "new_dft": false},
   "student_training": {"retrain": true, "mode": "from_scratch"},
   "revalidation": {"reuse_profile": true, "targets": ["failed_observable"]},

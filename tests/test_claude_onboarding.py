@@ -49,6 +49,9 @@ class ClaudeOnboardingTests(unittest.TestCase):
         workflow = yaml.safe_load((template_dir / "workflow.yaml").read_text())
         self.assertTrue(all("criteria" in stage.get("gate", {})
                             for stage in workflow["stages"]))
+        stage_names = {stage["name"] for stage in workflow["stages"]}
+        self.assertTrue({"uncertainty", "deployment_md", "reference_validation",
+                         "physical_validation", "analysis"} <= stage_names)
 
     def test_canonical_agent_prompts_do_not_select_case_models(self):
         text = "\n".join(path.read_text() for path in (ROOT / "agents").glob("*.md"))
@@ -72,6 +75,9 @@ class ClaudeOnboardingTests(unittest.TestCase):
         ignored = (ROOT / ".gitignore").read_text()
         for pattern in ("build/", "dist/", "*.egg-info/"):
             self.assertIn(pattern, ignored)
+        packaging = (ROOT / "pyproject.toml").read_text()
+        self.assertIn('"share/distillation-agents/agent_specs"', packaging)
+        self.assertIn('"share/distillation-agents/agents"', packaging)
         self.assertFalse((ROOT / "agents/github-manager.md").exists())
         judge = (ROOT / "agents/judge.md").read_text()
         self.assertNotIn("genuinely independent", judge)

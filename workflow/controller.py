@@ -20,6 +20,7 @@ RECOVERY_CATEGORIES = {
     "data_quality", "dataset_coverage", "student_fidelity", "teacher_applicability",
     "physical_validation", "simulation_protocol", "evidence_gap", "other",
 }
+RECOVERY_AGENTS = {"data-curator", "ml-trainer", "simulation", "analyst", "director"}
 
 
 def now():
@@ -199,7 +200,7 @@ class RunController:
                                       "sha256": source_integrity["sha256"],
                                       "source_sha256": source_integrity["sha256"]})
             created_at = now()
-            state = {"schema_version": 4, "run_id": cfg["run_id"], "created_at": created_at,
+            state = {"schema_version": 5, "run_id": cfg["run_id"], "created_at": created_at,
                      "updated_at": created_at, "workflow_config": str(run_dir / "workflow.yaml"),
                      "artifacts": [], "project_dir": str(project_dir), "inputs": input_records,
                      "code_revision": git_revision(project_dir), "events": [], "stages": stages,
@@ -598,6 +599,8 @@ class RunController:
         stage = self.stage(name)
         if stage["status"] != "completed":
             raise RuntimeError("a gate can only judge a completed stage")
+        if verdict == "PASS":
+            self._require_verified_recovery_for_pass(name)
         if verdict == "PASS" and (stage.get("contract") or {}).get("kind") == "validation_manifest":
             self._validate_external_contract(
                 stage, [record["path"] for record in self.stage_artifacts(name)],
@@ -609,6 +612,14 @@ class RunController:
             saved_votes = self.run_dir / "gates" / f"{name}.iteration-{iteration_id:03d}.votes.json"
             saved_votes.write_text(json.dumps(bundle, indent=2) + "\n")
         stage["gate"] = verdict
+        if verdict == "PASS":
+            iteration = self._current_iteration()
+            trigger = iteration.get("trigger")
+            if trigger and trigger.get("failed_stage") == name:
+                recovery = next(item for item in self.state.get("recoveries", [])
+                                if item.get("id") == trigger["recovery_id"])
+                recovery.update(status="resolved", resolved_at=now())
+                iteration["recovery_execution"]["status"] = "resolved"
         if verdict != "PASS":
             self.invalidate_from(name)
         gate_time = now()
@@ -659,6 +670,8 @@ class RunController:
         for field in ("root_cause", "responsible_agent", "return_stage"):
             if not isinstance(plan.get(field), str) or not plan[field].strip():
                 raise ValueError(f"recovery plan requires non-empty {field}")
+        if plan["responsible_agent"] not in RECOVERY_AGENTS:
+            raise ValueError("recovery responsible_agent is not a registered recovery role")
         try:
             return_index = self._stage_index(plan["return_stage"])
         except StopIteration as exc:
@@ -753,6 +766,9 @@ class RunController:
         old_iteration = self._current_iteration()
         old_iteration.update(status="superseded", completed_at=now())
         return_stage = recovery["plan"]["return_stage"]
+        return_index = self._stage_index(return_stage)
+        baseline_artifacts = [dict(record) for record in self.state["artifacts"]
+                              if self._stage_index(record["stage"]) >= return_index]
         self.invalidate_from(return_stage, include_stage=True)
         new_iteration = old_iteration["id"] + 1
         self.state["iterations"].append({
@@ -761,6 +777,8 @@ class RunController:
             "trigger": {"recovery_id": recovery["id"],
                         "failed_stage": recovery["failed_stage"],
                         "return_stage": return_stage},
+            "baseline_artifacts": baseline_artifacts,
+            "recovery_execution": {"status": "required"},
         })
         recovery.update(status="activated", activated_at=now(),
                         new_iteration=new_iteration)
@@ -771,6 +789,151 @@ class RunController:
                                      "return_stage": return_stage})
         self.save()
         return recovery
+
+    def verify_recovery_execution(self, report_path):
+        """Verify that an approved recovery produced changed, registered artifacts."""
+        iteration = self._current_iteration()
+        trigger = iteration.get("trigger")
+        if not trigger:
+            raise RuntimeError("the current iteration was not started by a recovery")
+        if "baseline_artifacts" not in iteration:
+            raise RuntimeError(
+                "this recovery iteration has no artifact baseline; start a new recovery iteration"
+            )
+        execution = iteration.get("recovery_execution", {})
+        if execution.get("status") != "required":
+            raise RuntimeError("the current recovery execution is not waiting for verification")
+        matches = [item for item in self.state.get("recoveries", [])
+                   if item.get("id") == trigger.get("recovery_id")]
+        if len(matches) != 1 or matches[0].get("status") != "activated":
+            raise RuntimeError("the activated recovery record is missing or ambiguous")
+        recovery = matches[0]
+        source = Path(report_path).resolve()
+        report = json.loads(source.read_text())
+        if report.get("schema_version") != 1:
+            raise ValueError("recovery execution report requires schema_version=1")
+        if report.get("recovery_id") != recovery["id"]:
+            raise ValueError("recovery execution report has the wrong recovery_id")
+        if (report.get("previous_iteration") != iteration["parent_iteration"] or
+                report.get("current_iteration") != iteration["id"]):
+            raise ValueError("recovery execution report has the wrong iteration binding")
+
+        planned_changes = recovery["plan"]["proposed_changes"]
+        applied_changes = report.get("changes")
+        if not isinstance(applied_changes, list) or len(applied_changes) != len(planned_changes):
+            raise ValueError("recovery execution must report every proposed change exactly once")
+        baseline = iteration.get("baseline_artifacts", [])
+
+        def validate_stage(stage_name):
+            if not isinstance(stage_name, str) or not stage_name.strip():
+                raise ValueError("recovery execution evidence stage must be non-empty")
+            stage = self.stage(stage_name)
+            if self._stage_index(stage_name) < self._stage_index(trigger["return_stage"]):
+                raise ValueError(
+                    f"recovery execution stage precedes the approved return stage: {stage_name}"
+                )
+            if stage["status"] != "completed":
+                raise ValueError(f"recovery execution stage is not completed: {stage_name}")
+            current = self.verify_stage_artifacts(stage_name)
+            previous = [item for item in baseline if item["stage"] == stage_name]
+            if previous:
+                old_hashes = {item["sha256"] for item in previous}
+                new_hashes = {item["sha256"] for item in current}
+                if old_hashes == new_hashes:
+                    raise ValueError(
+                        f"recovery execution did not change artifacts for stage: {stage_name}"
+                    )
+            return stage_name
+
+        def validate_changed_artifact(raw_path):
+            if not isinstance(raw_path, str) or not raw_path.strip():
+                raise ValueError("recovery execution evidence artifact must be non-empty")
+            path = Path(raw_path)
+            if not path.is_absolute():
+                path = self.run_dir / path
+            path = path.resolve()
+            current = [item for item in self.state["artifacts"]
+                       if Path(item["path"]).resolve() == path]
+            if len(current) != 1:
+                raise ValueError(f"recovery execution artifact is not registered: {path}")
+            validate_stage(current[0]["stage"])
+            previous = [item for item in baseline
+                        if Path(item["path"]).resolve() == path]
+            if previous and previous[0]["sha256"] == current[0]["sha256"]:
+                raise ValueError(f"recovery execution artifact did not change: {path}")
+            return current[0]["stage"]
+
+        change_types = []
+        evidence_stages = set()
+        for planned, applied in zip(planned_changes, applied_changes):
+            if not isinstance(applied, dict) or applied.get("type") != planned["type"]:
+                raise ValueError("recovery execution change order/type differs from the approved plan")
+            if applied.get("status") != "APPLIED":
+                raise ValueError("every recovery execution change must have status APPLIED")
+            artifacts = applied.get("evidence_artifacts")
+            if not isinstance(artifacts, list) or not artifacts:
+                raise ValueError("every applied recovery change requires evidence_artifacts")
+            evidence_stages.update(validate_changed_artifact(path) for path in artifacts)
+            change_types.append(applied["type"])
+
+        labeling = recovery["plan"]["labeling"]
+        label_report = report.get("labeling")
+        if not isinstance(label_report, dict):
+            raise ValueError("recovery execution requires labeling")
+        for flag, stage_field in (("teacher_relabel", "teacher_relabel_stage"),
+                                  ("new_dft", "new_dft_stage")):
+            if label_report.get(flag) != labeling[flag]:
+                raise ValueError(f"recovery execution labeling.{flag} differs from the plan")
+            stage_name = label_report.get(stage_field)
+            if labeling[flag]:
+                evidence_stages.add(validate_stage(stage_name))
+            elif stage_name is not None:
+                raise ValueError(f"recovery execution labeling.{stage_field} must be null")
+
+        training = recovery["plan"]["student_training"]
+        training_report = report.get("student_training")
+        if not isinstance(training_report, dict):
+            raise ValueError("recovery execution requires student_training")
+        for field in ("retrain", "mode"):
+            if training_report.get(field) != training[field]:
+                raise ValueError(f"recovery execution student_training.{field} differs from the plan")
+        training_stage = training_report.get("stage")
+        if training["retrain"]:
+            evidence_stages.add(validate_stage(training_stage))
+        elif training_stage is not None:
+            raise ValueError("recovery execution student_training.stage must be null")
+
+        revalidation = recovery["plan"]["revalidation"]
+        revalidation_report = report.get("revalidation")
+        if not isinstance(revalidation_report, dict):
+            raise ValueError("recovery execution requires revalidation")
+        if revalidation_report.get("targets") != revalidation["targets"]:
+            raise ValueError("recovery execution revalidation targets differ from the plan")
+        stages = revalidation_report.get("stages")
+        if not isinstance(stages, list) or not stages:
+            raise ValueError("recovery execution revalidation requires evidence stages")
+        evidence_stages.update(validate_stage(name) for name in stages)
+
+        destination = self.run_dir / "recovery" / f"recovery-{recovery['id']:03d}.execution.json"
+        destination.write_text(json.dumps(report, indent=2) + "\n")
+        record = {"status": "verified", "verified_at": now(), "path": str(destination),
+                  "integrity": artifact_digest(destination),
+                  "change_types": change_types, "evidence_stages": sorted(evidence_stages)}
+        iteration["recovery_execution"] = record
+        recovery["execution"] = record
+        self.state["events"].append({"at": now(), "type": "recovery_execution_verified",
+                                     "recovery_id": recovery["id"], **record})
+        self.save()
+        return record
+
+    def _require_verified_recovery_for_pass(self, stage_name):
+        iteration = self._current_iteration()
+        trigger = iteration.get("trigger")
+        if trigger and trigger.get("failed_stage") == stage_name:
+            if iteration.get("recovery_execution", {}).get("status") != "verified":
+                raise RuntimeError(
+                    "the recovered stage cannot PASS until recovery execution is verified"
+                )
 
     def summary(self):
         return [(s["name"], s["status"], s["gate"], s["attempts"]) for s in self.state["stages"]]
@@ -806,6 +969,9 @@ def main():
     approve.add_argument("--note")
     iteration = sub.add_parser("start-iteration")
     iteration.add_argument("run_dir")
+    verify_recovery = sub.add_parser("verify-recovery")
+    verify_recovery.add_argument("run_dir")
+    verify_recovery.add_argument("report")
     context = sub.add_parser("gate-context")
     context.add_argument("run_dir")
     context.add_argument("stage")
@@ -830,6 +996,8 @@ def main():
         controller.approve_recovery(args.approved_by, args.note)
     elif args.action == "start-iteration":
         controller.start_iteration()
+    elif args.action == "verify-recovery":
+        controller.verify_recovery_execution(args.report)
     elif args.action == "gate-context":
         print(json.dumps(controller.gate_context(args.stage), indent=2))
         return
@@ -837,6 +1005,10 @@ def main():
         print("\t".join(map(str, row)))
     if args.action == "status" and controller.state.get("pending_recovery"):
         print("RECOVERY\t" + json.dumps(controller.state["pending_recovery"], sort_keys=True))
+    if args.action == "status":
+        execution = controller._current_iteration().get("recovery_execution")
+        if execution:
+            print("RECOVERY_EXECUTION\t" + json.dumps(execution, sort_keys=True))
 
 
 if __name__ == "__main__":

@@ -3,6 +3,8 @@ import json
 import math
 from pathlib import Path
 
+from ase.io import read
+
 from validation.report import validate_evidence
 
 
@@ -12,6 +14,50 @@ COVERAGE_STATUSES = {"COMPLETE", "PARTIAL", "NOT_ASSESSABLE"}
 
 def _nonnegative_integer(value):
     return isinstance(value, int) and not isinstance(value, bool) and value >= 0
+
+
+def _nested(payload, dotted):
+    value = payload
+    for key in dotted.split("."):
+        if not isinstance(value, dict) or key not in value:
+            raise ValueError(f"coverage statistics field is missing: {dotted}")
+        value = value[key]
+    return value
+
+
+def _label_sources(frames, field):
+    labels = set()
+    for atoms in frames:
+        value = atoms.info.get(field, "unlabeled")
+        values = value if isinstance(value, (list, tuple)) else [value]
+        labels.update(str(item) for item in values)
+    return sorted(labels)
+
+
+def _source_statistics(path, config):
+    kind = config.get("kind")
+    if kind == "ase":
+        frames = read(path, index=":")
+        grouping_key = config.get("grouping_key", "parent_structure_id")
+        parents = []
+        for index, atoms in enumerate(frames):
+            if grouping_key not in atoms.info:
+                raise ValueError(
+                    f"coverage source frame {index} is missing grouping key {grouping_key!r}"
+                )
+            parents.append(str(atoms.info[grouping_key]))
+        return {"n_frames": len(frames), "n_parents": len(set(parents)),
+                "label_sources": _label_sources(frames, config.get("label_source_field",
+                                                                    "label_source"))}
+    if kind == "json":
+        payload = json.loads(Path(path).read_text())
+        return {
+            "n_frames": _nested(payload, config.get("n_frames_field", "n_frames")),
+            "n_parents": _nested(payload, config.get("n_parents_field", "n_parents")),
+            "label_sources": _nested(payload,
+                                      config.get("label_sources_field", "label_sources")),
+        }
+    raise ValueError("coverage source statistics.kind must be ase or json")
 
 
 def validate_data_coverage_report(manifest_path, required_source_categories=None,
@@ -46,6 +92,8 @@ def validate_data_coverage_report(manifest_path, required_source_categories=None
         evidence_role = source.get("evidence_role")
         if not isinstance(evidence_role, str) or not evidence_role.strip():
             raise ValueError(f"dataset source requires evidence_role: {category}")
+        if evidence_role in source_evidence_roles:
+            raise ValueError(f"dataset source evidence_role is duplicated: {evidence_role}")
         source_evidence_roles.add(evidence_role)
         if not _nonnegative_integer(source.get("n_parents")):
             raise ValueError(f"dataset source n_parents must be a non-negative integer: {category}")
@@ -74,6 +122,12 @@ def validate_data_coverage_report(manifest_path, required_source_categories=None
     dimensions = payload.get("coverage_dimensions")
     if not isinstance(dimensions, dict):
         raise ValueError("data coverage report requires coverage_dimensions")
+    if status != "NOT_ASSESSABLE" and not dimensions:
+        raise ValueError("assessable coverage requires non-empty coverage_dimensions")
+    for name, dimension in dimensions.items():
+        if (not isinstance(name, str) or not name.strip() or not isinstance(dimension, dict) or
+                not isinstance(dimension.get("method"), str) or not dimension["method"].strip()):
+            raise ValueError("every coverage dimension requires a non-empty method")
     replay = payload.get("replay_policy")
     if not isinstance(replay, dict) or not isinstance(replay.get("enabled"), bool):
         raise ValueError("data coverage report requires replay_policy.enabled")
@@ -95,6 +149,35 @@ def validate_data_coverage_report(manifest_path, required_source_categories=None
     if missing_evidence:
         raise ValueError("dataset source evidence roles are missing: " +
                          ", ".join(sorted(missing_evidence)))
+    evidence_by_role = {item["role"]: item for item in payload["evidence"]}
+    for source in sources:
+        statistics = source.get("statistics")
+        if not isinstance(statistics, dict):
+            raise ValueError(
+                f"dataset source requires deterministic statistics: {source['category']}"
+            )
+        evidence = evidence_by_role[source["evidence_role"]]
+        evidence_path = Path(evidence["path"]).expanduser()
+        evidence_path = (evidence_path.resolve() if evidence_path.is_absolute() else
+                         (manifest_path.parent / evidence_path).resolve())
+        actual = _source_statistics(evidence_path, statistics)
+        if (not _nonnegative_integer(actual.get("n_parents")) or
+                not _nonnegative_integer(actual.get("n_frames")) or
+                not isinstance(actual.get("label_sources"), list) or
+                any(not isinstance(item, str) or not item.strip()
+                    for item in actual["label_sources"])):
+            raise ValueError(
+                f"dataset source statistics are invalid for {source['category']}"
+            )
+        for field in ("n_parents", "n_frames"):
+            if actual[field] != source[field]:
+                raise ValueError(
+                    f"dataset source {field} does not match evidence for {source['category']}"
+                )
+        if sorted(actual["label_sources"]) != sorted(source["label_sources"]):
+            raise ValueError(
+                f"dataset source label_sources do not match evidence for {source['category']}"
+            )
     policy_value = payload.get("dataset_policy")
     if not isinstance(policy_value, str) or not policy_value.strip():
         raise ValueError("data coverage report requires dataset_policy")

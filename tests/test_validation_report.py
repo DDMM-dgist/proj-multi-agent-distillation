@@ -3,6 +3,9 @@ import tempfile
 import unittest
 from pathlib import Path
 
+from ase import Atoms
+from ase.io import write
+
 from validation.report import evidence_record, validate_validation_report
 from validation.teacher_baseline import validate_teacher_baseline_report
 from validation.data_coverage import validate_data_coverage_report
@@ -131,7 +134,13 @@ class ValidationReportTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             evidence = root / "dataset.extxyz"
-            evidence.write_text("dataset")
+            frames = []
+            for index in range(10):
+                atoms = Atoms("Cu", positions=[[index * 0.1, 0, 0]])
+                atoms.info.update(parent_structure_id=f"parent-{index}",
+                                  label_source="teacher")
+                frames.extend([atoms.copy() for _ in range(10)])
+            write(evidence, frames)
             dataset_policy = root / "dataset_policy.yaml"
             dataset_policy.write_text("teacher_training_data_access: unavailable\n")
             report = root / "coverage.json"
@@ -145,6 +154,8 @@ class ValidationReportTests(unittest.TestCase):
                     "category": "generated_teacher_labeled", "n_parents": 10,
                     "n_frames": 100, "fraction": 1.0, "label_sources": ["teacher"],
                     "evidence_role": "distillation_dataset",
+                    "statistics": {"kind": "ase",
+                                   "grouping_key": "parent_structure_id"},
                 }],
                 "coverage_dimensions": {},
                 "replay_policy": {"enabled": False},
@@ -156,10 +167,47 @@ class ValidationReportTests(unittest.TestCase):
             report.write_text(json.dumps(payload))
             validate_data_coverage_report(report,
                                           allowed_evidence=[dataset_policy, evidence])
+            payload["dataset_sources"][0]["n_frames"] = 99
+            report.write_text(json.dumps(payload))
+            with self.assertRaisesRegex(ValueError, "n_frames does not match"):
+                validate_data_coverage_report(report)
+            payload["dataset_sources"][0]["n_frames"] = 100
             payload["dataset_sources"][0]["fraction"] = 0.5
             report.write_text(json.dumps(payload))
             with self.assertRaisesRegex(ValueError, "sum to 1"):
                 validate_data_coverage_report(report)
+
+    def test_data_coverage_recomputes_counts_from_json_manifest(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            dataset_manifest = root / "dataset.json"
+            dataset_manifest.write_text(json.dumps({
+                "counts": {"frames": 20, "parents": 5, "labels": ["dft"]}
+            }))
+            policy = root / "policy.yaml"
+            policy.write_text("teacher_training_data_access: representative\n")
+            report = root / "coverage.json"
+            report.write_text(json.dumps({
+                "schema_version": 1,
+                "teacher_training_data_access": "representative",
+                "dataset_policy": str(policy), "coverage_status": "PARTIAL",
+                "deployment_domain": {"system": "generic"},
+                "dataset_sources": [{
+                    "category": "dft_anchor_existing", "n_parents": 5,
+                    "n_frames": 20, "label_sources": ["dft"],
+                    "evidence_role": "anchor_manifest",
+                    "statistics": {"kind": "json", "n_frames_field": "counts.frames",
+                                   "n_parents_field": "counts.parents",
+                                   "label_sources_field": "counts.labels"},
+                }],
+                "coverage_dimensions": {"composition": {"method": "manifest bins"}},
+                "replay_policy": {"enabled": False}, "identified_gaps": [],
+                "limitations": [],
+                "evidence": [evidence_record("dataset_policy", policy),
+                             evidence_record("anchor_manifest", dataset_manifest)],
+            }))
+            validate_data_coverage_report(report,
+                                          allowed_evidence=[policy, dataset_manifest])
 
 
 if __name__ == "__main__":

@@ -52,6 +52,10 @@ but only this Director session records completion and gates in the manifest.
    and estimated cost. Obtain human approval before activating the iteration.
    A scheduler or command failure with no scientific change is an execution
    retry, not a scientific recovery cycle.
+   Before the formerly failed gate can PASS, prepare a
+   `RecoveryExecutionReport` mapping every approved change to completed
+   evidence stages and run `workflow.controller verify-recovery`. Do not mark
+   the loop complete when the relevant artifact hashes did not change.
 7. **On PASS:** record the result, move to the next stage.
 8. **Escalate to the human researcher** before: approving a recovery plan,
    submitting reference calculations,
