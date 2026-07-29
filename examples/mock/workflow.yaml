@@ -3,8 +3,40 @@ inputs:
   - "{project_dir}/examples/mock/teacher.yaml"
   - "{project_dir}/examples/mock/student.yaml"
   - "{project_dir}/examples/mock/validation.yaml"
+  - "{project_dir}/examples/mock/distillation_scope.yaml"
+  - "{project_dir}/examples/mock/dataset_policy.yaml"
   - "{project_dir}/examples/mock/seed.example.xyz"
 stages:
+  - name: teacher_baseline
+    gate:
+      criteria: [Teacher applicability scope and reference purpose are explicit]
+    command: ["{python}", "{project_dir}/examples/mock/scientific_reports.py",
+              teacher-baseline, "{project_dir}/examples/mock/teacher.yaml",
+              "{project_dir}/examples/mock/distillation_scope.yaml",
+              "{project_dir}/examples/mock/validation.yaml",
+              "{project_dir}/examples/mock/seed.example.xyz",
+              "{artifacts_dir}/teacher_baseline.json"]
+    outputs: [artifacts/teacher_baseline.json]
+    contract:
+      kind: validation_manifest
+      manifest: artifacts/teacher_baseline.json
+      validator: validation.teacher_baseline.validate_teacher_baseline_report
+      options:
+        accepted_applicability: [SUPPORTED, CONDITIONAL]
+  - name: data_coverage
+    gate:
+      criteria: [Teacher-data access coverage gaps and dataset sources are explicit]
+    command: ["{python}", "{project_dir}/examples/mock/scientific_reports.py",
+              data-coverage, "{project_dir}/examples/mock/dataset_policy.yaml",
+              "{project_dir}/examples/mock/seed.example.xyz",
+              "{artifacts_dir}/data_coverage.json"]
+    outputs: [artifacts/data_coverage.json]
+    contract:
+      kind: validation_manifest
+      manifest: artifacts/data_coverage.json
+      validator: validation.data_coverage.validate_data_coverage_report
+      options:
+        accepted_statuses: [NOT_ASSESSABLE]
   - name: teacher_labeling
     gate:
       criteria: [teacher labels and provenance manifest are complete]

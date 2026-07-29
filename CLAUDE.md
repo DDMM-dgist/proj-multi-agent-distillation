@@ -54,7 +54,17 @@ separate-context, mutually blind `judge` committee before any gated step is acce
   `validation.report` envelope (or a documented observable-specific contract)
   and include integrity records for the files used as evidence.
 - **Preflight the whole run.** Validate teacher, student, acquisition,
-  uncertainty, MD, DFT, and validation configs before the first pilot. A
+  uncertainty, MD, DFT, validation, scope, and dataset-policy configs before
+  the first pilot. A
   schema-only check can run anywhere; executable/file checks belong in the
   corresponding server environment.
+- **Freeze Teacher baseline and scope before Student results.** Record the
+  deployment domain, Teacher applicability, reference source, protocol, and
+  validation targets. Require a DataCoverageReport before accepting the
+  training dataset. `full`, `representative`, and `unavailable` Teacher-data
+  access are all valid when honestly documented.
+- **REVISE/FAIL requires structured recovery.** Diagnose the cause, create a
+  hash-bound RecoveryPlan, obtain human approval, and activate a new iteration
+  before rerunning scientific work. Ordinary command or scheduler failures may
+  be retried without claiming a scientific closed-loop cycle.
 - Don't `git commit`/push without explicit instruction.

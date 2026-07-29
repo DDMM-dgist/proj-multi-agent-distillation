@@ -1,11 +1,29 @@
 run_id: null
 inputs: []
 stages:
+  - name: teacher_baseline
+    command: null
+    outputs: [artifacts/teacher_baseline.json]
+    contract:
+      kind: validation_manifest
+      manifest: artifacts/teacher_baseline.json
+      validator: validation.teacher_baseline.validate_teacher_baseline_report
+    gate:
+      criteria: []  # bind applicability and target criteria before initialization
   - name: acquisition
     command: null
     outputs: []
     gate:
       criteria: []  # fill before initialization; criteria are snapshot-bound
+  - name: data_coverage
+    command: null
+    outputs: [artifacts/data_coverage.json]
+    contract:
+      kind: validation_manifest
+      manifest: artifacts/data_coverage.json
+      validator: validation.data_coverage.validate_data_coverage_report
+    gate:
+      criteria: []
   - name: teacher_labeling
     command: null
     outputs: []

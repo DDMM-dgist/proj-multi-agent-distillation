@@ -1,0 +1,13 @@
+teacher_training_data_access: null  # full | representative | unavailable
+sources: []
+# Each source declares category, path/selection rule, label_sources, target count,
+# and parent lineage. Common categories are generated_teacher_labeled,
+# teacher_training_replay, dft_anchor_existing, dft_anchor_new, and
+# deployment_high_risk; projects may define additional categories.
+replay_policy:
+  enabled: false
+  selection_method: null
+  target_count: 0
+coverage_dimensions: []
+duplicate_policy: error
+label_alignment: null

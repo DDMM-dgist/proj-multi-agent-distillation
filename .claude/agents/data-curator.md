@@ -1,6 +1,6 @@
 ---
 name: data-curator
-description: Acquires structures, applies teacher labels, builds fixed splits, and records dataset provenance.
+description: Assesses coverage, manages replay/source mixtures, applies teacher labels, and builds provenance-safe splits.
 tools: Read, Write, Edit, Bash, Glob, Grep
 model: inherit
 ---

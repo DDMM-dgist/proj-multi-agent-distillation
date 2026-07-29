@@ -178,8 +178,8 @@ class RunControllerTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             controller = RunController.initialize(ROOT / "examples/mock/workflow.yaml",
                                                   Path(tmp) / "run")
-            for stage in ("teacher_labeling", "dataset_split", "training", "evaluation",
-                          "physical_validation"):
+            for stage in ("teacher_baseline", "data_coverage", "teacher_labeling",
+                          "dataset_split", "training", "evaluation", "physical_validation"):
                 controller.run_stage(stage)
                 self.pass_gate(controller, stage)
             self.assertEqual(controller.stage("physical_validation")["gate"], "PASS")
@@ -190,7 +190,8 @@ class RunControllerTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             controller = RunController.initialize(ROOT / "examples/mock/workflow.yaml",
                                                   Path(tmp) / "run")
-            for stage in ("teacher_labeling", "dataset_split", "training"):
+            for stage in ("teacher_baseline", "data_coverage", "teacher_labeling",
+                          "dataset_split", "training"):
                 controller.run_stage(stage)
                 self.pass_gate(controller, stage)
             checkpoint = controller.run_dir / "artifacts/committee/seed-1/mock-model.json"
@@ -312,6 +313,90 @@ class RunControllerTests(unittest.TestCase):
             }))
             controller.record_gate("data", votes_path=bundle)
             self.assertEqual(controller.stage("data")["gate"], "REVISE")
+
+    def test_recovery_plan_requires_human_approval_and_starts_bound_iteration(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            cfg = root / "workflow.yaml"
+            cfg.write_text(yaml.safe_dump({"run_id": "recovery", "stages": [
+                {"name": "data", "command": None, "outputs": ["artifacts/data.txt"],
+                 "gate": {"criteria": [self.GATE_CRITERION]}},
+                {"name": "validation", "command": None,
+                 "outputs": ["artifacts/validation.txt"],
+                 "gate": {"criteria": [self.GATE_CRITERION]}},
+            ]}))
+            controller = RunController.initialize(cfg, root / "run")
+            data = controller.run_dir / "artifacts/data.txt"
+            data.write_text("data")
+            controller.complete_external_stage("data", [data])
+            self.pass_gate(controller, "data")
+            validation = controller.run_dir / "artifacts/validation.txt"
+            validation.write_text("failed evidence")
+            controller.complete_external_stage("validation", [validation])
+            controller.record_gate("validation", "REVISE", evidence="coverage gap")
+            with self.assertRaisesRegex(RuntimeError, "recovery is pending"):
+                controller.complete_external_stage("validation", [validation])
+
+            plan = root / "recovery-plan.json"
+            plan.write_text(json.dumps({
+                "schema_version": 1, "failed_stage": "validation",
+                "failure_category": "dataset_coverage",
+                "root_cause": "deployment liquid configurations are missing",
+                "responsible_agent": "data-curator", "return_stage": "data",
+                "proposed_changes": [{"type": "add_deployment_frames", "n_parents": 5}],
+                "labeling": {"teacher_relabel": True, "new_dft": False},
+                "student_training": {"retrain": True, "mode": "from_scratch"},
+                "revalidation": {"reuse_profile": True, "targets": ["validation"]},
+                "estimated_cost": {"gpu_hours": 1},
+            }))
+            recovery = controller.propose_recovery(plan)
+            self.assertEqual(recovery["gate_binding"]["artifact_sha256"],
+                             {str(validation): artifact_digest(validation)["sha256"]})
+            with self.assertRaisesRegex(RuntimeError, "approved"):
+                controller.start_iteration()
+            controller.approve_recovery("researcher", "approved pilot")
+            controller.start_iteration()
+            self.assertIsNone(controller.state["pending_recovery"])
+            self.assertEqual(controller.state["iterations"][-1]["id"], 2)
+            self.assertEqual(controller.state["recoveries"][-1]["status"], "activated")
+            self.assertEqual(controller.stage("data")["status"], "pending")
+            self.assertEqual(controller.stage("validation")["status"], "pending")
+            data.write_text("data iteration 2")
+            controller.complete_external_stage("data", [data])
+            self.pass_gate(controller, "data")
+            validation.write_text("revalidated evidence")
+            controller.complete_external_stage("validation", [validation])
+            self.pass_gate(controller, "validation")
+            self.assertEqual(controller.stage("validation")["gate"], "PASS")
+
+    def test_mutated_recovery_proposal_cannot_be_approved(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            cfg = root / "workflow.yaml"
+            cfg.write_text(yaml.safe_dump({"run_id": "recovery-integrity", "stages": [{
+                "name": "validation", "command": None,
+                "outputs": ["artifacts/result.txt"],
+            }]}))
+            controller = RunController.initialize(cfg, root / "run")
+            result = controller.run_dir / "artifacts/result.txt"
+            result.write_text("result")
+            controller.complete_external_stage("validation", [result])
+            controller.record_gate("validation", "FAIL")
+            plan = root / "plan.json"
+            plan.write_text(json.dumps({
+                "schema_version": 1, "failed_stage": "validation",
+                "failure_category": "physical_validation", "root_cause": "unstable",
+                "responsible_agent": "simulation", "return_stage": "validation",
+                "proposed_changes": [{"type": "fix_protocol"}],
+                "labeling": {"teacher_relabel": False, "new_dft": False},
+                "student_training": {"retrain": False, "mode": "none"},
+                "revalidation": {"reuse_profile": True, "targets": ["stability"]},
+                "estimated_cost": {},
+            }))
+            recovery = controller.propose_recovery(plan)
+            Path(recovery["path"]).write_text("tampered")
+            with self.assertRaisesRegex(RuntimeError, "integrity"):
+                controller.approve_recovery("researcher")
 
     def test_gate_rejects_unfinished_stage(self):
         with tempfile.TemporaryDirectory() as tmp:

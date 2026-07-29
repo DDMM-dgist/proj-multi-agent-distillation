@@ -75,3 +75,10 @@ large-cell/OOD reliability needs.
 
 Don't overstate confidence. If the data can't answer it, say what's needed.
 Report only to the Director.
+
+For every REVISE/FAIL, classify the root cause as data quality, dataset
+coverage, Student fidelity, Teacher applicability, physical validation,
+simulation protocol, evidence gap, or other. Recommend the responsible agent,
+earliest return stage, whether Teacher/DFT relabeling and Student retraining are
+needed, and which frozen validation targets must be rerun. The Director records
+the RecoveryPlan and obtains human approval.

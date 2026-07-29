@@ -8,7 +8,7 @@ Start new runs from `configs/templates/`. Files under `configs/examples/` are
 built-in adapter recipes, while complete material/model combinations belong
 under `examples/`; neither location supplies automatic defaults.
 
-Seven config families define the workflow's model-independent interfaces. Each
+Nine config families define the workflow's model-independent interfaces. Each
 has a `kind` identifier plus interface-specific fields. Generic callables and
 commands are selected from config; only the packaged convenience recipes use
 built-in dispatch.
@@ -22,6 +22,8 @@ built-in dispatch.
 | `md_backend.yaml` | run a trajectory from a deployed model | `lammps` | `ase-md`, model-native MD |
 | `reference.yaml` | reference energy/force/stress calculation | callable renderer; built-in `vasp` input renderer | other electronic-structure backends |
 | `validation_profile.yaml` | deployment-relevant physical observables | generic RDF/coordination/density/MSD/NVE report | any observable with a ValidationReport-compatible validator |
+| `distillation_scope.yaml` | deployment domain, Teacher-data access, approval boundaries | generic contract | project-defined scope |
+| `dataset_policy.yaml` | generated/replay/DFT source mixture and coverage dimensions | generic contract | project-defined selection method |
 
 ## Interface contracts
 
@@ -74,7 +76,8 @@ predict:
 ```
 
 Run `python -m adapters.preflight` across the active teacher, student,
-acquisition, uncertainty, MD, DFT, and validation configs before expensive work.
+acquisition, uncertainty, MD, DFT, validation, scope, and dataset-policy configs
+before expensive work.
 Repository-relative paths are resolved from the project root, not from the run
 directory. `--skip-files` performs schema-only checks without requiring Conda
 or model packages. A full check also verifies configured callables,
@@ -160,8 +163,15 @@ supplies `adapter.renderer`; the core workflow does not require VASP.
 ### `validation_profile.yaml`
 ```yaml
 kind: project-validation
-checks: [rdf, adf, coordination, density, msd, nve_drift, sq_fsdp]
-# choose implemented observables or attach validators for new ones
+deployment_domain: {}
+checks:
+  - name: density
+    category: structure
+    purpose: student_teacher_fidelity
+    reference_source: teacher
+    protocol: project-density-v1
+    required: true
+    threshold: null
 ```
 
 Implemented observables can be selected in config. A new observable requires a
@@ -211,6 +221,31 @@ contract:
   manifest: artifacts/md.manifest.json
   committee_manifest: artifacts/student_committee.manifest.json
   required_evidence: [input, trajectory, thermo_log]
+```
+
+### Teacher baseline and data coverage
+
+Student 결과를 보기 전에 Teacher applicability와 validation target을 고정합니다.
+`TeacherBaselineReport`는 공통 ValidationReport check에 `purpose`,
+`reference_source`, `protocol`을 추가하고 다음 validator로 검사합니다.
+
+```yaml
+contract:
+  kind: validation_manifest
+  manifest: artifacts/teacher_baseline.json
+  validator: validation.teacher_baseline.validate_teacher_baseline_report
+```
+
+`DataCoverageReport`는 Teacher 학습 데이터 접근 수준(`full`, `representative`,
+`unavailable`), deployment 영역, dataset source별 parent/frame/label count, replay
+정책, coverage gap과 limitation을 기록합니다. Teacher 학습 데이터가 비공개이면
+`NOT_ASSESSABLE`로 명시할 수 있으며 임의의 coverage 수치를 만들지 않습니다.
+
+```yaml
+contract:
+  kind: validation_manifest
+  manifest: artifacts/data_coverage.json
+  validator: validation.data_coverage.validate_data_coverage_report
 ```
 
 ## Adapter scope

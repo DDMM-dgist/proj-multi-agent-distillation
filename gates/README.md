@@ -35,6 +35,13 @@ the registered stage artifacts. The controller recomputes the decision and
 compares the hashes; a bare manual `PASS` is rejected. A researcher or Director
 may still record `REVISE` or `FAIL` directly to stop work conservatively.
 
+After REVISE/FAIL, the controller requires a structured RecoveryPlan before
+scientific work can be rerun. The plan is bound to the failed artifact hashes
+and Judge bundle, names the responsible agent and return stage, and states data
+changes, Teacher/DFT labeling, Student retraining, revalidation, and cost. The
+Director records explicit human approval and starts a new iteration. Command or
+scheduler failures that never reached a scientific gate remain ordinary retries.
+
 Before convening the judges, obtain the verified hash map and ordered criteria with
 `python -m workflow.controller gate-context <run_dir> <stage>`. Pass its
 `artifact_sha256` and `criteria` fields to the optional workflow. The controller

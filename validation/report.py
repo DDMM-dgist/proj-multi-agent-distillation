@@ -72,6 +72,37 @@ def _finite_scalar(value):
     return not isinstance(value, bool) and isinstance(value, (int, float)) and math.isfinite(value)
 
 
+def validate_evidence(manifest_path, evidence, submitted_artifacts=None,
+                      require_submitted_evidence=False, allowed_evidence=None,
+                      label="validation"):
+    """Validate hash-bound evidence shared by scientific report contracts."""
+    manifest_path = Path(manifest_path).resolve()
+    submitted = {Path(path).resolve() for path in (submitted_artifacts or [])}
+    allowed = [Path(path).resolve() for path in allowed_evidence] \
+        if allowed_evidence is not None else None
+    if not isinstance(evidence, list) or not evidence:
+        raise ValueError(f"{label} report requires non-empty evidence")
+    roles = set()
+    for item in evidence:
+        if not isinstance(item, dict):
+            raise ValueError(f"{label} evidence requires role, path, and integrity")
+        role, raw_path, integrity = item.get("role"), item.get("path"), item.get("integrity")
+        if not role or not raw_path or not isinstance(integrity, dict):
+            raise ValueError(f"{label} evidence requires role, path, and integrity")
+        if role in roles:
+            raise ValueError(f"{label} evidence role is duplicated: {role}")
+        roles.add(role)
+        path = Path(raw_path).expanduser()
+        path = path.resolve() if path.is_absolute() else (manifest_path.parent / path).resolve()
+        verify_artifact(path, integrity)
+        if allowed is not None and not any(path == root or path.is_relative_to(root)
+                                           for root in allowed):
+            raise ValueError(f"{label} evidence is not bound to this run: {path}")
+        if require_submitted_evidence and path not in submitted:
+            raise ValueError(f"{label} evidence was not submitted as a stage artifact: {path}")
+    return roles
+
+
 def validate_validation_report(manifest_path, required_observables=None,
                                submitted_artifacts=None, require_submitted_evidence=False,
                                required_pass_observables=None,
@@ -115,26 +146,6 @@ def validate_validation_report(manifest_path, required_observables=None,
             raise ValueError("required validation observables did not pass: " +
                              ", ".join(sorted(failed)))
 
-    submitted = {Path(path).resolve() for path in (submitted_artifacts or [])}
-    allowed = [Path(path).resolve() for path in allowed_evidence] \
-        if allowed_evidence is not None else None
-    evidence = payload.get("evidence")
-    if not isinstance(evidence, list) or not evidence:
-        raise ValueError("validation report requires non-empty evidence")
-    roles = set()
-    for item in evidence:
-        role, raw_path, integrity = item.get("role"), item.get("path"), item.get("integrity")
-        if not role or not raw_path or not isinstance(integrity, dict):
-            raise ValueError("validation evidence requires role, path, and integrity")
-        if role in roles:
-            raise ValueError(f"validation evidence role is duplicated: {role}")
-        roles.add(role)
-        path = Path(raw_path).expanduser()
-        path = path.resolve() if path.is_absolute() else (manifest_path.parent / path).resolve()
-        verify_artifact(path, integrity)
-        if allowed is not None and not any(path == root or path.is_relative_to(root)
-                                           for root in allowed):
-            raise ValueError(f"validation evidence is not bound to this run: {path}")
-        if require_submitted_evidence and path not in submitted:
-            raise ValueError(f"validation evidence was not submitted as a stage artifact: {path}")
+    validate_evidence(manifest_path, payload.get("evidence"), submitted_artifacts,
+                      require_submitted_evidence, allowed_evidence)
     return payload

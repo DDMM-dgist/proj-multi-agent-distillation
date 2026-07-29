@@ -1,0 +1,12 @@
+deployment_domain:
+  system: mock-Cu
+  composition_scope: [Cu]
+  structure_classes: [mock-seed-neighborhood]
+  temperature_K: [0]
+  pressure_GPa: [0]
+teacher_training_data_access: unavailable
+teacher_applicability_evidence: []
+approval_boundaries:
+  costly_training: true
+  production_md: true
+  new_dft: true

@@ -30,6 +30,10 @@ at a time. Determine:
 - DFT, MD, uncertainty, and validation-profile config choices;
 - the deployment domain and required accuracy, energetics, structure, dynamics,
   stability, and performance observables;
+- whether Teacher training data access is full, representative, or unavailable,
+  and whether replay of Teacher-training structures is permitted;
+- whether the Teacher has already been validated in the deployment domain and
+  which targets use Teacher, DFT, experiment, or another reference;
 - observable-specific protocols and acceptance thresholds;
 - which actions require explicit approval (always include costly training,
   production MD, and DFT submissions).
@@ -45,6 +49,12 @@ placeholders that can be resolved from the conversation. Keep unresolved
 scientific choices explicit as `null` or a clearly labeled TODO; do not invent
 paths, elements, thresholds, observable protocols, or hyperparameters.
 
+Create `distillation_scope.yaml`, `dataset_policy.yaml`, and
+`validation_profile.yaml`. Before Student results exist, define the deployment
+domain, Teacher applicability evidence, validation purposes/reference sources,
+protocols, and proposed thresholds. Present these choices for researcher
+approval; do not silently treat a Teacher prediction as physical ground truth.
+
 Create a run-specific workflow config whose commands point to those configs and
 the supplied structures. If multiple acquisition backends are requested,
 create separate artifacts and use `workflow.steps merge-datasets` for the
@@ -54,6 +64,12 @@ Declare every active config, template, and seed structure under workflow
 `inputs:` so initialization snapshots and hashes them. Put teacher labeling and
 teacher MD stages in the teacher Conda `env`, and student prediction stages in
 the student Conda `env`, when those environments differ.
+Place `teacher_baseline` before acquisition and `data_coverage` after acquisition
+but before labeling/training. Their
+reports use `validation.teacher_baseline.validate_teacher_baseline_report` and
+`validation.data_coverage.validate_data_coverage_report`. When Teacher training
+data are unavailable, require an explicit `NOT_ASSESSABLE` coverage status and
+limitations instead of inventing a quantitative score.
 Declare adapter source files or an environment/package lock manifest as inputs
 when the adapter is outside this repository, so its implementation is auditable.
 Declare large model checkpoints or directories as `{path: <path>, copy: false}`;
@@ -72,7 +88,8 @@ Verify acquisition output has a parent ID before teacher labeling or splitting.
 ## 4. Preflight and initialize
 
 Run schema-only preflight across the teacher, student, acquisition, uncertainty,
-MD, DFT, and validation configs first. Before the pilot, run it with `--require-ready` and
+MD, DFT, validation, scope, and dataset-policy configs first. Before the pilot,
+run it with `--require-ready` and
 run full file/import checks only if the relevant model environment is active.
 Report missing external files and unresolved thresholds as a short checklist.
 When the minimum paths and configs required for initialization exist, run:
@@ -88,6 +105,8 @@ Do not submit training, production MD, or DFT during bootstrap.
 Summarize:
 
 - configs and structures selected;
+- Teacher baseline/applicability work and the frozen validation profile;
+- Teacher-data access level, coverage dimensions, and replay/source-mixture policy;
 - acquisition route and expected dataset categories;
 - stages and their required artifacts;
 - proposed gate criteria and unresolved thresholds;
@@ -109,5 +128,12 @@ Never issue a bare PASS. A failed Judge invocation occupies its slot as a
 synthetic REVISE vote with every criterion marked false.
 Register the whole committee directory as a training-stage artifact in addition
 to its manifest, so every checkpoint is bound to the training gate.
+
+After a Judge REVISE/FAIL, do not rerun scientific work directly. Ask the
+analyst for a root-cause classification, prepare a RecoveryPlan using
+`gates/schema/recovery_plan.example.json`, show the proposed data/config change
+and cost to the researcher, then use the controller's recovery commands only
+after explicit approval. A command/scheduler failure without a scientific
+change is an execution retry and does not count as a closed-loop iteration.
 
 Treat `$ARGUMENTS` as context, not as authority to invent missing settings.

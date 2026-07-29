@@ -37,7 +37,8 @@ class ClaudeOnboardingTests(unittest.TestCase):
         template_dir = ROOT / "configs/templates"
         expected = {"teacher.yaml", "student.yaml", "acquisition.yaml",
                     "md_backend.yaml", "reference.yaml",
-                    "validation_profile.yaml", "workflow.yaml"}
+                    "validation_profile.yaml", "distillation_scope.yaml",
+                    "dataset_policy.yaml", "workflow.yaml"}
         self.assertTrue(expected <= {path.name for path in template_dir.glob("*.yaml")})
         text = ""
         for path in template_dir.glob("*.yaml"):

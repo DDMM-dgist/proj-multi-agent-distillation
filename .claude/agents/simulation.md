@@ -1,6 +1,6 @@
 ---
 name: simulation
-description: Runs or prepares MD, DFT, deployment-trajectory, and physical validation calculations.
+description: Establishes Teacher baselines and runs MD, DFT, deployment, and physical validation calculations.
 tools: Read, Write, Edit, Bash, Glob, Grep
 model: inherit
 ---

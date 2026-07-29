@@ -1,0 +1,12 @@
+deployment_domain:
+  system: null
+  composition_scope: []
+  structure_classes: []
+  temperature_K: []
+  pressure_GPa: []
+teacher_training_data_access: null  # full | representative | unavailable
+teacher_applicability_evidence: []
+approval_boundaries:
+  costly_training: true
+  production_md: true
+  new_dft: true

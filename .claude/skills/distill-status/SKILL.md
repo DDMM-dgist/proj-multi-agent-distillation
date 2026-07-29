@@ -11,6 +11,7 @@ Locate the requested run, or the only active run if unambiguous. Read its
 
 - completed and currently blocked stages;
 - latest PASS/REVISE/FAIL decisions;
+- active iteration and any pending RecoveryPlan/approval;
 - important artifacts already available;
 - any failed command and its concise cause;
 - the single next action or researcher decision needed.

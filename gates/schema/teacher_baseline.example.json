@@ -1,0 +1,28 @@
+{
+  "schema_version": 1,
+  "profile": "deployment-profile-v1",
+  "teacher": {"config": "configs/teacher.yaml"},
+  "distillation_scope": "configs/distillation_scope.yaml",
+  "validation_profile": "configs/validation_profile.yaml",
+  "deployment_domain": {"structure_classes": ["project-defined"]},
+  "applicability": {"status": "CONDITIONAL", "limitations": []},
+  "checks": [
+    {
+      "domain": "structure",
+      "observable": "project_observable",
+      "status": "RECORDED",
+      "value": 0.0,
+      "unit": "project-unit",
+      "criterion": null,
+      "purpose": "student_teacher_fidelity",
+      "reference_source": "teacher",
+      "protocol": "project-protocol-v1"
+    }
+  ],
+  "evidence": [
+    {"role": "teacher_config", "path": "configs/teacher.yaml", "integrity": {"kind": "file", "size": 0, "sha256": "replace"}},
+    {"role": "distillation_scope", "path": "configs/distillation_scope.yaml", "integrity": {"kind": "file", "size": 0, "sha256": "replace"}},
+    {"role": "validation_profile", "path": "configs/validation_profile.yaml", "integrity": {"kind": "file", "size": 0, "sha256": "replace"}},
+    {"role": "teacher_result", "path": "path/to/evidence", "integrity": {"kind": "file", "size": 0, "sha256": "replace"}}
+  ]
+}

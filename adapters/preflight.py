@@ -158,6 +158,27 @@ def check_validation_profile(cfg, require_ready=False):
     checks = _require(cfg, "checks")
     if not isinstance(checks, list) or not checks:
         raise ValueError("validation profile checks must be a non-empty list")
+    names = []
+    for index, check in enumerate(checks):
+        if isinstance(check, str) and check.strip():
+            names.append(check)
+            continue
+        if not isinstance(check, dict) or not isinstance(check.get("name"), str):
+            raise ValueError(f"validation check {index} requires a name")
+        names.append(check["name"])
+        if not isinstance(check.get("category"), str) or not check["category"].strip():
+            raise ValueError(f"validation check {check['name']} requires category")
+        if check.get("purpose") not in {
+                "student_teacher_fidelity", "physical_accuracy", "deployment_stability"}:
+            raise ValueError(f"validation check {check['name']} has invalid purpose")
+        if check.get("reference_source") not in {"teacher", "dft", "experiment", "other"}:
+            raise ValueError(f"validation check {check['name']} has invalid reference_source")
+        if not isinstance(check.get("protocol"), str) or not check["protocol"].strip():
+            raise ValueError(f"validation check {check['name']} requires protocol")
+        if not isinstance(check.get("required"), bool):
+            raise ValueError(f"validation check {check['name']} requires boolean required")
+        if require_ready and check["required"] and check.get("threshold") is None:
+            raise ValueError(f"validation threshold is unresolved: {check['name']}")
     if require_ready:
         def null_paths(value, prefix=""):
             if isinstance(value, dict):
@@ -175,7 +196,58 @@ def check_validation_profile(cfg, require_ready=False):
         missing = threshold_nulls(cfg)
         if missing:
             raise ValueError("validation thresholds are unresolved: " + ", ".join(missing))
-    return ["validation checks=" + ",".join(checks)]
+    return ["validation checks=" + ",".join(names)]
+
+
+def check_scope_config(cfg, require_ready=False):
+    domain = _require(cfg, "deployment_domain")
+    if not isinstance(domain, dict) or not domain:
+        raise ValueError("distillation scope requires a non-empty deployment_domain")
+    access = _require(cfg, "teacher_training_data_access")
+    if access not in {"full", "representative", "unavailable"}:
+        raise ValueError("teacher_training_data_access must be full, representative, or unavailable")
+    boundaries = _require(cfg, "approval_boundaries")
+    if (not isinstance(boundaries, dict) or not boundaries or
+            any(not isinstance(value, bool) for value in boundaries.values())):
+        raise ValueError("approval_boundaries must be a non-empty mapping of booleans")
+    if require_ready:
+        if any(value is None for value in domain.values()):
+            raise ValueError("deployment_domain contains unresolved values")
+        if not isinstance(domain.get("system"), str) or not domain["system"].strip():
+            raise ValueError("deployment_domain.system is unresolved")
+    return [f"scope teacher-data access={access}"]
+
+
+def check_dataset_policy(cfg, require_ready=False):
+    access = _require(cfg, "teacher_training_data_access")
+    if access not in {"full", "representative", "unavailable"}:
+        raise ValueError("dataset policy has invalid teacher_training_data_access")
+    sources = _require(cfg, "sources")
+    if not isinstance(sources, list) or (require_ready and not sources):
+        raise ValueError("dataset policy sources must be a non-empty list before a pilot")
+    categories = set()
+    for source in sources:
+        if not isinstance(source, dict) or not isinstance(source.get("category"), str):
+            raise ValueError("dataset policy source requires category")
+        if source["category"] in categories:
+            raise ValueError(f"dataset policy source category is duplicated: {source['category']}")
+        categories.add(source["category"])
+        labels = source.get("label_sources")
+        if (not isinstance(labels, list) or not labels or
+                any(not isinstance(label, str) or not label.strip() for label in labels)):
+            raise ValueError(f"dataset policy source requires label_sources: {source['category']}")
+    replay = _require(cfg, "replay_policy")
+    if not isinstance(replay, dict) or not isinstance(replay.get("enabled"), bool):
+        raise ValueError("dataset policy requires replay_policy.enabled")
+    if replay["enabled"] and require_ready:
+        if (not isinstance(replay.get("selection_method"), str) or
+                not replay["selection_method"].strip() or
+                not isinstance(replay.get("target_count"), int) or
+                isinstance(replay.get("target_count"), bool) or replay["target_count"] < 0):
+            raise ValueError("enabled replay requires selection_method and target_count")
+    if cfg.get("duplicate_policy") not in {"error", "keep-first", "keep"}:
+        raise ValueError("dataset policy duplicate_policy must be error, keep-first, or keep")
+    return ["dataset sources=" + ",".join(sorted(categories))]
 
 
 def check_uncertainty_config(cfg, check_files=True):
@@ -353,6 +425,8 @@ def main():
     parser.add_argument("--teacher-config")
     parser.add_argument("--acquisition-config")
     parser.add_argument("--validation-profile")
+    parser.add_argument("--scope-config")
+    parser.add_argument("--dataset-policy")
     parser.add_argument("--uncertainty-config")
     parser.add_argument("--md-config")
     parser.add_argument("--dft-config")
@@ -376,6 +450,10 @@ def main():
                 checks += check_acquisition_files(acquisition_cfg)
         if args.validation_profile:
             checks += check_validation_profile(load_config(args.validation_profile), args.require_ready)
+        if args.scope_config:
+            checks += check_scope_config(load_config(args.scope_config), args.require_ready)
+        if args.dataset_policy:
+            checks += check_dataset_policy(load_config(args.dataset_policy), args.require_ready)
         if args.uncertainty_config:
             checks += check_uncertainty_config(load_config(args.uncertainty_config),
                                                check_files=not args.skip_files)

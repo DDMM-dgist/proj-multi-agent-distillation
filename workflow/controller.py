@@ -16,6 +16,12 @@ from workflow.integrity import artifact_digest, sha256_file, verify_artifact
 from workflow.contracts import validate_md_manifest, validate_validation_manifest
 
 
+RECOVERY_CATEGORIES = {
+    "data_quality", "dataset_coverage", "student_fidelity", "teacher_applicability",
+    "physical_validation", "simulation_protocol", "evidence_gap", "other",
+}
+
+
 def now():
     return dt.datetime.now(dt.timezone.utc).isoformat()
 
@@ -192,10 +198,14 @@ class RunController:
                                       "size": source_integrity["size"],
                                       "sha256": source_integrity["sha256"],
                                       "source_sha256": source_integrity["sha256"]})
-            state = {"schema_version": 3, "run_id": cfg["run_id"], "created_at": now(),
-                     "updated_at": now(), "workflow_config": str(run_dir / "workflow.yaml"),
+            created_at = now()
+            state = {"schema_version": 4, "run_id": cfg["run_id"], "created_at": created_at,
+                     "updated_at": created_at, "workflow_config": str(run_dir / "workflow.yaml"),
                      "artifacts": [], "project_dir": str(project_dir), "inputs": input_records,
-                     "code_revision": git_revision(project_dir), "events": [], "stages": stages}
+                     "code_revision": git_revision(project_dir), "events": [], "stages": stages,
+                     "iterations": [{"id": 1, "parent_iteration": None, "status": "active",
+                                     "started_at": created_at, "trigger": None}],
+                     "recoveries": [], "pending_recovery": None}
             (temporary / "manifest.json").write_text(json.dumps(state, indent=2) + "\n")
             temporary.rename(run_dir)
         except Exception:
@@ -244,6 +254,7 @@ class RunController:
 
     def rebind_inputs(self):
         """Explicitly accept changed inputs and invalidate all prior stage results."""
+        self._ensure_no_pending_recovery()
         revisions = sum(1 for event in self.state["events"] if event["type"] == "inputs_rebound") + 1
         revision_dir = self.run_dir / "inputs" / f"revision-{revisions:03d}"
         if revision_dir.exists():
@@ -357,6 +368,7 @@ class RunController:
         return records
 
     def run_stage(self, name):
+        self._ensure_no_pending_recovery()
         self.verify_inputs()
         self._previous_passed(name)
         stage = self.stage(name)
@@ -479,6 +491,7 @@ class RunController:
 
     def complete_external_stage(self, name, artifacts):
         """Register artifacts produced by an agent, scheduler, or external tool."""
+        self._ensure_no_pending_recovery()
         self.verify_inputs()
         self._previous_passed(name)
         stage = self.stage(name)
@@ -574,6 +587,7 @@ class RunController:
                 "artifact_sha256": hashes}
 
     def record_gate(self, name, verdict=None, evidence=None, votes_path=None):
+        self._ensure_no_pending_recovery()
         bundle = None
         if votes_path:
             verdict, bundle = self._validate_vote_bundle(name, votes_path)
@@ -589,18 +603,174 @@ class RunController:
                 stage, [record["path"] for record in self.stage_artifacts(name)],
                 enforce_required_pass=True,
             )
+        saved_votes = None
+        if votes_path:
+            iteration_id = self._current_iteration()["id"]
+            saved_votes = self.run_dir / "gates" / f"{name}.iteration-{iteration_id:03d}.votes.json"
+            saved_votes.write_text(json.dumps(bundle, indent=2) + "\n")
         stage["gate"] = verdict
         if verdict != "PASS":
             self.invalidate_from(name)
-        saved_votes = None
-        if votes_path:
-            saved_votes = self.run_dir / "gates" / f"{name}.votes.json"
-            saved_votes.write_text(json.dumps(bundle, indent=2) + "\n")
-        self.state["events"].append({"at": now(), "type": "gate", "stage": name,
+        gate_time = now()
+        self.state["events"].append({"at": gate_time, "type": "gate", "stage": name,
                                      "verdict": verdict, "evidence": evidence,
                                      "votes": str(saved_votes) if saved_votes else None,
                                      "vote_bundle": bundle})
+        if verdict != "PASS":
+            self.state["pending_recovery"] = {
+                "status": "required", "failed_stage": name, "verdict": verdict,
+                "gate_recorded_at": gate_time,
+                "artifact_sha256": {record["path"]: record["sha256"]
+                                    for record in self.verify_stage_artifacts(name)},
+                "votes_integrity": artifact_digest(saved_votes) if saved_votes else None,
+            }
         self.save()
+
+    def _ensure_no_pending_recovery(self):
+        pending = self.state.get("pending_recovery")
+        if pending:
+            raise RuntimeError(
+                "a REVISE/FAIL recovery is pending; propose, approve, and start the next iteration"
+            )
+
+    def _current_iteration(self):
+        iterations = self.state.setdefault("iterations", [])
+        if not iterations:
+            iterations.append({"id": 1, "parent_iteration": None, "status": "active",
+                               "started_at": self.state.get("created_at", now()),
+                               "trigger": None})
+        return iterations[-1]
+
+    def propose_recovery(self, plan_path):
+        """Bind a scientific recovery proposal to the failed gate and its evidence."""
+        pending = self.state.get("pending_recovery")
+        if not pending or pending.get("status") != "required":
+            raise RuntimeError("no REVISE/FAIL gate is waiting for a recovery proposal")
+        source = Path(plan_path).resolve()
+        plan = json.loads(source.read_text())
+        if plan.get("schema_version") != 1:
+            raise ValueError("recovery plan requires schema_version=1")
+        failed_stage = pending["failed_stage"]
+        if plan.get("failed_stage") != failed_stage:
+            raise ValueError("recovery plan failed_stage does not match the pending gate")
+        category = plan.get("failure_category")
+        if category not in RECOVERY_CATEGORIES:
+            raise ValueError(f"recovery plan has invalid failure_category: {category!r}")
+        for field in ("root_cause", "responsible_agent", "return_stage"):
+            if not isinstance(plan.get(field), str) or not plan[field].strip():
+                raise ValueError(f"recovery plan requires non-empty {field}")
+        try:
+            return_index = self._stage_index(plan["return_stage"])
+        except StopIteration as exc:
+            raise ValueError(f"recovery return_stage is unknown: {plan['return_stage']}") from exc
+        if return_index > self._stage_index(failed_stage):
+            raise ValueError("recovery return_stage cannot be downstream of the failed stage")
+        changes = plan.get("proposed_changes")
+        if (not isinstance(changes, list) or not changes or
+                any(not isinstance(item, dict) or not isinstance(item.get("type"), str) or
+                    not item["type"].strip() for item in changes)):
+            raise ValueError("recovery plan requires proposed_changes with non-empty type")
+        labeling = plan.get("labeling")
+        if (not isinstance(labeling, dict) or
+                any(not isinstance(labeling.get(key), bool)
+                    for key in ("teacher_relabel", "new_dft"))):
+            raise ValueError("recovery labeling requires boolean teacher_relabel and new_dft")
+        training = plan.get("student_training")
+        if (not isinstance(training, dict) or not isinstance(training.get("retrain"), bool) or
+                not isinstance(training.get("mode"), str) or not training["mode"].strip()):
+            raise ValueError("recovery student_training requires retrain and mode")
+        if training["retrain"] == (training["mode"] == "none"):
+            raise ValueError("recovery student_training retrain and mode are inconsistent")
+        revalidation = plan.get("revalidation")
+        if (not isinstance(revalidation, dict) or
+                not isinstance(revalidation.get("reuse_profile"), bool) or
+                not isinstance(revalidation.get("targets"), list) or
+                not revalidation["targets"] or
+                any(not isinstance(item, str) or not item.strip()
+                    for item in revalidation["targets"])):
+            raise ValueError("recovery revalidation requires reuse_profile and non-empty targets")
+        if "estimated_cost" not in plan or not isinstance(plan["estimated_cost"], dict):
+            raise ValueError("recovery estimated_cost must be an object")
+
+        recovery_id = len(self.state.setdefault("recoveries", [])) + 1
+        recovery_dir = self.run_dir / "recovery"
+        recovery_dir.mkdir(exist_ok=True)
+        destination = recovery_dir / f"recovery-{recovery_id:03d}.json"
+        record = {
+            "id": recovery_id, "iteration": self._current_iteration()["id"],
+            "status": "proposed", "proposed_at": now(), "source": str(source),
+            "failed_stage": failed_stage, "verdict": pending["verdict"],
+            "gate_binding": {
+                "recorded_at": pending["gate_recorded_at"],
+                "artifact_sha256": pending["artifact_sha256"],
+                "votes_integrity": pending.get("votes_integrity"),
+            },
+            "plan": plan, "human_approval": None,
+        }
+        destination.write_text(json.dumps(record, indent=2) + "\n")
+        record["path"] = str(destination)
+        record["integrity"] = artifact_digest(destination)
+        self.state["recoveries"].append(record)
+        self.state["pending_recovery"] = {"status": "proposed", "recovery_id": recovery_id}
+        self.state["events"].append({"at": now(), "type": "recovery_proposed",
+                                     "recovery_id": recovery_id, "path": str(destination),
+                                     "integrity": record["integrity"]})
+        self.save()
+        return record
+
+    def _pending_recovery_record(self, expected_status):
+        pending = self.state.get("pending_recovery")
+        if not pending or pending.get("status") != expected_status:
+            raise RuntimeError(f"no recovery is waiting in {expected_status!r} state")
+        matches = [item for item in self.state.get("recoveries", [])
+                   if item.get("id") == pending.get("recovery_id")]
+        if len(matches) != 1:
+            raise RuntimeError("pending recovery record is missing or ambiguous")
+        try:
+            verify_artifact(matches[0]["path"], matches[0]["integrity"])
+        except (KeyError, FileNotFoundError, RuntimeError) as exc:
+            raise RuntimeError("pending recovery proposal integrity check failed") from exc
+        return matches[0]
+
+    def approve_recovery(self, approved_by, note=None):
+        """Record explicit human approval without claiming identity verification."""
+        recovery = self._pending_recovery_record("proposed")
+        if not isinstance(approved_by, str) or not approved_by.strip():
+            raise ValueError("recovery approval requires approved_by")
+        approval = {"approved_at": now(), "approved_by": approved_by.strip(),
+                    "note": note or ""}
+        recovery.update(status="approved", human_approval=approval)
+        self.state["pending_recovery"] = {"status": "approved",
+                                          "recovery_id": recovery["id"]}
+        self.state["events"].append({"at": now(), "type": "recovery_approved",
+                                     "recovery_id": recovery["id"], **approval})
+        self.save()
+        return recovery
+
+    def start_iteration(self):
+        """Activate an approved recovery and invalidate from its declared return stage."""
+        recovery = self._pending_recovery_record("approved")
+        old_iteration = self._current_iteration()
+        old_iteration.update(status="superseded", completed_at=now())
+        return_stage = recovery["plan"]["return_stage"]
+        self.invalidate_from(return_stage, include_stage=True)
+        new_iteration = old_iteration["id"] + 1
+        self.state["iterations"].append({
+            "id": new_iteration, "parent_iteration": old_iteration["id"],
+            "status": "active", "started_at": now(),
+            "trigger": {"recovery_id": recovery["id"],
+                        "failed_stage": recovery["failed_stage"],
+                        "return_stage": return_stage},
+        })
+        recovery.update(status="activated", activated_at=now(),
+                        new_iteration=new_iteration)
+        self.state["pending_recovery"] = None
+        self.state["events"].append({"at": now(), "type": "iteration_started",
+                                     "iteration": new_iteration,
+                                     "recovery_id": recovery["id"],
+                                     "return_stage": return_stage})
+        self.save()
+        return recovery
 
     def summary(self):
         return [(s["name"], s["status"], s["gate"], s["attempts"]) for s in self.state["stages"]]
@@ -627,6 +797,15 @@ def main():
     gate.add_argument("--votes")
     rebind = sub.add_parser("rebind-inputs")
     rebind.add_argument("run_dir")
+    propose = sub.add_parser("propose-recovery")
+    propose.add_argument("run_dir")
+    propose.add_argument("plan")
+    approve = sub.add_parser("approve-recovery")
+    approve.add_argument("run_dir")
+    approve.add_argument("--approved-by", required=True)
+    approve.add_argument("--note")
+    iteration = sub.add_parser("start-iteration")
+    iteration.add_argument("run_dir")
     context = sub.add_parser("gate-context")
     context.add_argument("run_dir")
     context.add_argument("stage")
@@ -645,11 +824,19 @@ def main():
         controller.record_gate(args.stage, args.verdict, args.evidence, args.votes)
     elif args.action == "rebind-inputs":
         controller.rebind_inputs()
+    elif args.action == "propose-recovery":
+        controller.propose_recovery(args.plan)
+    elif args.action == "approve-recovery":
+        controller.approve_recovery(args.approved_by, args.note)
+    elif args.action == "start-iteration":
+        controller.start_iteration()
     elif args.action == "gate-context":
         print(json.dumps(controller.gate_context(args.stage), indent=2))
         return
     for row in controller.summary():
         print("\t".join(map(str, row)))
+    if args.action == "status" and controller.state.get("pending_recovery"):
+        print("RECOVERY\t" + json.dumps(controller.state["pending_recovery"], sort_keys=True))
 
 
 if __name__ == "__main__":

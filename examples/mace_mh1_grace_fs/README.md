@@ -29,11 +29,12 @@ Run-specific config를 만들 때 다음 항목을 확인합니다.
 
 ## Pilot 통과 기준
 
-1. MACE teacher가 소수 구조에서 energy/force를 생성하고 model/head가 manifest에 남음
-2. acquisition 결과의 lineage가 완전하고 parent-group split이 생성됨
-3. GRACE/FS 한 seed가 학습·export·ASE reload되고 held-out prediction을 생성함
-4. 통과 후에만 나머지 committee seed를 학습함
-5. 선택 checkpoint로 작은 LAMMPS MD가 실행되고 `md.manifest.json` binding을 통과함
-6. teacher/student/DFT slab·bulk raw output이 evidence hash로 제출되고, surface
+1. deployment 영역의 Teacher baseline, applicability와 validation 목적이 기록됨
+2. acquisition 결과의 lineage와 Teacher-data coverage/replay limitation이 기록됨
+3. Teacher label provenance와 parent-group split이 생성됨
+4. GRACE/FS 한 seed가 학습·export·ASE reload되고 held-out prediction을 생성함
+5. 통과 후에만 나머지 committee seed를 학습함
+6. 선택 checkpoint로 작은 LAMMPS MD가 실행되고 `md.manifest.json` binding을 통과함
+7. teacher/student/DFT slab·bulk raw output이 evidence hash로 제출되고, surface
    delta가 active profile threshold와 일치하는 공통 ValidationReport를 통과함
-7. Judge gate 결과와 연구자의 PASS/REVISE 결정이 run manifest에 남음
+8. Judge gate와 승인된 RecoveryPlan/iteration 이력이 run manifest에 남음

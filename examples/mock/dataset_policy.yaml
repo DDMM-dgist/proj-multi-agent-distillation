@@ -1,0 +1,10 @@
+teacher_training_data_access: unavailable
+sources:
+  - category: generated_teacher_labeled
+    selection: packaged mock seed structures
+    label_sources: [teacher]
+replay_policy:
+  enabled: false
+coverage_dimensions: []
+duplicate_policy: error
+label_alignment: null

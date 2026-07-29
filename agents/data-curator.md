@@ -36,7 +36,12 @@ teacher labels before entering a split.
 3. Seed selection from the DFT set: DIRECT sampling or descriptor-based
    clustering to cover composition/environment diversity. Report how many per
    config type.
-4. Augmentation: label with the **teacher**, via
+4. Before acquisition, compare the available teacher-training distribution,
+   intended deployment domain, and proposed distillation data. Record access as
+   `full`, `representative`, or `unavailable`; do not fabricate quantitative
+   coverage when it is unavailable. Produce a `DataCoverageReport` containing
+   assessed dimensions, gaps, evidence, and limitations.
+5. Augmentation: label with the **teacher**, via
    `adapters.teacher.load_teacher(active_teacher_cfg)` — never import
    a specific teacher package by name in your own scratch scripts. Be explicit
    that teacher-labeling alone produces energy/force (and stress, only if
@@ -44,15 +49,19 @@ teacher labels before entering a split.
    `adapters.teacher.check_stress_support`) but carries **zero DFT labels** by
    construction. Keep a clear tally: how many teacher-pseudo-labeled vs how
    many real-reference-labeled structures.
-5. If mixing label sources, stop and document their energy reference, force and
+6. Give generated data, Teacher-training replay, existing/new DFT anchors, and
+   deployment high-risk structures explicit source categories. Record parent
+   and frame counts, label sources, selection rules, fractions, and the replay
+   policy. Preserve parent lineage across every augmentation.
+7. If mixing label sources, stop and document their energy reference, force and
    stress conventions before merging. Apply an alignment transformation only
    when the active run declares and validates one; there is no universally
    correct automatic shift for every model, composition, or reference theory.
-6. Build the student's training inputs per the active student adapter and
+8. Build the student's training inputs per the active student adapter and
    held-out splits. Keep any reference held-out set
    strictly separate — it must not have entered teacher training if it's used
    for the teacher-vs-DFT error channel.
-7. Record provenance: source files, augmentation tool + version, teacher
+9. Record provenance: source files, augmentation tool + version, teacher
    checkpoint id, label fields present (E/F, stress?), per-split counts,
    reference-anchor count and its selection criterion (random? uncertainty-targeted?).
 
@@ -70,5 +79,7 @@ teacher labels before entering a split.
 - Seed-selection + augmentation strategy and config/version.
 - The energy-reference-alignment values used, if labels were mixed.
 - Provenance + caveats.
+- `DataCoverageReport`: access mode, deployment comparison, source mixture,
+  replay policy, identified gaps, evidence hashes, and limitations.
 
 Don't train models or run simulations. Don't commit. Report only to the Director.

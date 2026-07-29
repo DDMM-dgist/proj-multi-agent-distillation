@@ -37,6 +37,13 @@ on the protocol and reference convention declared in the active validation
 profile. Record the raw result files and the metadata needed by that
 observable's validator.
 
+Before Student training, run or prepare the approved Teacher calculations in
+the declared deployment domain. Return the raw evidence required for a
+`TeacherBaselineReport`; do not select acceptance thresholds after seeing
+Student results. Flag unsupported Teacher conditions instead of manufacturing a
+baseline. Teacher targets assess fidelity, while DFT/experiment targets assess
+physical accuracy.
+
 ## Key recipe — validating a student on a DFT-intractable production cell
 
 The production MD cell is often too large for DFT (thousands of atoms). Do

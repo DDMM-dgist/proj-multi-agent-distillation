@@ -16,7 +16,8 @@ from adapters.contracts import PredictionBatch
 from adapters.reference_dft import render_incar, render_reference_input
 from adapters.md_backend import render_input as render_md_input, run as run_md
 from adapters.preflight import (check_acquisition_config, check_acquisition_files,
-                                check_dft_config, check_md_config,
+                                check_dataset_policy, check_dft_config, check_md_config,
+                                check_scope_config,
                                 check_student_config, check_teacher_config,
                                 check_uncertainty_config, check_validation_profile)
 from adapters.student import (_render_simple_nn_config, _train_grace_fs,
@@ -204,6 +205,26 @@ class AdapterContractTests(unittest.TestCase):
                    "surface_energetics": {"thresholds": {"student_dft": None}}}
         with self.assertRaisesRegex(ValueError, "unresolved"):
             check_validation_profile(profile, require_ready=True)
+
+    def test_preflight_checks_scope_structured_validation_and_dataset_policy(self):
+        scope = {"deployment_domain": {"system": "generic"},
+                 "teacher_training_data_access": "unavailable",
+                 "approval_boundaries": {"costly_training": True}}
+        self.assertIn("scope teacher-data access=unavailable",
+                      check_scope_config(scope, require_ready=True))
+        profile = {"kind": "generic", "checks": [{
+            "name": "density", "category": "structure",
+            "purpose": "student_teacher_fidelity", "reference_source": "teacher",
+            "protocol": "density-v1", "required": True,
+            "threshold": {"operator": "max", "threshold": 0.1},
+        }]}
+        self.assertIn("validation checks=density",
+                      check_validation_profile(profile, require_ready=True))
+        policy = {"teacher_training_data_access": "unavailable", "sources": [{
+            "category": "generated_teacher_labeled", "label_sources": ["teacher"],
+        }], "replay_policy": {"enabled": False}, "duplicate_policy": "error"}
+        self.assertIn("dataset sources=generated_teacher_labeled",
+                      check_dataset_policy(policy, require_ready=True))
 
     def test_preflight_rejects_invalid_md_sampling_and_missing_augment_binary(self):
         invalid = {"kind": "teacher-md", "temperature_K": -1, "timestep_fs": 0,

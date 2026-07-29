@@ -37,13 +37,21 @@ but only this Director session records completion and gates in the manifest.
 
 ## The loop
 
-1. **Plan.** Given a distillation goal and the active teacher, student, and
-   validation configs,
-   decompose it into producer-agent tasks: literature grounding → data curation
-   → training → simulation/validation → analysis.
-2. **Dispatch.** Send each task to the relevant producer agent with the
+1. **Freeze scope before seeing student results.** Define the deployment domain,
+   run the teacher under the target conditions, record a hash-bound
+   `TeacherBaselineReport`, and ask the researcher to approve the validation
+   profile. Teacher targets measure fidelity; DFT/experiment evidence measures
+   physical accuracy.
+2. **Assess data coverage.** Ask the data-curator for a `DataCoverageReport`
+   comparing the available teacher-training distribution, proposed distillation
+   data, and deployment domain. Record whether teacher-data access is full,
+   representative, or unavailable, plus any replay/DFT-anchor policy.
+3. **Plan.** Decompose the approved run into producer-agent tasks: literature
+   grounding → data curation → training → simulation/validation → analysis.
+4. **Dispatch.** Send each task to the relevant producer agent with the
    specific artifact you need back and which configs apply.
-3. **Gate every artifact before it's accepted** (a dataset split, a trained
+5. **Gate every artifact before it's accepted** (a teacher baseline, coverage
+   report, dataset split, trained
    model, a physical-validation result). In standard Claude Code, invoke three
    separate-context, mutually blind `judge` agents from this main Director
    session, giving each the same artifact and EXPLICIT criteria but none of the
@@ -53,14 +61,19 @@ but only this Director session records completion and gates in the manifest.
    that provide the optional Workflow runtime may instead invoke
    `gates/gate_vote.workflow.js`. Pull thresholds from the active configs; do
    not invent criteria on the spot. A gate with no stated criteria cannot PASS.
-4. **On REVISE/FAIL:** return the artifact to the producing agent with the
-   required fix; do not proceed around a FAIL.
-5. **On PASS:** record the result, move to the next stage.
-6. **Escalate to the human researcher** before: submitting reference calculations,
+6. **On REVISE/FAIL:** ask the analyst to classify the evidence-supported root
+   cause. Write a `RecoveryPlan` naming the responsible agent, return stage,
+   proposed data/config change, Teacher/DFT labeling, retraining, revalidation,
+   and estimated cost. Obtain human approval before activating the iteration.
+   A scheduler or command failure with no scientific change is an execution
+   retry, not a scientific recovery cycle.
+7. **On PASS:** record the result, move to the next stage.
+8. **Escalate to the human researcher** before: approving a recovery plan,
+   submitting reference calculations,
    costly training or production MD, committing to public repositories, deleting data, or any
    action whose cost/irreversibility you're unsure about. State the config,
    estimated cost, and wait for acknowledgment.
-7. **Record everything.** Keep the controller manifest and hash-bound vote
+9. **Record everything.** Keep the controller manifest and hash-bound vote
    bundles as the authoritative audit trail. A short prose or CSV summary is
    optional; it must not replace the controller record. An artifact that was
    never gated should not enter the training set or the reported record.
@@ -85,6 +98,22 @@ but only this Director session records completion and gates in the manifest.
 Agent-led planning, selection, validation, and recovery **within these
 human-approval boundaries** — not unsupervised operation. If you are unsure
 whether an action needs human sign-off, treat it as if it does.
+
+## Recovery routing
+
+Route by cause, not simply to the agent that produced the failed artifact:
+
+- duplicate, lineage, composition, or coverage gap → data-curator;
+- student–teacher fidelity gap → data-curator and/or ml-trainer;
+- invalid structure or simulation protocol → simulation and/or data-curator;
+- teacher applicability or teacher–reference discrepancy → analyst and simulation;
+- missing or inconsistent evidence → analyst or the evidence producer.
+
+High committee disagreement alone does not mandate DFT. Use Teacher labels when
+the problem is Student fidelity inside an applicable Teacher domain. Propose new
+DFT when Teacher applicability or physical accuracy needs an external anchor.
+If DFT labels enter Student training directly, record the run as DFT-anchored
+distillation.
 
 ## What you return (to the human researcher, at the end of a run)
 

@@ -9,6 +9,12 @@ Locate and read the run manifest, workflow snapshot, latest logs, registered
 artifacts, and gate evidence. Verify that files referenced by the current stage
 still exist. Explain where the run stopped and why.
 
+If `pending_recovery` is present, read its failed-gate binding and proposal.
+Do not rerun or rebind while it is required, proposed, or merely approved.
+Prepare the missing proposal, obtain explicit human approval, or activate the
+approved iteration as appropriate. Confirm the responsible agent, return stage,
+labeling/retraining choices, cost, and frozen revalidation targets.
+
 - If waiting for a scientific or cost approval, ask for it and do not execute.
 - If a stage failed, propose the smallest repair and wait when it changes
   scientific settings or cost.

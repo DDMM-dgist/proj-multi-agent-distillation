@@ -1,0 +1,18 @@
+{
+  "schema_version": 1,
+  "teacher_training_data_access": "representative",
+  "dataset_policy": "configs/dataset_policy.yaml",
+  "coverage_status": "PARTIAL",
+  "deployment_domain": {"structure_classes": ["project-defined"]},
+  "dataset_sources": [
+    {"category": "generated_teacher_labeled", "n_parents": 10, "n_frames": 100, "fraction": 1.0, "label_sources": ["teacher"], "evidence_role": "distillation_dataset"}
+  ],
+  "coverage_dimensions": {"structure_class": {"method": "project-defined"}},
+  "replay_policy": {"enabled": false},
+  "identified_gaps": [],
+  "limitations": [],
+  "evidence": [
+    {"role": "dataset_policy", "path": "configs/dataset_policy.yaml", "integrity": {"kind": "file", "size": 0, "sha256": "replace"}},
+    {"role": "distillation_dataset", "path": "path/to/dataset", "integrity": {"kind": "file", "size": 0, "sha256": "replace"}}
+  ]
+}

@@ -8,13 +8,16 @@ workflow**입니다.
 
 ```text
 연구 목표 정리
-→ 구조 생성·증강
-→ teacher labeling과 dataset 검토
+→ deployment 영역과 Teacher applicability 확인
+→ Teacher baseline과 validation profile 승인
+→ Teacher 학습 분포·dataset coverage·replay 정책 검토
+→ 구조 생성·증강과 teacher labeling
 → student committee 학습
 → 정확도·불확실도 평가
 → 물성·MD·DFT 검증
 → 서로의 응답을 보지 않는 별도 context의 judge gate
-→ 결과 해석과 필요한 경우 재증류
+→ 결과 해석
+→ REVISE/FAIL이면 변경 계획 승인 후 relabel·재학습·재검증
 ```
 
 비싼 학습, production MD, DFT 제출이나 중요한 과학적 선택에서는 연구자가
@@ -77,9 +80,31 @@ Director가 필요한 정보만 질문하고 active config와 run 기록을 준�
 - DFT/MD reference와 deployment domain
 - 필요한 정확도·에너지·구조·동역학·안정성·성능 validation
 - 선택한 observable의 protocol과 acceptance threshold
+- Teacher 학습 데이터 접근 수준과 replay 가능 여부
+- 각 기준이 Teacher fidelity, DFT/실험 정확성, deployment 안정성 중 무엇인지
 
 정보가 모이면 Director가 작은 pilot 계획을 제시합니다. 큰 계산은 바로 실행하지
 않고 예상 계산량과 설정을 먼저 공유합니다.
+
+## Teacher baseline과 data coverage
+
+Student 결과를 보기 전에 deployment domain과 validation profile을 정합니다.
+Teacher는 같은 조건에서 먼저 계산되어 Student가 재현할 baseline을 제공하지만,
+Teacher 예측을 물리적 절대정답으로 간주하지 않습니다. 각 observable에는 목적과
+reference source를 분리해 기록합니다.
+
+| 목적 | 일반적인 reference |
+|---|---|
+| Student–Teacher fidelity | Teacher |
+| 물리적 정확성 | DFT, 실험 또는 검토된 reference |
+| 배포 안정성 | Student MD와 protocol-specific 기준 |
+
+Data Curator는 Teacher 학습 분포, 증류 dataset과 실제 적용 영역을 비교합니다.
+Teacher 학습 데이터 접근 수준은 `full`, `representative`, `unavailable` 중 하나로
+기록합니다. 비공개 foundation model처럼 학습 분포를 알 수 없으면 이를 limitation으로
+남기며 임의의 coverage 점수를 만들지 않습니다. 생성 구조, Teacher-training replay,
+기존·신규 DFT anchor와 deployment high-risk 구조의 parent/frame 수, label source,
+선택 규칙과 혼합 비율도 함께 기록합니다.
 
 진행 상황 확인:
 
@@ -186,6 +211,13 @@ event와 과거 snapshot은 유지됩니다.
 Run 초기화는 임시 디렉터리에서 완료된 뒤 확정되며, Git commit과 dirty diff hash도
 기록됩니다. 실행 중 project code가 바뀌면 새 run을 시작해야 합니다.
 
+REVISE/FAIL 뒤에는 바로 계산을 다시 돌리지 않습니다. Director가 실패 원인, 담당
+agent, 돌아갈 stage, 데이터·설정 변경, Teacher/DFT labeling, Student retraining,
+재검증 항목과 예상 비용을 `RecoveryPlan`으로 제안합니다. 연구자가 승인하면 controller가
+이 계획을 실패 당시 artifact와 Judge evidence에 결합하고 새 iteration을 시작합니다.
+단순 command·scheduler 실패는 설정을 바꾸지 않는 실행 재시도로 처리하며 과학적
+closed-loop iteration으로 세지 않습니다.
+
 ## 현재 지원 범위
 
 ### 범용 core
@@ -209,8 +241,11 @@ Run 초기화는 임시 디렉터리에서 완료된 뒤 확정되며, Git commi
 - RDF, coordination, density, MSD, NVE drift
 - external MD의 selected-checkpoint binding
 - config-selected validation manifest contract
+- Teacher applicability와 reference purpose를 구분하는 TeacherBaselineReport
+- Teacher-data access, replay/source mixture와 deployment gap을 기록하는 DataCoverageReport
+- REVISE/FAIL artifact에 결합된 RecoveryPlan, human approval와 iteration history
 - 공통 structure/dynamics ValidationReport와 evidence hash
-- teacher/student/acquisition/uncertainty/MD/DFT/validation preflight
+- teacher/student/acquisition/uncertainty/MD/DFT/validation/scope/dataset-policy preflight
 - 임의의 새 student/MD/reference adapter가 중앙 분기 수정 없이 연결되는 contract test
 - 외부 MLIP 없이 전체 흐름을 확인하는 mock end-to-end smoke test
 

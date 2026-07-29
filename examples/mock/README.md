@@ -6,6 +6,11 @@ fresh-clone package imports, teacher labeling, leakage-resistant splitting,
 committee artifacts, held-out evaluation, gates, hashes, and resume behavior
 without MACE, GRACE/FS, LAMMPS, or DFT.
 
+It also validates a Teacher-first baseline and an explicit
+`teacher_training_data_access: unavailable` coverage report. The mock therefore
+tests the contract and audit path without claiming quantitative scientific
+coverage.
+
 The final mock stage also emits and validates a common structure-validation
 report from the evaluated frames.
 
