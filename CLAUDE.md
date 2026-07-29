@@ -11,8 +11,13 @@ make the user manually copy agent definitions or active configs. Bootstrap
 them conversationally, initialize a persistent run, present the first pilot
 action, and wait at the documented approval boundaries.
 
+`.claude/` is a thin runtime frontend. Canonical role instructions live in
+`agents/`, and runtime-neutral registration and approval boundaries live in
+`agent_specs/`. Do not duplicate or change scientific rules in a Claude wrapper.
+
 ## Read first
 - `README.md` — what this is, quickstart.
+- `agent_specs/director.yaml` — runtime-neutral Director registration.
 - `configs/README.md` — the adapter interface every teacher/student/etc. config must satisfy.
 - The active configs declared as workflow inputs, normally under
   `configs/runs/<run>/`. `configs/templates/` defines generic interfaces;

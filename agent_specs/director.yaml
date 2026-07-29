@@ -1,0 +1,35 @@
+schema_version: 1
+name: director
+role_type: coordinator
+description: Coordinate the auditable human-in-the-loop MLIP distillation workflow.
+prompt: agents/director.md
+task_contract: AgentTask
+result_contract: AgentResult
+capabilities:
+  - read_project_files
+  - write_run_configs
+  - invoke_controller
+  - delegate_agent_tasks
+  - request_human_approval
+accepts:
+  - ResearchRequest
+  - AgentResult
+  - JudgeVoteBundle
+  - HumanDecision
+returns:
+  - RunPlan
+  - AgentTask
+  - RecoveryPlan
+  - RunSummary
+approval_boundaries:
+  - costly_training
+  - production_md
+  - reference_calculation
+  - destructive_or_public_action
+delegates:
+  - literature
+  - data-curator
+  - ml-trainer
+  - simulation
+  - analyst
+  - judge

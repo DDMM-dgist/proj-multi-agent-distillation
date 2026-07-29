@@ -18,10 +18,11 @@ dependencies = [
 distill-run = "workflow.controller:main"
 distill-acquire = "adapters.acquisition:main"
 distill-step = "workflow.steps:main"
+distill-agent = "orchestration.cli:main"
 
 [tool.setuptools]
-packages = ["adapters", "validation", "workflow"]
+packages = ["adapters", "orchestration", "validation", "workflow"]
 
-# Install in editable mode so `adapters`/`validation` are importable regardless
-# of your working directory:
+# Install in editable mode so project packages and the runtime-neutral agent
+# registry remain available from run directories:
 #   pip install -e .

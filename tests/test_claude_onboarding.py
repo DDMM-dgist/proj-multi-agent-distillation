@@ -55,6 +55,13 @@ class ClaudeOnboardingTests(unittest.TestCase):
         for case_token in ("MACE-MH-1", "GRACE/FS", "Allegro", "SIMPLE-NN", "SiO2", "SiO₂"):
             self.assertNotIn(case_token, text)
 
+    def test_canonical_prompts_do_not_contain_claude_registration_metadata(self):
+        for path in (ROOT / "agents").glob("*.md"):
+            text = path.read_text()
+            self.assertFalse(text.lstrip().startswith("---"), path)
+            self.assertNotIn("model: sonnet", text)
+            self.assertNotIn("tools: Read", text)
+
     def test_optional_gate_workflow_carries_hashes_and_failed_judge_slots(self):
         workflow = (ROOT / "gates/gate_vote.workflow.js").read_text()
         self.assertIn("artifact_sha256: artifactSha256", workflow)

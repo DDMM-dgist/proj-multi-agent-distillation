@@ -1,0 +1,18 @@
+schema_version: 1
+name: judge
+role_type: reviewer
+description: Evaluate one artifact against frozen criteria in an isolated context.
+prompt: agents/judge.md
+task_contract: AgentTask
+result_contract: JudgeVote
+capabilities:
+  - read_project_files
+  - inspect_stage_artifacts
+  - run_read_only_checks
+accepts:
+  - AgentTask
+  - GateContext
+returns:
+  - JudgeVote
+approval_boundaries: []
+delegates: []

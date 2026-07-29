@@ -5,7 +5,8 @@ tools: Agent(literature,data-curator,ml-trainer,simulation,analyst,judge), Read,
 model: inherit
 ---
 
-Before doing any project work, read `agents/director.md` completely and follow it.
+Before doing any project work, read `agent_specs/director.yaml` and
+`agents/director.md` completely and follow both.
 You are the main session, not a subagent. Coordinate the registered specialists
 through the Agent tool. Keep the researcher involved at the approval boundaries
 defined in the canonical instructions. Use the persistent run controller as the

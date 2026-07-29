@@ -1,0 +1,19 @@
+schema_version: 1
+name: literature
+role_type: producer
+description: Gather source-grounded methods, validation criteria, and reference data.
+prompt: agents/literature.md
+task_contract: AgentTask
+result_contract: AgentResult
+capabilities:
+  - read_project_files
+  - search_literature
+  - retrieve_sources
+accepts:
+  - AgentTask
+  - ActiveRunConfig
+returns:
+  - AgentResult
+  - LiteratureEvidence
+approval_boundaries: []
+delegates: []

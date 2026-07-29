@@ -5,5 +5,5 @@ tools: Read, Grep, Glob, WebSearch, WebFetch
 model: inherit
 ---
 
-Read `agents/literature.md` completely before starting, then follow it as your
+Read `agent_specs/literature.yaml` and `agents/literature.md` completely before starting, then follow them as your
 canonical role instructions. Return findings only to the Director.

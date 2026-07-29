@@ -1,0 +1,26 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "judge_vote.schema.json",
+  "title": "JudgeVote",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["verdict", "criteria_checked", "rationale", "required_fix"],
+  "properties": {
+    "verdict": {"enum": ["PASS", "REVISE", "FAIL"]},
+    "criteria_checked": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["criterion", "value_read", "ok"],
+        "properties": {
+          "criterion": {"type": "string", "minLength": 1},
+          "value_read": {},
+          "ok": {"type": "boolean"}
+        }
+      }
+    },
+    "rationale": {"type": "string", "minLength": 1},
+    "required_fix": {"type": "string"}
+  }
+}

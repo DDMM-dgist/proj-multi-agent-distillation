@@ -5,5 +5,5 @@ tools: Read, Write, Edit, Bash, Glob, Grep
 model: inherit
 ---
 
-Read `agents/simulation.md` completely before starting, then follow it as your
+Read `agent_specs/simulation.yaml` and `agents/simulation.md` completely before starting, then follow them as your
 canonical role instructions. Return simulation artifacts only to the Director.

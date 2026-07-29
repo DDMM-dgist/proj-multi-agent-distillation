@@ -1,0 +1,24 @@
+schema_version: 1
+name: data-curator
+role_type: producer
+description: Build provenance-preserving atomistic datasets and leakage-resistant splits.
+prompt: agents/data-curator.md
+task_contract: AgentTask
+result_contract: AgentResult
+capabilities:
+  - read_project_files
+  - write_stage_artifacts
+  - invoke_acquisition_adapter
+  - invoke_teacher_adapter
+  - invoke_dataset_tools
+accepts:
+  - AgentTask
+  - ActiveRunConfig
+  - StructureDataset
+returns:
+  - AgentResult
+  - DatasetManifest
+  - DataCoverageReport
+approval_boundaries:
+  - costly_teacher_labeling
+delegates: []

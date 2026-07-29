@@ -1,0 +1,22 @@
+schema_version: 1
+name: analyst
+role_type: producer
+description: Interpret fidelity, physical accuracy, stability, and deployment evidence.
+prompt: agents/analyst.md
+task_contract: AgentTask
+result_contract: AgentResult
+capabilities:
+  - read_project_files
+  - inspect_stage_artifacts
+  - run_analysis_tools
+  - search_literature
+accepts:
+  - AgentTask
+  - ValidationReport
+  - JudgeVoteBundle
+returns:
+  - AgentResult
+  - ErrorChannelAnalysis
+  - RecoveryRecommendation
+approval_boundaries: []
+delegates: []

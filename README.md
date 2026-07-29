@@ -24,7 +24,32 @@ workflow**입니다.
 설정과 비용을 확인합니다. 승인된 범위 안의 실행·기록·검증·수정 반복은 Director와
 전문 agent가 조율합니다.
 
-## 시작하기
+## Agent runtime
+
+과학 workflow와 agent 역할은 특정 LLM 제품에 고정되지 않습니다.
+
+- `agents/*.md`: 사람이 읽을 수 있는 canonical 역할·판단 지침
+- `agent_specs/*.yaml`: capability, 입출력 contract, 승인 경계와 위임 관계
+- `orchestration/`: provider-neutral `AgentTask`/`AgentResult`/`JudgeVote` 검증과 파일 교환
+- `.claude/`: Claude Code reference frontend
+- `AGENTS.md`: Codex reference entry point
+
+Claude Code가 가장 완성된 reference frontend이지만, controller·adapter·validator는
+Claude API를 호출하지 않습니다. 다른 runtime은 같은 agent spec과 prompt를 읽고
+동일한 JSON contract로 결과를 반환하면 됩니다. Runtime별 범위와 사용법은
+`runtimes/README.md`에 정리되어 있습니다.
+
+Registry 확인:
+
+```bash
+python -m orchestration.cli validate-specs
+python -m orchestration.cli list
+```
+
+이 명령은 agent를 대신 실행하지 않습니다. 특정 provider에 종속되지 않은 역할과
+교환 contract가 온전한지만 확인합니다.
+
+## Claude Code로 시작하기
 
 저장소를 받은 뒤 루트에서 Claude Code를 실행합니다.
 
@@ -55,8 +80,8 @@ Claude 안에서 새 증류 run을 시작합니다.
 model·material·observable은 범용 core의 기본값이 아니며, 재현용 자료는
 `examples/` 아래에 격리되어 있습니다.
 
-프로젝트 설정은 Claude main session을 Director로 시작하고 다음 전문 agent를
-자동 등록합니다.
+Claude project 설정은 main session을 Director로 시작하고 다음 전문 agent를 자동
+등록합니다. 다른 runtime도 `agent_specs/`의 같은 역할 구성을 사용합니다.
 
 - Literature: 문헌과 검증 기준
 - Data Curator: acquisition, teacher labeling, split과 provenance
@@ -274,15 +299,19 @@ NVE log parsing을 검사합니다. 외부 모델·MD·reference package의 실�
 ## 디렉토리 구성
 
 ```text
-.claude/       Director, subagent, /distill-* skills
-agents/        역할별 canonical 지침
-adapters/      teacher, student, acquisition, MD, DFT adapter
-workflow/      run controller와 공통 stage 실행기
-configs/       interface 문서와 예제 config
-validation/    정확도, uncertainty, 에너지·구조·동역학 검증
-gates/         judge gate 규칙과 audit schema
-templates/     LAMMPS, DFT, student 입력 template
-tests/         adapter, controller, Claude onboarding 테스트
+.claude/          Claude Code용 thin wrapper와 /distill-* skills
+AGENTS.md         Codex용 thin entry point
+agents/           runtime-neutral canonical 역할 지침
+agent_specs/      역할, capability, contract와 승인 경계
+orchestration/    AgentTask/AgentResult/JudgeVote schema와 provider-neutral 교환
+runtimes/         Claude, Codex, manual/external runtime 안내
+adapters/         teacher, student, acquisition, MD, DFT adapter
+workflow/         run controller와 공통 stage 실행기
+configs/          interface 문서와 예제 config
+validation/       정확도, uncertainty, 에너지·구조·동역학 검증
+gates/            judge gate 규칙과 audit schema
+templates/        LAMMPS, DFT, student 입력 template
+tests/            adapter, controller, orchestration과 onboarding 테스트
 ```
 
 ## 주의 사항

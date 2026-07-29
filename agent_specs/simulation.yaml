@@ -1,0 +1,26 @@
+schema_version: 1
+name: simulation
+role_type: producer
+description: Execute approved atomistic simulation and reference-calculation protocols.
+prompt: agents/simulation.md
+task_contract: AgentTask
+result_contract: AgentResult
+capabilities:
+  - read_project_files
+  - write_stage_artifacts
+  - invoke_md_adapter
+  - invoke_reference_adapter
+  - submit_scheduler_job
+accepts:
+  - AgentTask
+  - ActiveRunConfig
+  - ApprovedCheckpoint
+returns:
+  - AgentResult
+  - SimulationManifest
+  - ValidationEvidence
+approval_boundaries:
+  - production_md
+  - reference_calculation
+  - scheduler_submission
+delegates: []

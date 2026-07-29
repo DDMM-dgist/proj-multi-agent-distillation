@@ -1,0 +1,24 @@
+schema_version: 1
+name: ml-trainer
+role_type: producer
+description: Train and evaluate the student committee through the selected adapters.
+prompt: agents/ml-trainer.md
+task_contract: AgentTask
+result_contract: AgentResult
+capabilities:
+  - read_project_files
+  - write_stage_artifacts
+  - invoke_student_adapter
+  - evaluate_committee
+accepts:
+  - AgentTask
+  - ActiveRunConfig
+  - DatasetManifest
+returns:
+  - AgentResult
+  - CommitteeManifest
+  - AccuracyReport
+approval_boundaries:
+  - costly_training
+  - teacher_fine_tuning
+delegates: []

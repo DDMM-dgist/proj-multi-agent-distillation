@@ -1,0 +1,39 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "agent_spec.schema.json",
+  "title": "AgentSpec",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version", "name", "role_type", "description", "prompt",
+    "task_contract", "result_contract",
+    "capabilities", "accepts", "returns", "approval_boundaries", "delegates"
+  ],
+  "properties": {
+    "schema_version": {"const": 1},
+    "name": {"type": "string", "minLength": 1},
+    "role_type": {"enum": ["coordinator", "producer", "reviewer"]},
+    "description": {"type": "string", "minLength": 1},
+    "prompt": {"type": "string", "minLength": 1},
+    "task_contract": {"const": "AgentTask"},
+    "result_contract": {"enum": ["AgentResult", "JudgeVote"]},
+    "capabilities": {"$ref": "#/$defs/nonemptyUniqueStrings"},
+    "accepts": {"$ref": "#/$defs/nonemptyUniqueStrings"},
+    "returns": {"$ref": "#/$defs/nonemptyUniqueStrings"},
+    "approval_boundaries": {"$ref": "#/$defs/uniqueStrings"},
+    "delegates": {"$ref": "#/$defs/uniqueStrings"}
+  },
+  "$defs": {
+    "uniqueStrings": {
+      "type": "array",
+      "uniqueItems": true,
+      "items": {"type": "string", "minLength": 1}
+    },
+    "nonemptyUniqueStrings": {
+      "type": "array",
+      "minItems": 1,
+      "uniqueItems": true,
+      "items": {"type": "string", "minLength": 1}
+    }
+  }
+}
