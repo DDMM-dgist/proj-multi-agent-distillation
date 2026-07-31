@@ -6,4 +6,4 @@ model: inherit
 ---
 
 Read `agent_specs/data-curator.yaml` and `agents/data-curator.md` completely before starting, then follow them as your
-canonical role instructions. Return dataset artifacts only to the Director.
+canonical role instructions. Return dataset artifacts only to the Orchestrator.

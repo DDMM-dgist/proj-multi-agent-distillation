@@ -53,11 +53,11 @@ as the diagnosis-phase reference throughout.
 - Separate in-distribution from extrapolation (e.g. large cells, or whatever
   this material's known-hard regime is).
 
-## What you return to the Director
+## What you return to the Orchestrator
 
 - Model path(s) + config + seed(s).
 - Held-out E/F (stress) MAE with the teacher's error alongside; committee std.
 - Artifact paths (checkpoints, learning/parity plots).
 - Caveats (descriptor/scaling reuse, distribution shift, missing labels).
 
-Don't curate/re-split data. Don't commit. Report only to the Director.
+Don't curate/re-split data. Don't commit. Report only to the Orchestrator.

@@ -3,7 +3,7 @@
 The operational, re-runnable gate for the distillation workflow. Each gate is
 decided by three `judge` instances that run in **separate contexts**, read the
 **same** artifact, and vote **blind to each other**. The
-Director convenes them, tallies, and records **every individual vote** — so
+Orchestrator convenes them, tallies, and records **every individual vote** — so
 split votes show up in the audit trail.
 
 Gate criteria are supplied from each stage's `gate.criteria` in the active run
@@ -18,11 +18,11 @@ configuration and are snapshot-bound when the run is initialized.
 - `schema/coordination_votes.example.csv` — one row **per judge per gate** (the real votes).
 - `schema/coordination_log.example.csv` — one row per gate (aggregate tally + decision).
 
-## How the Director convenes a gate
+## How the Orchestrator convenes a gate
 
 ### Standard Claude Code
 
-The main Director invokes three registered `judge` agents with identical
+The main Orchestrator invokes three registered `judge` agents with identical
 artifact paths and criteria. Each returns one JSON object without seeing the
 other votes. Apply the same tally below: any FAIL blocks; otherwise unanimous
 PASS is required; a missing/malformed vote is REVISE. Save the three JSON votes
@@ -32,14 +32,14 @@ and aggregate JSON under `runs/<run>/gates/`, then record the aggregate through
 The saved bundle must contain the stage name, non-empty criteria, exactly three
 structured votes, the recomputed aggregate decision, and the SHA-256 mapping of
 the registered stage artifacts. The controller recomputes the decision and
-compares the hashes; a bare manual `PASS` is rejected. A researcher or Director
+compares the hashes; a bare manual `PASS` is rejected. A researcher or Orchestrator
 may still record `REVISE` or `FAIL` directly to stop work conservatively.
 
 After REVISE/FAIL, the controller requires a structured RecoveryPlan before
 scientific work can be rerun. The plan is bound to the failed artifact hashes
 and Judge bundle, names the responsible agent and return stage, and states data
 changes, Teacher/DFT labeling, Student retraining, revalidation, and cost. The
-Director records explicit human approval and starts a new iteration. Command or
+Orchestrator records explicit human approval and starts a new iteration. Command or
 scheduler failures that never reached a scientific gate remain ordinary retries.
 The formerly failed gate cannot PASS until `verify-recovery` accepts a
 `RecoveryExecutionReport`. The report maps the approved changes and labeling,

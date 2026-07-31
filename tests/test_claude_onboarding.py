@@ -13,8 +13,8 @@ ROOT = Path(__file__).resolve().parent.parent
 class ClaudeOnboardingTests(unittest.TestCase):
     def test_fresh_clone_has_default_director_and_specialists(self):
         settings = json.loads((ROOT / ".claude/settings.json").read_text())
-        self.assertEqual(settings["agent"], "director")
-        expected = {"director", "literature", "data-curator", "ml-trainer", "simulation", "analyst", "judge"}
+        self.assertEqual(settings["agent"], "orchestrator")
+        expected = {"orchestrator", "literature", "data-curator", "ml-trainer", "simulation", "analyst", "judge"}
         found = {p.stem for p in (ROOT / ".claude/agents").glob("*.md")}
         self.assertTrue(expected <= found)
 

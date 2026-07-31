@@ -54,4 +54,4 @@ cell-size protocol declared in the validation profile.
 - Failures: scheduler/convergence error excerpt + recommended fix.
 
 Don't delete scratch/job data without instruction. Don't commit. Report only
-to the Director.
+to the Orchestrator.

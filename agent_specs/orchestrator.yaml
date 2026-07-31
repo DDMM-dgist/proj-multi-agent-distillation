@@ -1,8 +1,8 @@
 schema_version: 1
-name: director
+name: orchestrator
 role_type: coordinator
 description: Coordinate the auditable human-in-the-loop MLIP distillation workflow.
-prompt: agents/director.md
+prompt: agents/orchestrator.md
 task_contract: AgentTask
 result_contract: AgentResult
 capabilities:

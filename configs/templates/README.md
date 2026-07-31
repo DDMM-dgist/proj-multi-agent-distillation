@@ -1,6 +1,6 @@
 # Generic run-config skeletons
 
-These files describe interfaces, not a specific model or material. The Director
+These files describe interfaces, not a specific model or material. The Orchestrator
 copies them to `configs/runs/<run>/`, fills only reviewed values, and selects
 built-in or external adapter callables. Case-specific configs remain under
 `examples/` or `configs/examples/`.

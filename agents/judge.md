@@ -52,4 +52,4 @@ fence. Use these fields:
 - `rationale`: the deciding evidence (numbers you read)
 - `required_fix`: concrete and actionable (only if REVISE/FAIL; "" if PASS)
 
-One artifact, one gate, one vote. Report only to the Director.
+One artifact, one gate, one vote. Report only to the Orchestrator.

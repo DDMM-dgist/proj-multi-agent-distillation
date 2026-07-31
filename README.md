@@ -4,7 +4,7 @@ Teacher MLIP의 지식을 더 가벼운 student potential로 옮기고, 그 결�
 teacher·DFT·실제 MD 영역에서 검증하기 위한 **human-in-the-loop multi-agent
 workflow**입니다.
 
-이 저장소는 연구자가 Director와 대화하면서 다음 과정을 진행하도록 설계됐습니다.
+이 저장소는 연구자가 Orchestrator와 대화하면서 다음 과정을 진행하도록 설계됐습니다.
 
 ```text
 연구 목표 정리
@@ -21,7 +21,7 @@ workflow**입니다.
 ```
 
 비싼 학습, production MD, DFT 제출이나 중요한 과학적 선택에서는 연구자가
-설정과 비용을 확인합니다. 승인된 범위 안의 실행·기록·검증·수정 반복은 Director와
+설정과 비용을 확인합니다. 승인된 범위 안의 실행·기록·검증·수정 반복은 Orchestrator와
 전문 agent가 조율합니다.
 
 ## Agent runtime
@@ -80,7 +80,7 @@ Claude 안에서 새 증류 run을 시작합니다.
 model·material·observable은 범용 core의 기본값이 아니며, 재현용 자료는
 `examples/` 아래에 격리되어 있습니다.
 
-Claude project 설정은 main session을 Director로 시작하고 다음 전문 agent를 자동
+Claude project 설정은 main session을 Orchestrator로 시작하고 다음 전문 agent를 자동
 등록합니다. 다른 runtime도 `agent_specs/`의 같은 역할 구성을 사용합니다.
 
 - Literature: 문헌과 검증 기준
@@ -91,11 +91,11 @@ Claude project 설정은 main session을 Director로 시작하고 다음 전문 
 - Judge: producer와 분리된 독립 gate 평가
 
 사용자가 agent 파일을 복사하거나 controller 명령을 직접 실행할 필요는 없습니다.
-Director가 필요한 정보만 질문하고 active config와 run 기록을 준비합니다.
+Orchestrator가 필요한 정보만 질문하고 active config와 run 기록을 준비합니다.
 
 ## 대화형 진행 방식
 
-처음 시작할 때 Director는 보통 다음을 확인합니다.
+처음 시작할 때 Orchestrator는 보통 다음을 확인합니다.
 
 - teacher 종류, model/checkpoint와 head
 - student architecture와 학습 config
@@ -108,7 +108,7 @@ Director가 필요한 정보만 질문하고 active config와 run 기록을 준�
 - Teacher 학습 데이터 접근 수준과 replay 가능 여부
 - 각 기준이 Teacher fidelity, DFT/실험 정확성, deployment 안정성 중 무엇인지
 
-정보가 모이면 Director가 작은 pilot 계획을 제시합니다. 큰 계산은 바로 실행하지
+정보가 모이면 Orchestrator가 작은 pilot 계획을 제시합니다. 큰 계산은 바로 실행하지
 않고 예상 계산량과 설정을 먼저 공유합니다.
 
 ## Teacher baseline과 data coverage
@@ -184,7 +184,7 @@ uncertainty로 해석하지 않습니다.
 
 ## Validation profiles
 
-Validation은 특정 물성이나 EOS에 고정되지 않습니다. Director는 대상 물질과 실제
+Validation은 특정 물성이나 EOS에 고정되지 않습니다. Orchestrator는 대상 물질과 실제
 deployment 조건에 맞춰 다음 범주에서 필요한 evidence를 구성합니다.
 
 - 정확도: teacher/student/DFT 네 가지 error channel
@@ -211,7 +211,7 @@ observable 이름을 하드코딩하지 않고 config가 지정한 callable과 m
 - 누락되거나 잘못된 vote는 REVISE
 - dataset, model, validation artifact와 vote는 run manifest에 기록
 
-Controller는 Director가 내부적으로 사용합니다. Stage 상태, attempt, log,
+Controller는 Orchestrator가 내부적으로 사용합니다. Stage 상태, attempt, log,
 artifact hash와 gate 결과를 `runs/<run-name>/`에 저장하고, PASS하지 않은 앞 단계가
 있으면 다음 단계를 차단합니다.
 
@@ -229,16 +229,16 @@ MD 입력·trajectory·log 등 config에서 요구한 evidence도 파일 hash와
 공통 validation report가 참조하는 evidence는 선언된 run input, 등록된 upstream
 artifact 또는 현재 stage artifact여야 합니다.
 무효화된 run-local 결과는 `stale/`로 이동합니다.
-Run manifest는 Director/controller 한 프로세스가 순차 갱신하는 single-writer
+Run manifest는 Orchestrator/controller 한 프로세스가 순차 갱신하는 single-writer
 contract를 사용합니다. Specialist와 scheduler callback은 결과 파일을 만들고,
-상태 전이는 Director가 직렬화해 기록합니다.
-REVISE 후 config를 의도적으로 바꾼 경우에는 Director가 변경 hash를 보여주고 승인을
+상태 전이는 Orchestrator가 직렬화해 기록합니다.
+REVISE 후 config를 의도적으로 바꾼 경우에는 Orchestrator가 변경 hash를 보여주고 승인을
 받은 뒤 input을 명시적으로 rebind합니다. 이전 결과는 모두 무효화되지만 audit
 event와 과거 snapshot은 유지됩니다.
 Run 초기화는 임시 디렉터리에서 완료된 뒤 확정되며, Git commit과 dirty diff hash도
 기록됩니다. 실행 중 project code가 바뀌면 새 run을 시작해야 합니다.
 
-REVISE/FAIL 뒤에는 바로 계산을 다시 돌리지 않습니다. Director가 실패 원인, 담당
+REVISE/FAIL 뒤에는 바로 계산을 다시 돌리지 않습니다. Orchestrator가 실패 원인, 담당
 agent, 돌아갈 stage, 데이터·설정 변경, Teacher/DFT labeling, Student retraining,
 재검증 항목과 예상 비용을 `RecoveryPlan`으로 제안합니다. 연구자가 승인하면 controller가
 이 계획을 실패 당시 artifact와 Judge evidence에 결합하고 새 iteration을 시작합니다.

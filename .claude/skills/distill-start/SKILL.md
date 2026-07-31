@@ -7,12 +7,12 @@ disable-model-invocation: false
 
 # Start a distillation run
 
-Work as the Director. The goal is to get from a fresh clone to a reviewed run
+Work as the Orchestrator. The goal is to get from a fresh clone to a reviewed run
 plan without requiring the researcher to manually rearrange repository files.
 
 ## 1. Inspect before asking
 
-Read `CLAUDE.md`, `README.md`, `agents/director.md`, and
+Read `CLAUDE.md`, `README.md`, `agents/orchestrator.md`, and
 `configs/README.md`. Inspect `configs/` and `runs/` if present. If an unfinished
 run already matches the user's request, offer to resume it instead of creating
 a duplicate.

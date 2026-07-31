@@ -20,7 +20,7 @@ RECOVERY_CATEGORIES = {
     "data_quality", "dataset_coverage", "student_fidelity", "teacher_applicability",
     "physical_validation", "simulation_protocol", "evidence_gap", "other",
 }
-RECOVERY_AGENTS = {"data-curator", "ml-trainer", "simulation", "analyst", "director"}
+RECOVERY_AGENTS = {"data-curator", "ml-trainer", "simulation", "analyst", "orchestrator"}
 
 
 def now():

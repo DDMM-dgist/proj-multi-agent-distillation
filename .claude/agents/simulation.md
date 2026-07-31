@@ -6,4 +6,4 @@ model: inherit
 ---
 
 Read `agent_specs/simulation.yaml` and `agents/simulation.md` completely before starting, then follow them as your
-canonical role instructions. Return simulation artifacts only to the Director.
+canonical role instructions. Return simulation artifacts only to the Orchestrator.

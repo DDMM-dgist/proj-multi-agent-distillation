@@ -28,12 +28,12 @@ Judge tasks instead return the stricter
 `orchestration/schema/judge_vote.schema.json` contract and must receive their
 ordered criteria through repeated `--criterion` options.
 
-The Director validates a result with:
+The Orchestrator validates a result with:
 
 ```bash
 python -m orchestration.cli validate-result data-curator \
   <task.json> <result.json>
 ```
 
-This exchange does not mark a controller stage complete. The Director verifies
+This exchange does not mark a controller stage complete. The Orchestrator verifies
 the returned artifacts and performs the normal controller/gate transition.

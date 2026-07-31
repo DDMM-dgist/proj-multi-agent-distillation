@@ -6,4 +6,4 @@ model: inherit
 ---
 
 Read `agent_specs/literature.yaml` and `agents/literature.md` completely before starting, then follow them as your
-canonical role instructions. Return findings only to the Director.
+canonical role instructions. Return findings only to the Orchestrator.

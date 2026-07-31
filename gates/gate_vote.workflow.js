@@ -9,12 +9,12 @@ export const meta = {
 // ---------------------------------------------------------------------------
 // Separate-context validation gate. Already model-independent — do not add
 // teacher/student-specific logic here. All instance-specific detail (which
-// criteria apply) is passed in by the caller (the Director), typically pulled
+// criteria apply) is passed in by the caller (the Orchestrator), typically pulled
 // from that run's configs/*.yaml.
 //
 // Spawns exactly three judge subagents IN PARALLEL. Each runs in its own context
 // and mutually blind, reads the SAME artifact, and returns a structured vote.
-// The Director tallies the result and records EVERY individual vote (so split
+// The Orchestrator tallies the result and records EVERY individual vote (so split
 // votes are visible in the audit trail, not just unanimous tallies).
 //
 // args = {
@@ -28,7 +28,7 @@ export const meta = {
 // }
 //
 // Returns { gate, target, criteria, artifact_sha256, decision, tally, votes[] }.
-// The Director stores the returned bundle under the run's gates/ directory
+// The Orchestrator stores the returned bundle under the run's gates/ directory
 // and records it through workflow.controller gate --votes.
 // ---------------------------------------------------------------------------
 

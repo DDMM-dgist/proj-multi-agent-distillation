@@ -16,10 +16,10 @@ class AgentOrchestrationTests(unittest.TestCase):
         self.specs = load_agent_specs(ROOT / "agent_specs", root=ROOT)
 
     def test_registry_has_expected_runtime_neutral_roles(self):
-        expected = {"director", "literature", "data-curator", "ml-trainer",
+        expected = {"orchestrator", "literature", "data-curator", "ml-trainer",
                     "simulation", "analyst", "judge"}
         self.assertEqual(set(self.specs), expected)
-        self.assertEqual(self.specs["director"].role_type, "coordinator")
+        self.assertEqual(self.specs["orchestrator"].role_type, "coordinator")
         self.assertEqual(self.specs["judge"].role_type, "reviewer")
         for spec in self.specs.values():
             self.assertTrue(spec.prompt)
@@ -88,7 +88,7 @@ class AgentOrchestrationTests(unittest.TestCase):
             validate_judge_vote(vote, criteria)
 
     def test_runtime_entrypoints_are_thin_and_reference_canonical_roles(self):
-        self.assertIn("agent_specs/director.yaml", (ROOT / "AGENTS.md").read_text())
+        self.assertIn("agent_specs/orchestrator.yaml", (ROOT / "AGENTS.md").read_text())
         for name in self.specs:
             wrapper = ROOT / ".claude/agents" / f"{name}.md"
             self.assertTrue(wrapper.is_file(), wrapper)

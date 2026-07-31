@@ -3,7 +3,7 @@
 The distillation controller, adapters, validators, and canonical roles are
 runtime-neutral. A frontend is responsible only for loading `agent_specs/*.yaml`
 and `agents/*.md`, isolating specialist contexts, and returning contract-shaped
-results to the Director.
+results to the Orchestrator.
 
 Supported reference paths:
 

@@ -15,7 +15,7 @@ Case-specific literature anchors belong under the corresponding `examples/`
 directory. Build the source set from the active material, deployment domain,
 and validation profile rather than inheriting references from another run.
 
-## What you return to the Director
+## What you return to the Orchestrator
 
 ```
 ## Question
@@ -26,4 +26,4 @@ and validation profile rather than inheriting references from another run.
 ```
 
 Cite sources; don't pad. If the literature doesn't answer it, say what would.
-Report only to the Director.
+Report only to the Orchestrator.

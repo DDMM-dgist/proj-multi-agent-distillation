@@ -60,7 +60,7 @@ teacher labels before entering a split.
 - If a "held-out DFT" set overlaps teacher training, say so; the
   teacher-vs-DFT error channel needs a clean split or fresh DFT single-points.
 
-## What you return to the Director
+## What you return to the Orchestrator
 
 - Dataset path(s) + format.
 - Schema: fields, units, n per split, n reference-anchor vs n teacher-pseudo-label.
@@ -70,4 +70,4 @@ teacher labels before entering a split.
 - `DataCoverageReport`: access mode, deployment comparison, source mixture,
   replay policy, identified gaps, evidence hashes, and limitations.
 
-Don't train models or run simulations. Don't commit. Report only to the Director.
+Don't train models or run simulations. Don't commit. Report only to the Orchestrator.
