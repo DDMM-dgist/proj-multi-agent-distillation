@@ -193,11 +193,18 @@ def main():
 
     if "rdf" in checks:
         r, rdfs = compute_rdf(frames, elements)
+        rdf_targets = thresholds.get("rdf_peak_angstrom", {})
         for pair, g in rdfs.items():
             peak_r = r[np.argmax(g)]
+            target = rdf_targets.get(pair, {})
+            criterion = None
+            if target.get("target") is not None and target.get("tolerance") is not None:
+                criterion = {"operator": "target_tolerance", "target": float(target["target"]),
+                             "tolerance": float(target["tolerance"])}
             report_checks.append(make_check("structure", f"rdf_peak:{pair}", float(peak_r),
-                                            "Angstrom", details={"max_g_r": float(g.max())}))
-            print(f"rdf[{pair}]: first-peak r ~= {peak_r:.3f} A (max g(r)={g.max():.2f})")
+                                            "Angstrom", criterion, details={"max_g_r": float(g.max())}))
+            print(f"rdf[{pair}]: first-peak r ~= {peak_r:.3f} A (max g(r)={g.max():.2f})"
+                  + (f"  (target {target.get('target')} +/- {target.get('tolerance')})" if target else ""))
 
     if "coordination" in checks:
         cutoffs = thresholds.get("coordination_cutoffs_angstrom", {"default": 3.0})

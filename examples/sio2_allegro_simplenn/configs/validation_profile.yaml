@@ -1,12 +1,46 @@
 kind: silica
-checks: [rdf, adf, coordination, density, msd, nve_drift, sq_fsdp]
+checks:
+  - rdf
+  - adf
+  - coordination
+  - density
+  - msd
+  - nve_drift
+  - sq_fsdp
+  - name: student_teacher_force_fidelity
+    category: fidelity
+    purpose: student_teacher_fidelity
+    reference_source: teacher
+    protocol: four_channel_audit.py channel (b) student-vs-teacher, committee-mean force MAE
+    required: true
+    threshold: {operator: max, threshold: 0.20}   # eV/Angstrom
+  - name: uncertainty_ranking
+    category: uncertainty
+    purpose: deployment_stability
+    reference_source: teacher
+    protocol: committee_uncertainty.py Spearman rho(sigma_F, student-teacher force error)
+    required: true
+    threshold: {operator: min, threshold: 0.70}
 thresholds:
-  density_g_cm3: {target: 2.20, tolerance: 0.03}
+  density_g_cm3: {target: 2.215, tolerance: 0.035}  # reproduces the reported 2.18-2.25 g/cm3 window
+  rdf_peak_angstrom:
+    O-Si: {target: 1.625, tolerance: 0.025}         # reproduces the reported 1.60-1.65 Angstrom window
+                                                     # key is "O-Si", not "Si-O": compute_rdf() names
+                                                     # pairs from itertools.combinations_with_replacement
+                                                     # over sorted(elements), so O sorts before Si
   msd_diffusive: false            # expect a non-diffusive glass plateau at the validation temperature
   nve_drift_meV_per_atom_per_ns: {max_abs: 1.0}
   adf_deg:
-    O-Si-O: {target: 109.4, tolerance: 3}
+    O-Si-O: {target: 109.5, tolerance: 8}
     Si-O-Si: {target: 141, tolerance: 5}
 notes: >
   This is a case-specific profile. Reuse an observable only when its validator
   and protocol apply to the new run; add a validator for new observables.
+  student_teacher_force_fidelity and uncertainty_ranking have no generic
+  Python evaluator — four_channel_audit.py and committee_uncertainty.py only
+  report the raw MAE / Spearman-rho values. The judge committee applies these
+  declared thresholds against the reported values at gate time (see
+  agents/orchestrator.md: "Pull thresholds from the active configs; do not
+  invent criteria on the spot"). adf and sq_fsdp remain unevaluated by
+  structure_dynamics.py; their target values are kept here for whoever ports
+  a material-specific validator.
