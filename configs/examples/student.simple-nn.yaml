@@ -22,7 +22,9 @@ committee:
   n_seeds: 4
 deploy:
   lammps_pair_style: "nn"
-  elements: [Si, O]                 # LAMMPS atom-type order; never inferred alphabetically
+  elements: [O, Si]                 # LAMMPS atom-type order; matches this case's production
+                                     # data files (type 1 = O mass 15.999, type 2 = Si mass
+                                     # 28.085) — never inferred alphabetically or assumed
 # Optional architecture-neutral ASE prediction hook. Supply a factory in your
 # SIMPLE-NN installation that accepts the checkpoint argument below.
 # predict:
