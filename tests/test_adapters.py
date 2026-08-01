@@ -23,8 +23,15 @@ from adapters.preflight import (check_acquisition_config, check_acquisition_file
 from adapters.student import (_render_simple_nn_config, _train_grace_fs,
                               lammps_pair_style_block, load_student,
                               predict_student, train_student)
-from adapters.simple_nn_v2_predict import predict as predict_simple_nn
+from adapters.simple_nn_v2_predict import (
+    _materialize_test_list, predict as predict_simple_nn)
 from adapters.simple_nn_v2_wrapper import _dataset_to_extxyz_with_ref_labels
+
+try:  # SIMPLE-NN is a runtime dependency, not a test dependency.
+    import simple_nn.utils.features  # noqa: F401
+    _SIMPLE_NN_AVAILABLE = True
+except Exception:
+    _SIMPLE_NN_AVAILABLE = False
 from adapters.teacher import load_teacher, teacher_model_reference
 from adapters.uncertainty import committee_force_std, spearman
 from validation.structure_dynamics import (compute_msd, compute_nve_drift, compute_rdf,
@@ -233,12 +240,24 @@ class AdapterContractTests(unittest.TestCase):
 
             def fake_run(input_path, cwd):
                 if Path(input_path).name == "generate_input.yaml":
-                    (Path(cwd) / "total_list").write_text("feature.pt\n")
+                    (Path(cwd) / "total_list").write_text("1:./feature.pt\n")
+                    (Path(cwd) / "feature.pt").write_text("stub")
                 else:
                     (Path(cwd) / "test_result").write_text("mock")
 
+            # `_materialize_test_list` reaches into SIMPLE-NN's own tag parser;
+            # keep this wiring test SIMPLE-NN-free by faking that call. The
+            # tag-stripping contract is exercised separately in
+            # SimpleNnTestListMaterializationTests below.
+            def fake_materialize(total_list, work_dir, n_frames):
+                out = Path(work_dir) / "test_list"
+                out.write_text("./feature.pt\n" * n_frames)
+                return out
+
             with patch("adapters.simple_nn_v2_predict._run_simple_nn",
                        side_effect=fake_run), patch(
+                           "adapters.simple_nn_v2_predict._materialize_test_list",
+                           side_effect=fake_materialize), patch(
                            "adapters.simple_nn_v2_predict._load_test_result",
                            return_value=result):
                 predict_simple_nn(checkpoint, structures, output)
@@ -252,10 +271,70 @@ class AdapterContractTests(unittest.TestCase):
             result["DFT_E"] = [9.0]
             with patch("adapters.simple_nn_v2_predict._run_simple_nn",
                        side_effect=fake_run), patch(
+                           "adapters.simple_nn_v2_predict._materialize_test_list",
+                           side_effect=fake_materialize), patch(
                            "adapters.simple_nn_v2_predict._load_test_result",
                            return_value=result), self.assertRaisesRegex(
                                ValueError, "reference labels do not match"):
                 predict_simple_nn(checkpoint, structures, output)
+
+    @unittest.skipUnless(_SIMPLE_NN_AVAILABLE,
+                         "SIMPLE-NN v2 not importable in this environment")
+    def test_simple_nn_materialize_test_list_strips_tags_via_simple_nn(self):
+        # Regression: SIMPLE-NN's test-mode FilelistDataset reads each line of
+        # the test_list verbatim (data_handler.py:22-28), so the tagged
+        # "TAG:PATH" lines produced by feature generation must be stripped
+        # before test mode. This test exercises the real SIMPLE-NN parser.
+        with tempfile.TemporaryDirectory() as tmp:
+            work = Path(tmp)
+            data = work / "data"
+            data.mkdir()
+            for name in ("data1.pt", "data2.pt"):
+                (data / name).write_text("stub")
+            total = work / "total_list"
+            total.write_text("1:./data/data1.pt\n1:./data/data2.pt\n")
+            out = _materialize_test_list(total, work, 2)
+            self.assertEqual(out, work / "test_list")
+            self.assertEqual(
+                out.read_text(),
+                "./data/data1.pt\n./data/data2.pt\n",
+            )
+
+    @unittest.skipUnless(_SIMPLE_NN_AVAILABLE,
+                         "SIMPLE-NN v2 not importable in this environment")
+    def test_simple_nn_materialize_test_list_rejects_empty_total_list(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            work = Path(tmp)
+            total = work / "total_list"
+            total.write_text("")
+            with self.assertRaisesRegex(
+                    RuntimeError, "0 entries; expected 2"):
+                _materialize_test_list(total, work, 2)
+
+    @unittest.skipUnless(_SIMPLE_NN_AVAILABLE,
+                         "SIMPLE-NN v2 not importable in this environment")
+    def test_simple_nn_materialize_test_list_rejects_frame_count_mismatch(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            work = Path(tmp)
+            data = work / "data"
+            data.mkdir()
+            (data / "data1.pt").write_text("stub")
+            total = work / "total_list"
+            total.write_text("1:./data/data1.pt\n")  # one entry
+            with self.assertRaisesRegex(
+                    RuntimeError, r"1 entries; expected 3"):
+                _materialize_test_list(total, work, 3)
+
+    @unittest.skipUnless(_SIMPLE_NN_AVAILABLE,
+                         "SIMPLE-NN v2 not importable in this environment")
+    def test_simple_nn_materialize_test_list_rejects_missing_feature_file(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            work = Path(tmp)
+            total = work / "total_list"
+            total.write_text("1:./data/does_not_exist.pt\n")
+            with self.assertRaisesRegex(
+                    RuntimeError, "feature file is missing"):
+                _materialize_test_list(total, work, 1)
 
     def test_unknown_md_and_reference_backends_use_configured_callables(self):
         with tempfile.TemporaryDirectory() as tmp:

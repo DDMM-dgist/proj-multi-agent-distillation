@@ -99,6 +99,39 @@ def _evaluation_input(training_input, test_list, include_stress):
     return payload
 
 
+def _materialize_test_list(total_list, work_dir, expected_n_frames):
+    """Convert SIMPLE-NN's tagged ``total_list`` (lines of ``TAG:PATH``) into a
+    plain-path ``test_list`` that SIMPLE-NN's test-mode ``FilelistDataset``
+    consumes directly.
+
+    Reuses SIMPLE-NN's own regex-based tag parser
+    (``simple_nn.utils.features._make_str_data_list``) so we do not
+    re-implement its file-format rules. Preprocess is intentionally NOT
+    invoked here: running it would overwrite the training-time
+    ``scale_factor`` and ``pca`` with values fit on the held-out frames
+    (``simple_nn/features/preprocessing.py:43-54``).
+    """
+    from simple_nn.utils.features import _make_str_data_list
+
+    grouped = _make_str_data_list(str(total_list))
+    test_paths = [path for group in grouped for path in group]
+    if len(test_paths) != expected_n_frames:
+        raise RuntimeError(
+            f"SIMPLE-NN test_list has {len(test_paths)} entries; "
+            f"expected {expected_n_frames} (one per input frame)"
+        )
+    for path in test_paths:
+        candidate = Path(path)
+        if not candidate.is_absolute():
+            candidate = work_dir / path
+        if not candidate.is_file():
+            raise RuntimeError(f"SIMPLE-NN feature file is missing: {candidate}")
+
+    test_list = work_dir / "test_list"
+    test_list.write_text("\n".join(test_paths) + "\n")
+    return test_list
+
+
 def predict(checkpoint, structures, output, include_stress=False):
     checkpoint = Path(checkpoint).resolve()
     structures = Path(structures).resolve()
@@ -139,9 +172,10 @@ def _predict_in_workdir(checkpoint, structures, output, training_input,
         sort_keys=False,
     ))
     _run_simple_nn(generation_path, work_dir)
-    test_list = work_dir / "total_list"
-    if not test_list.is_file():
+    total_list = work_dir / "total_list"
+    if not total_list.is_file():
         raise RuntimeError("SIMPLE-NN feature generation produced no total_list")
+    test_list = _materialize_test_list(total_list, work_dir, n_frames)
 
     _copy_training_state(training_dir, work_dir, checkpoint, training_input)
     evaluation_path = work_dir / "evaluate_input.yaml"
