@@ -1,10 +1,13 @@
 import json
+import io
 import tempfile
 import unittest
+from contextlib import redirect_stdout
 from pathlib import Path
 
 from orchestration.exchange import (FileExchangeRuntime, make_task,
                                     validate_agent_response, validate_judge_vote)
+from orchestration.cli import main as orchestration_main
 from orchestration.specs import load_agent_specs
 
 
@@ -74,6 +77,7 @@ class AgentOrchestrationTests(unittest.TestCase):
     def test_judge_uses_its_own_ordered_vote_contract(self):
         criteria = ["artifact hash matches", "threshold is met"]
         vote = {
+            "review_lens": "scientific_validity",
             "verdict": "PASS",
             "criteria_checked": [
                 {"criterion": criterion, "value_read": "verified", "ok": True}
@@ -82,10 +86,46 @@ class AgentOrchestrationTests(unittest.TestCase):
             "rationale": "Both criteria were verified.",
             "required_fix": "",
         }
-        self.assertEqual(validate_judge_vote(vote, criteria)["verdict"], "PASS")
+        self.assertEqual(validate_judge_vote(
+            vote, criteria, "scientific_validity"
+        )["verdict"], "PASS")
         vote["criteria_checked"].reverse()
         with self.assertRaises(ValueError):
-            validate_judge_vote(vote, criteria)
+            validate_judge_vote(vote, criteria, "scientific_validity")
+
+    def test_judge_task_requires_lens_context_and_vote_must_echo_it(self):
+        spec = self.specs["judge"]
+        with self.assertRaisesRegex(ValueError, "requires review_lens"):
+            validate_agent_response(
+                {"review_lens": "scientific_validity", "verdict": "PASS",
+                 "criteria_checked": [], "rationale": "ok", "required_fix": ""},
+                spec, make_task("judge", "Review the gate."),
+            )
+        task = make_task(
+            "judge", "Review the gate.", criteria=["artifact is complete"],
+            context={"review_lens": "scientific_validity",
+                     "review_focus": "Audit scientific validity."},
+        )
+        vote = {"review_lens": "evidence_provenance", "verdict": "PASS",
+                "criteria_checked": [{"criterion": "artifact is complete",
+                                      "value_read": "yes", "ok": True}],
+                "rationale": "ok", "required_fix": ""}
+        with self.assertRaisesRegex(ValueError, "does not match the dispatched task"):
+            validate_agent_response(vote, spec, task)
+
+    def test_make_task_cli_records_review_lens_context(self):
+        with tempfile.TemporaryDirectory() as tmp, redirect_stdout(io.StringIO()):
+            orchestration_main([
+                "make-task", "judge", "Review the gate.", tmp,
+                "--criterion", "artifact is complete",
+                "--context", "review_lens=evidence_provenance",
+                "--context", "review_focus=Audit hashes and lineage.",
+            ])
+            tasks = list((Path(tmp) / "tasks").glob("*.json"))
+            self.assertEqual(len(tasks), 1)
+            context = json.loads(tasks[0].read_text())["context"]
+            self.assertEqual(context["review_lens"], "evidence_provenance")
+            self.assertEqual(context["review_focus"], "Audit hashes and lineage.")
 
     def test_runtime_entrypoints_are_thin_and_reference_canonical_roles(self):
         self.assertIn("agent_specs/orchestrator.yaml", (ROOT / "AGENTS.md").read_text())

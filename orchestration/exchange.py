@@ -74,6 +74,13 @@ def validate_task(payload: Mapping[str, Any], spec: AgentSpec) -> dict[str, Any]
             raise ValueError(f"agent task {field} must contain strings")
     if not isinstance(payload["context"], Mapping):
         raise ValueError("agent task context must be an object")
+    if spec.result_contract == "JudgeVote":
+        lens = payload["context"].get("review_lens")
+        focus = payload["context"].get("review_focus")
+        if not isinstance(lens, str) or not lens.strip():
+            raise ValueError("Judge AgentTask context requires review_lens")
+        if not isinstance(focus, str) or not focus.strip():
+            raise ValueError("Judge AgentTask context requires review_focus")
     return dict(payload)
 
 
@@ -113,8 +120,9 @@ def validate_result(payload: Mapping[str, Any], spec: AgentSpec, *, task_id: str
     return dict(payload)
 
 
-def validate_judge_vote(payload: Mapping[str, Any], criteria: list[str]) -> dict[str, Any]:
-    required = {"verdict", "criteria_checked", "rationale", "required_fix"}
+def validate_judge_vote(payload: Mapping[str, Any], criteria: list[str],
+                        review_lens: str | None = None) -> dict[str, Any]:
+    required = {"review_lens", "verdict", "criteria_checked", "rationale", "required_fix"}
     missing = required - set(payload)
     if missing:
         raise ValueError("judge vote is missing: " + ", ".join(sorted(missing)))
@@ -123,6 +131,10 @@ def validate_judge_vote(payload: Mapping[str, Any], criteria: list[str]) -> dict
         raise ValueError("judge vote has unknown fields: " + ", ".join(sorted(unknown)))
     if payload["verdict"] not in {"PASS", "REVISE", "FAIL"}:
         raise ValueError("judge vote has an invalid verdict")
+    if not isinstance(payload["review_lens"], str) or not payload["review_lens"].strip():
+        raise ValueError("judge vote review_lens must be a non-empty string")
+    if review_lens is not None and payload["review_lens"] != review_lens:
+        raise ValueError("judge vote review_lens does not match the dispatched task")
     checked = _objects(payload["criteria_checked"], "criteria_checked")
     checked_names = []
     for item in checked:
@@ -151,7 +163,9 @@ def validate_agent_response(payload: Mapping[str, Any], spec: AgentSpec,
     """Validate a response according to the contract selected by the role spec."""
     validate_task(task, spec)
     if spec.result_contract == "JudgeVote":
-        return validate_judge_vote(payload, list(task["criteria"]))
+        return validate_judge_vote(
+            payload, list(task["criteria"]), task["context"]["review_lens"]
+        )
     return validate_result(payload, spec, task_id=task["task_id"])
 
 

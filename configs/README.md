@@ -107,11 +107,24 @@ criteria before run initialization:
     criteria:
       - held-out parent groups do not overlap with training
       - required error channels and coverage are complete
+    # Optional: replace the default perspectives with exactly three
+    # domain-appropriate lenses. All three still check every criterion.
+    review_lenses:
+      - id: data_audit
+        title: Data audit
+        focus: Audit lineage, leakage, hashes, and evidence completeness.
+      - id: physics_audit
+        title: Physics audit
+        focus: Audit units, metrics, applicability, and physical interpretation.
+      - id: deployment_audit
+        title: Deployment audit
+        focus: Audit reproducibility, uncertainty, stability, and claim scope.
 ```
 
-The controller snapshots this list in the run manifest. `gate-context` returns
-the same criteria with the current artifact hashes, and a vote bundle using a
-different list is rejected. Change scientific thresholds through a reviewed
+The controller snapshots the criteria and three review lenses in the run
+manifest. `gate-context` returns both with the current artifact hashes, and a
+vote bundle using a different list or missing/duplicating a lens is rejected.
+Change scientific thresholds through a reviewed
 config revision and input rebind; changing the criteria themselves requires a
 new run rather than an edit made after seeing an artifact.
 

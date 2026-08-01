@@ -4,8 +4,9 @@
   "title": "JudgeVote",
   "type": "object",
   "additionalProperties": false,
-  "required": ["verdict", "criteria_checked", "rationale", "required_fix"],
+  "required": ["review_lens", "verdict", "criteria_checked", "rationale", "required_fix"],
   "properties": {
+    "review_lens": {"type": "string", "minLength": 1},
     "verdict": {"enum": ["PASS", "REVISE", "FAIL"]},
     "criteria_checked": {
       "type": "array",

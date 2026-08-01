@@ -23,11 +23,12 @@ export const meta = {
 //   artifact: string   free text: the paths to read + what the artifact is
 //   artifact_sha256: object  exact path -> SHA-256 map from controller gate-context
 //   criteria: string[] the explicit gate criteria + thresholds, one per line
+//   review_lenses: object[] exact ordered lens records from controller gate-context
 //   n:        number    must be 3 (matches the persistent controller)
 //   rule:     string    must be "unanimous"
 // }
 //
-// Returns { gate, target, criteria, artifact_sha256, decision, tally, votes[] }.
+// Returns { gate, target, criteria, review_lenses, artifact_sha256, decision, tally, votes[] }.
 // The Orchestrator stores the returned bundle under the run's gates/ directory
 // and records it through workflow.controller gate --votes.
 // ---------------------------------------------------------------------------
@@ -37,12 +38,21 @@ const target   = args?.target   || 'unnamed-target'
 const artifact = args?.artifact || '(no artifact description provided)'
 const artifactSha256 = args?.artifact_sha256
 const criteria = Array.isArray(args?.criteria) ? args.criteria : []
+const reviewLenses = Array.isArray(args?.review_lenses) ? args.review_lenses : []
 const N        = args?.n ?? 3
 const rule     = args?.rule || 'unanimous'
 
 if (N !== 3) throw new Error(`the persistent controller requires exactly 3 judges; got ${N}`)
 if (rule !== 'unanimous') throw new Error(`the persistent controller requires unanimous rule; got ${rule}`)
 if (criteria.length === 0) throw new Error('gate criteria must not be empty')
+if (reviewLenses.length !== N) throw new Error(`exactly ${N} run-bound review lenses are required`)
+const lensIds = reviewLenses.map(lens => lens?.id)
+if (reviewLenses.some(lens => !lens || typeof lens.id !== 'string' ||
+    typeof lens.title !== 'string' || typeof lens.focus !== 'string' ||
+    !lens.id.trim() || !lens.title.trim() || !lens.focus.trim()) ||
+    new Set(lensIds).size !== N) {
+  throw new Error('review_lenses must contain unique non-empty id/title/focus records')
+}
 if (!artifactSha256 || typeof artifactSha256 !== 'object' || Array.isArray(artifactSha256) ||
     Object.keys(artifactSha256).length === 0) {
   throw new Error('artifact_sha256 must be the non-empty map from controller gate-context')
@@ -52,6 +62,7 @@ const VERDICT_SCHEMA = {
   type: 'object',
   additionalProperties: false,
   properties: {
+    review_lens: { type: 'string' },
     verdict: { type: 'string', enum: ['PASS', 'REVISE', 'FAIL'] },
     criteria_checked: {
       type: 'array',
@@ -63,21 +74,23 @@ const VERDICT_SCHEMA = {
           value_read: { type: 'string' },
           ok: { type: 'boolean' },
         },
-        required: ['criterion', 'ok'],
+        required: ['criterion', 'value_read', 'ok'],
       },
     },
     rationale: { type: 'string' },
     required_fix: { type: 'string' },
   },
-  required: ['verdict', 'criteria_checked', 'rationale', 'required_fix'],
+  required: ['review_lens', 'verdict', 'criteria_checked', 'rationale', 'required_fix'],
 }
 
 const criteriaBlock = criteria.map((c, i) => `  ${i + 1}. ${c}`).join('\n')
 
 function judgePrompt(idx) {
+  const lens = reviewLenses[idx]
   return [
     `You are judge #${idx + 1} of ${N} on an INDEPENDENT validation committee.`,
     `You are blind to the other judges. Vote alone, from the evidence.`,
+    `Your assigned review lens is "${lens.id}" (${lens.title}).`,
     ``,
     `## Gate`,
     gate,
@@ -91,12 +104,18 @@ function judgePrompt(idx) {
     `## Criteria you MUST apply (vote PASS only if ALL are demonstrably met)`,
     criteriaBlock,
     ``,
+    `## Assigned review lens`,
+    lens.focus,
+    `Apply this lens as an additional adversarial perspective. You must still`,
+    `check every common criterion above; the criteria are not divided among judges.`,
+    ``,
     `## Instructions`,
     `- Actually OPEN and READ the artifact files above (Read/Grep/Bash). Quote the`,
     `  real numbers you read for each criterion.`,
     `- Conservative default: if a criterion is not demonstrably met, vote REVISE`,
     `  (fixable) or FAIL (invalid/unphysical). "Probably fine" is REVISE.`,
-    `- Return your vote via StructuredOutput: verdict, criteria_checked[], rationale,`,
+    `- Return review_lens exactly as "${lens.id}".`,
+    `- Return your vote via StructuredOutput: review_lens, verdict, criteria_checked[], rationale,`,
     `  required_fix (only if REVISE/FAIL).`,
   ].join('\n')
 }
@@ -104,6 +123,7 @@ function judgePrompt(idx) {
 function invocationFailureVote(idx, error) {
   return {
     id: idx + 1,
+    review_lens: reviewLenses[idx].id,
     verdict: 'REVISE',
     criteria_checked: criteria.map(criterion => ({
       criterion,
@@ -120,11 +140,16 @@ log(`Convening ${N} mutually blind judge instances on gate "${gate}" / target "$
 const raw = await parallel(
   Array.from({ length: N }, (_, i) => () =>
     agent(judgePrompt(i), {
-      label: `judge#${i + 1}:${target}`,
+      label: `judge:${reviewLenses[i].id}:${target}`,
       phase: 'Judge',
       agentType: 'judge',
       schema: VERDICT_SCHEMA,
-    }).then(v => ({ id: i + 1, ...v }))
+    }).then(v => {
+      if (v.review_lens !== reviewLenses[i].id) {
+        throw new Error(`Judge returned lens ${v.review_lens}; expected ${reviewLenses[i].id}`)
+      }
+      return { id: i + 1, ...v }
+    })
       .catch(error => invocationFailureVote(i, error))
   )
 )
@@ -149,6 +174,6 @@ if (votes.length !== N) {
 log(`Tally PASS=${tally.PASS} REVISE=${tally.REVISE} FAIL=${tally.FAIL} -> ${decision}`)
 
 return {
-  gate, target, criteria, artifact_sha256: artifactSha256,
+  gate, target, criteria, review_lenses: reviewLenses, artifact_sha256: artifactSha256,
   requested_n: N, received_n: votes.length, rule, decision, tally, votes,
 }

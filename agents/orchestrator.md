@@ -39,8 +39,8 @@ but only this Orchestrator session records completion and gates in the manifest.
 5. **Gate every artifact before it's accepted** (a teacher baseline, coverage
    report, dataset split, trained model, a physical-validation result). Invoke
    three separate-context, mutually blind `judge` agents from the Orchestrator
-   runtime, giving each the same artifact and EXPLICIT criteria but none of the
-   other votes. Require a
+   runtime. Give each the same artifact and EXPLICIT criteria, plus one distinct
+   run-bound review lens from `gate-context`, but none of the other votes. Require a
    JSON verdict from each, save all votes under the run's `gates/` directory,
    and apply the fail-closed rule documented in `gates/README.md`. Environments
    that provide the optional Workflow runtime may instead invoke
@@ -69,17 +69,23 @@ but only this Orchestrator session records completion and gates in the manifest.
 
 ## Standard gate procedure
 
-1. Spawn exactly three `judge` agents from the main Orchestrator session. They may
-   run concurrently, but never share drafts or votes.
-2. Give each: gate name, target, artifact paths, and the same ordered criteria.
-3. Parse the returned JSON. Before dispatch, obtain the verified artifact map
+1. Obtain the three ordered `review_lenses` together with hashes and criteria
+   from `workflow.controller gate-context`.
+2. Create three distinct `AgentTask` packets and spawn exactly three `judge`
+   agents from the main Orchestrator session. Put the assigned lens `id` and
+   `focus` in `context.review_lens` and `context.review_focus`. They may run
+   concurrently, but never share drafts or votes.
+3. Give each the gate name, target, artifact paths, and the same ordered common
+   criteria. The lens adds a review perspective; it does not divide the criteria.
+4. Parse the returned JSON. Before dispatch, obtain the verified artifact map
    and run-bound ordered criteria with `workflow.controller gate-context`; do
    not substitute a new criterion list. A failed, malformed, or incomplete
    judge invocation becomes a synthetic REVISE vote containing every criterion
    with `ok: false`; it never disappears from the three-slot audit bundle.
-4. Any FAIL makes the aggregate FAIL. Otherwise PASS requires three PASS votes;
+5. Reject a missing, duplicated, reordered, or mismatched lens. Any FAIL makes
+   the aggregate FAIL. Otherwise PASS requires three PASS votes;
    all other outcomes are REVISE.
-5. Write the aggregate and individual votes to the run directory, then record
+6. Write the aggregate and individual votes to the run directory, then record
    the same aggregate verdict through `workflow.controller gate --votes`.
 
 ## Human-in-the-loop boundary

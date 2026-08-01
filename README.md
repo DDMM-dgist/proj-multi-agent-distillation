@@ -204,9 +204,13 @@ observable 이름을 하드코딩하지 않고 config가 지정한 callable과 m
 
 ## Audit와 gate
 
-각 주요 artifact는 세 명의 독립 Judge가 같은 기준으로 검토합니다.
+각 주요 artifact는 세 명의 독립 Judge가 같은 공통 기준을 모두 검토하고,
+각각 evidence/provenance, scientific validity, reproducibility/deployment의
+상보적 review lens를 추가로 적용합니다. Run은 기본 lens 대신 정확히 세 개의
+domain-specific lens를 초기화 시 고정할 수 있습니다.
 
 - 세 명 모두 PASS해야 다음 단계 진행
+- 누락·중복·오배정된 review lens는 vote bundle 검증에서 차단
 - 한 명이라도 FAIL이면 전체 FAIL
 - 누락되거나 잘못된 vote는 REVISE
 - dataset, model, validation artifact와 vote는 run manifest에 기록
