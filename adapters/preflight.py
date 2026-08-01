@@ -366,7 +366,7 @@ def check_student_config(cfg, check_files=True, require_ready=False):
         n_seeds = 4
     checks.append(f"committee seeds={n_seeds}")
     adapter = cfg.get("adapter", {})
-    for field in ("train", "load", "deploy", "preflight"):
+    for field in ("train", "load", "predict", "deploy", "preflight"):
         if adapter.get(field):
             path = _dotted_callable(adapter[field], f"adapter.{field}")
             if check_files:
@@ -408,7 +408,9 @@ def check_student_config(cfg, check_files=True, require_ready=False):
             if kind == "grace-fs":
                 _require_binary(cfg["train"].get("binary", "gracemaker"), env)
             elif kind == "simple-nn":
-                module = cfg["train"].get("runner", {}).get("module", "simple_nn.driver")
+                module = cfg["train"].get("runner", {}).get(
+                    "module", "adapters.simple_nn_v2_wrapper"
+                )
                 if env and env != os.environ.get("CONDA_DEFAULT_ENV"):
                     _require_binary("python", env)
                 else:
@@ -417,13 +419,28 @@ def check_student_config(cfg, check_files=True, require_ready=False):
     elif kind != "mock":
         raise ValueError("student training requires adapter.train or train.command")
 
-    factory_path = cfg.get("predict", {}).get("factory")
-    if factory_path:
-        if check_files:
-            _require_import_path(factory_path)
-        checks.append(f"prediction factory={factory_path}")
+    predict_cfg = cfg.get("predict", {})
+    predict_command = predict_cfg.get("command")
+    if predict_command:
+        if not isinstance(predict_command, list) or not predict_command:
+            raise ValueError("predict.command must be a non-empty list")
+        if check_files and "{" not in str(predict_command[0]):
+            _require_binary(predict_command[0], predict_cfg.get("env"))
+        checks.append("prediction adapter=command")
+    elif adapter.get("predict"):
+        checks.append(f"prediction adapter={adapter['predict']}")
     else:
-        checks.append("prediction factory=not configured (training/deployment only)")
+        factory_path = predict_cfg.get("factory")
+        if factory_path and check_files:
+            _require_import_path(factory_path)
+        if factory_path:
+            checks.append(f"prediction factory={factory_path}")
+        elif require_ready:
+            raise ValueError(
+                "ready student config requires adapter.predict, predict.command, or predict.factory"
+            )
+        else:
+            checks.append("prediction adapter=not configured (training/deployment only)")
     if deploy.get("renderer") and check_files:
         _require_import_path(_dotted_callable(deploy["renderer"], "deploy.renderer"))
     return checks

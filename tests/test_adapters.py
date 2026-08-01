@@ -21,7 +21,10 @@ from adapters.preflight import (check_acquisition_config, check_acquisition_file
                                 check_student_config, check_teacher_config,
                                 check_uncertainty_config, check_validation_profile)
 from adapters.student import (_render_simple_nn_config, _train_grace_fs,
-                              lammps_pair_style_block, load_student, train_student)
+                              lammps_pair_style_block, load_student,
+                              predict_student, train_student)
+from adapters.simple_nn_v2_predict import predict as predict_simple_nn
+from adapters.simple_nn_v2_wrapper import _dataset_to_extxyz_with_ref_labels
 from adapters.teacher import load_teacher, teacher_model_reference
 from adapters.uncertainty import committee_force_std, spearman
 from validation.structure_dynamics import (compute_msd, compute_nve_drift, compute_rdf,
@@ -148,6 +151,111 @@ class AdapterContractTests(unittest.TestCase):
             self.assertEqual(artifact.path.read_text(), "ok")
             self.assertIn("pair_style custom/style",
                           lammps_pair_style_block(cfg, artifact))
+
+    def test_student_prediction_uses_configured_callable(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            checkpoint = Path(tmp) / "model.json"
+            checkpoint.write_text('{"seed": 3}')
+            structures = [Atoms("Cu", positions=[[0, 0, 0]], cell=[4, 4, 4], pbc=True)]
+            cfg = {"kind": "external", "adapter": {
+                "predict": "adapters.mock_model.predict_external_adapter"}}
+            result = predict_student(cfg, checkpoint, structures)
+            self.assertEqual(len(result.energies), 1)
+            self.assertEqual(result.forces[0].shape, (1, 3))
+
+    def test_student_prediction_command_uses_validated_extxyz_exchange(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            checkpoint = Path(tmp) / "model.bin"
+            checkpoint.write_text("model")
+            structures = [Atoms("Cu", positions=[[0, 0, 0]], cell=[4, 4, 4], pbc=True)]
+            cfg = {"kind": "command-student", "predict": {
+                "command": ["predict-tool", "{structures}", "{output}"]}}
+
+            def fake_run(command, **kwargs):
+                frames = read(command[1], index=":")
+                for atoms in frames:
+                    atoms.info["student_energy"] = 1.25
+                    atoms.arrays["student_forces"] = np.zeros((len(atoms), 3))
+                write(command[2], frames, format="extxyz")
+                return subprocess.CompletedProcess(command, 0)
+
+            with patch("adapters.student.subprocess.run", side_effect=fake_run):
+                result = predict_student(cfg, checkpoint, structures)
+            self.assertEqual(result.energies.tolist(), [1.25])
+            self.assertEqual(result.forces[0].shape, (1, 3))
+
+    def test_ready_student_requires_a_prediction_interface(self):
+        with self.assertRaisesRegex(ValueError, "requires adapter.predict"):
+            check_student_config({"kind": "mock"}, check_files=False, require_ready=True)
+
+    def test_simple_nn_label_materialization_fails_closed_for_partial_stress(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            frames = []
+            for index in range(2):
+                atoms = Atoms("H", positions=[[0, 0, 0]])
+                atoms.info["teacher_energy"] = 0.0
+                atoms.arrays["teacher_forces"] = np.zeros((1, 3))
+                if index == 0:
+                    atoms.info["teacher_stress"] = np.zeros(6).tolist()
+                frames.append(atoms)
+            source = root / "frames.extxyz"
+            write(source, frames)
+            with self.assertRaisesRegex(ValueError, "teacher_stress on every frame"):
+                _dataset_to_extxyz_with_ref_labels(
+                    source, root / "labeled.extxyz", require_stress=True
+                )
+
+    def test_simple_nn_prediction_parses_and_binds_test_result(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            training = root / "seed-1"
+            training.mkdir()
+            checkpoint = training / "potential_saved_bestmodel"
+            checkpoint.write_text("model")
+            (training / "simple_nn_input.yaml").write_text(
+                "neural_network:\n  use_scale: false\n  use_pca: false\n"
+            )
+            atoms = Atoms("H", positions=[[0, 0, 0]], cell=[4, 4, 4], pbc=True)
+            atoms.info["teacher_energy"] = 1.5
+            atoms.arrays["teacher_forces"] = np.asarray([[0.1, 0.2, 0.3]])
+            structures = root / "heldout.extxyz"
+            output = root / "predictions.extxyz"
+            write(structures, [atoms])
+
+            result = {
+                "N": [1],
+                "NN_E": [1.25],
+                "NN_F": [np.asarray([[0.01, 0.02, 0.03]])],
+                "DFT_E": [1.5],
+                "DFT_F": [np.asarray([[0.1, 0.2, 0.3]])],
+            }
+
+            def fake_run(input_path, cwd):
+                if Path(input_path).name == "generate_input.yaml":
+                    (Path(cwd) / "total_list").write_text("feature.pt\n")
+                else:
+                    (Path(cwd) / "test_result").write_text("mock")
+
+            with patch("adapters.simple_nn_v2_predict._run_simple_nn",
+                       side_effect=fake_run), patch(
+                           "adapters.simple_nn_v2_predict._load_test_result",
+                           return_value=result):
+                predict_simple_nn(checkpoint, structures, output)
+
+            predicted = read(output, index=0)
+            self.assertAlmostEqual(predicted.info["student_energy"], 1.25)
+            np.testing.assert_allclose(
+                predicted.arrays["student_forces"], [[0.01, 0.02, 0.03]]
+            )
+
+            result["DFT_E"] = [9.0]
+            with patch("adapters.simple_nn_v2_predict._run_simple_nn",
+                       side_effect=fake_run), patch(
+                           "adapters.simple_nn_v2_predict._load_test_result",
+                           return_value=result), self.assertRaisesRegex(
+                               ValueError, "reference labels do not match"):
+                predict_simple_nn(checkpoint, structures, output)
 
     def test_unknown_md_and_reference_backends_use_configured_callables(self):
         with tempfile.TemporaryDirectory() as tmp:
