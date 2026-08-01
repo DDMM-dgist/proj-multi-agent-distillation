@@ -26,6 +26,8 @@ neural_network:
   E_loss_type: 1
   F_loss_type: 1
   stress_loss_weight: {STRESS_LOSS_WEIGHT}   # only meaningful if use_stress: true
+  subprocesses: {SUBPROCESSES}
+  accurate_train_rmse: {ACCURATE_TRAIN_RMSE}
 
 # PCA/scaling factors are fit on the FIRST training set and must be reused
 # (fixed) for continued/incremental training on the same descriptor basis —

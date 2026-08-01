@@ -2,11 +2,12 @@
 import json
 from pathlib import Path
 
+import numpy as np
 from ase.calculators.calculator import Calculator, all_changes
 from ase.calculators.emt import EMT
 from ase.io import read, write
 
-from adapters.contracts import ModelArtifact
+from adapters.contracts import ModelArtifact, PredictionBatch
 
 
 class MockCheckpointCalculator(Calculator):
@@ -34,6 +35,20 @@ def train_external_adapter(cfg, dataset_path, out_dir, seed):
 
 def load_external_adapter(cfg, checkpoint):
     return Path(checkpoint)
+
+
+def predict_external_adapter(cfg, artifact, structures, include_stress=False):
+    calculator = MockCheckpointCalculator(artifact.path)
+    energies, forces, stresses = [], [], []
+    for source in structures:
+        atoms = source.copy()
+        atoms.calc = calculator
+        energies.append(atoms.get_potential_energy())
+        forces.append(atoms.get_forces())
+        if include_stress:
+            stresses.append(np.zeros((3, 3)))
+    return PredictionBatch(np.asarray(energies), forces,
+                           stresses if include_stress else None)
 
 
 def deploy_external_adapter(cfg, checkpoint):

@@ -3,6 +3,7 @@ import importlib
 import re
 import subprocess
 import sys
+import tempfile
 from pathlib import Path
 
 import numpy as np
@@ -74,19 +75,11 @@ def _train_mock(cfg, dataset_path, out_dir, seed):
 
 
 def _train_simple_nn(cfg, dataset_path, out_dir, seed):
-    """SIMPLE-NN v2 training.
-
-    NOTE: this shells out to a driver script rather than calling SIMPLE-NN's
-    python API directly, because the exact API differs across SIMPLE-NN
-    versions. Point `driver_script` at a small wrapper in your own SIMPLE-NN
-    install that reads `input.yaml` + `params_Si`/`params_O` and trains one
-    seed — adjust the command below to match how you actually invoke SIMPLE-NN
-    v2 in your environment (this is a template, verify before relying on it).
-    """
+    """Run one SIMPLE-NN v2 seed through the configured CLI wrapper."""
     train_cfg = cfg["train"]
     rendered_config = _render_simple_nn_config(cfg, out_dir)
     runner = train_cfg.get("runner", {})
-    module = runner.get("module", "simple_nn.driver")
+    module = runner.get("module", "adapters.simple_nn_v2_wrapper")
     env = train_cfg.get("env")
     prefix = ["conda", "run", "-n", env, "python"] if env else [sys.executable]
     cmd = prefix + [
@@ -124,6 +117,10 @@ def _render_simple_nn_config(cfg, out_dir):
         "DOUBLE_PRECISION": str(bool(train_cfg.get("double_precision"))).lower(),
         "USE_STRESS": str(bool(train_cfg.get("use_stress"))).lower(),
         "STRESS_LOSS_WEIGHT": train_cfg.get("stress_loss_weight", 0.0),
+        "SUBPROCESSES": train_cfg.get("subprocesses", 0),
+        "ACCURATE_TRAIN_RMSE": str(bool(
+            train_cfg.get("accurate_train_rmse", True)
+        )).lower(),
     }
     for element, path in train_cfg["descriptor_params"].items():
         token = re.sub(r"[^A-Za-z0-9]", "_", element).upper() + "_PARAMS_PATH"
@@ -198,9 +195,95 @@ def _calculator_from_predict_config(cfg, artifact):
     return factory(**kwargs)
 
 
+def _validated_prediction_batch(value, structures, include_stress=False):
+    if not isinstance(value, PredictionBatch):
+        raise TypeError("student prediction adapter must return PredictionBatch")
+    if len(value.energies) != len(structures):
+        raise ValueError("student prediction count does not match the requested structures")
+    if not np.all(np.isfinite(np.asarray(value.energies, dtype=float))):
+        raise ValueError("student prediction energies contain non-finite values")
+    for index, (atoms, forces) in enumerate(zip(structures, value.forces)):
+        forces = np.asarray(forces, dtype=float)
+        if forces.shape != (len(atoms), 3) or not np.all(np.isfinite(forces)):
+            raise ValueError(f"student prediction forces are invalid at frame {index}")
+    if include_stress:
+        if value.stresses is None:
+            raise ValueError("student prediction did not return requested stresses")
+        for index, stress in enumerate(value.stresses):
+            stress = np.asarray(stress, dtype=float)
+            if stress.shape not in {(6,), (3, 3)} or not np.all(np.isfinite(stress)):
+                raise ValueError(f"student prediction stress is invalid at frame {index}")
+    return value
+
+
+def _predict_with_command(cfg, artifact, structures, include_stress=False):
+    """Run a config-selected batch predictor through a temporary extxyz exchange."""
+    from ase.io import read, write
+
+    pred = cfg.get("predict", {})
+    raw_command = pred.get("command")
+    if not isinstance(raw_command, list) or not raw_command:
+        raise ValueError("predict.command must be a non-empty list")
+    with tempfile.TemporaryDirectory(prefix="student-predict-") as tmp:
+        work_dir = Path(tmp).resolve()
+        input_path = work_dir / "structures.extxyz"
+        output_path = work_dir / "predictions.extxyz"
+        write(input_path, list(structures), format="extxyz")
+        context = {
+            "checkpoint": str(artifact.path.resolve()),
+            "structures": str(input_path),
+            "output": str(output_path),
+            "work_dir": str(work_dir),
+            "project_dir": cfg.get("_project_dir", str(Path.cwd())),
+            "include_stress": "true" if include_stress else "false",
+        }
+        command = [str(part).format(**context) for part in raw_command]
+        env = pred.get("env")
+        if env:
+            command = ["conda", "run", "--no-capture-output", "-n", env, *command]
+        subprocess.run(command, check=True, cwd=work_dir)
+        if not output_path.is_file():
+            raise FileNotFoundError("predict.command produced no predictions.extxyz")
+        predicted = read(output_path, index=":")
+        if len(predicted) != len(structures):
+            raise ValueError("predict.command output frame count does not match the input")
+        energy_key = pred.get("energy_key", "student_energy")
+        forces_key = pred.get("forces_key", "student_forces")
+        stress_key = pred.get("stress_key", "student_stress")
+        energies, forces, stresses = [], [], []
+        for index, (source, result) in enumerate(zip(structures, predicted)):
+            if (not np.array_equal(source.numbers, result.numbers) or
+                    not np.allclose(source.positions, result.positions, atol=1e-12, rtol=0) or
+                    not np.allclose(source.cell.array, result.cell.array, atol=1e-12, rtol=0) or
+                    not np.array_equal(source.pbc, result.pbc)):
+                raise ValueError(f"predict.command changed or reordered structure {index}")
+            if energy_key not in result.info or forces_key not in result.arrays:
+                raise ValueError(
+                    f"predict.command output frame {index} is missing {energy_key}/{forces_key}"
+                )
+            energies.append(float(result.info[energy_key]))
+            forces.append(np.asarray(result.arrays[forces_key]))
+            if include_stress:
+                if stress_key not in result.info:
+                    raise ValueError(
+                        f"predict.command output frame {index} is missing {stress_key}"
+                    )
+                stresses.append(np.asarray(result.info[stress_key]))
+    return PredictionBatch(np.asarray(energies), forces,
+                           stresses if include_stress else None)
+
+
 def predict_student(cfg, model_artifact, structures, include_stress=False):
-    """Predict through a common ASE-based interface for any architecture."""
+    """Predict through a callable, command, or ASE-calculator interface."""
     artifact = load_student(cfg, model_artifact)
+    structures = list(structures)
+    adapter = cfg.get("adapter", {})
+    if adapter.get("predict"):
+        value = _callable(adapter["predict"])(cfg, artifact, structures, include_stress)
+        return _validated_prediction_batch(value, structures, include_stress)
+    if cfg.get("predict", {}).get("command"):
+        value = _predict_with_command(cfg, artifact, structures, include_stress)
+        return _validated_prediction_batch(value, structures, include_stress)
     calculator = _calculator_from_predict_config(cfg, artifact)
     energies, forces, stresses = [], [], []
     for source in structures:
@@ -210,11 +293,11 @@ def predict_student(cfg, model_artifact, structures, include_stress=False):
         forces.append(np.asarray(atoms.get_forces()))
         if include_stress:
             stresses.append(np.asarray(atoms.get_stress(voigt=False)))
-    return PredictionBatch(
+    return _validated_prediction_batch(PredictionBatch(
         energies=np.asarray(energies),
         forces=forces,
         stresses=stresses if include_stress else None,
-    )
+    ), structures, include_stress)
 
 
 def lammps_pair_style_block(cfg, checkpoint_path):

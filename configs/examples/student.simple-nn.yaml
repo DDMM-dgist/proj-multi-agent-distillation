@@ -15,9 +15,11 @@ train:
   use_stress: false
   read_stress: false
   stress_loss_weight: 0.0
+  subprocesses: 0                    # benchmark 0/2/4/8 on the target filesystem before changing
+  accurate_train_rmse: true          # affects reported train RMSE and stopping interpretation
   target_hours_per_seed: 12
   runner:
-    module: simple_nn.driver        # replace with the wrapper module verified for your install
+    module: adapters.simple_nn_v2_wrapper
 committee:
   n_seeds: 4
 deploy:
@@ -25,9 +27,17 @@ deploy:
   elements: [O, Si]                 # LAMMPS atom-type order; matches this case's production
                                      # data files (type 1 = O mass 15.999, type 2 = Si mass
                                      # 28.085) — never inferred alphabetically or assumed
-# Optional architecture-neutral ASE prediction hook. Supply a factory in your
-# SIMPLE-NN installation that accepts the checkpoint argument below.
-# predict:
-#   factory: your_package.simple_nn_ase.make_calculator
-#   checkpoint_arg: checkpoint
-#   kwargs: {}
+predict:
+  env: distill-student-simplenn
+  command:
+    - python
+    - -m
+    - adapters.simple_nn_v2_predict
+    - --checkpoint
+    - "{checkpoint}"
+    - --structures
+    - "{structures}"
+    - --output
+    - "{output}"
+  energy_key: student_energy
+  forces_key: student_forces
