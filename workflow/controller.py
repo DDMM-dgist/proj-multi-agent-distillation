@@ -12,8 +12,10 @@ from pathlib import Path
 
 import yaml
 
+from orchestration.exchange import validate_judge_vote
 from workflow.integrity import artifact_digest, sha256_file, verify_artifact
 from workflow.contracts import validate_md_manifest, validate_validation_manifest
+from workflow.review_lenses import normalize_review_lenses
 
 
 RECOVERY_CATEGORIES = {
@@ -143,6 +145,11 @@ class RunController:
                 raise ValueError(
                     f"stage {item['name']!r} gate criteria must be unique non-empty strings"
                 )
+            gate_review_lenses = None
+            if gate_criteria is not None:
+                gate_review_lenses = normalize_review_lenses(
+                    (gate_config or {}).get("review_lenses")
+                )
             contract = item.get("contract")
             if contract is not None and not isinstance(contract, dict):
                 raise ValueError(f"stage {item['name']!r} contract must be a mapping")
@@ -179,6 +186,7 @@ class RunController:
                            "command": command, "outputs": outputs,
                            "env": env, "contract": contract,
                            "gate_criteria": gate_criteria,
+                           "gate_review_lenses": gate_review_lenses,
                            "started_at": None, "completed_at": None, "attempts": 0})
         run_dir.parent.mkdir(parents=True, exist_ok=True)
         temporary = Path(tempfile.mkdtemp(prefix=f".{run_dir.name}.init-", dir=run_dir.parent))
@@ -200,7 +208,7 @@ class RunController:
                                       "sha256": source_integrity["sha256"],
                                       "source_sha256": source_integrity["sha256"]})
             created_at = now()
-            state = {"schema_version": 5, "run_id": cfg["run_id"], "created_at": created_at,
+            state = {"schema_version": 6, "run_id": cfg["run_id"], "created_at": created_at,
                      "updated_at": created_at, "workflow_config": str(run_dir / "workflow.yaml"),
                      "artifacts": [], "project_dir": str(project_dir), "inputs": input_records,
                      "code_revision": git_revision(project_dir), "events": [], "stages": stages,
@@ -541,27 +549,50 @@ class RunController:
             )
         if criteria != bound_criteria:
             raise ValueError("vote bundle criteria do not match the run-bound gate criteria")
-        if not isinstance(votes, list) or len(votes) != 3:
+        bound_lenses = self.stage(name).get("gate_review_lenses")
+        if not bound_lenses:
+            raise ValueError("Judge bundle requires review lenses bound at run initialization")
+        if bundle.get("review_lenses") != bound_lenses:
+            raise ValueError("vote bundle review lenses do not match the run-bound review lenses")
+        if not isinstance(votes, list) or len(votes) != len(bound_lenses):
             raise ValueError("exactly three judge votes are required")
         verdicts = []
         judge_ids = set()
+        vote_lenses = []
+        expected_lenses = [lens["id"] for lens in bound_lenses]
         for index, vote in enumerate(votes, 1):
-            verdict = vote.get("verdict")
-            checked = vote.get("criteria_checked")
-            judge_id = str(vote.get("judge_id", vote.get("id", index)))
+            allowed = {"judge_id", "id", "review_lens", "verdict",
+                       "criteria_checked", "rationale", "required_fix"}
+            if not isinstance(vote, dict) or set(vote) - allowed:
+                raise ValueError("judge vote contains unknown fields")
+            vote_payload = {key: vote.get(key) for key in (
+                "review_lens", "verdict", "criteria_checked", "rationale", "required_fix"
+            )}
+            validated = validate_judge_vote(
+                vote_payload, criteria, review_lens=expected_lenses[index - 1]
+            )
+            verdict = validated["verdict"]
+            review_lens = validated["review_lens"]
+            if "judge_id" in vote and "id" in vote:
+                raise ValueError("judge vote must use either judge_id or id, not both")
+            raw_judge_id = vote.get("judge_id", vote.get("id", index))
+            if (isinstance(raw_judge_id, bool) or
+                    not isinstance(raw_judge_id, (str, int)) or
+                    not str(raw_judge_id).strip()):
+                raise ValueError("judge identifier must be a non-empty string or integer")
+            judge_id = str(raw_judge_id)
             if judge_id in judge_ids:
                 raise ValueError("judge identifiers must be unique")
             judge_ids.add(judge_id)
-            if verdict not in {"PASS", "REVISE", "FAIL"}:
-                raise ValueError("judge vote has an invalid verdict")
-            if not isinstance(checked, list) or len(checked) != len(criteria):
-                raise ValueError("every judge must report every criterion")
-            if [item.get("criterion") for item in checked] != criteria:
-                raise ValueError("judge criteria must exactly match the ordered gate criteria")
-            if verdict == "PASS" and not all(item.get("ok") is True for item in checked):
-                raise ValueError("a PASS vote requires every criterion to be explicitly true")
+            vote_lenses.append(review_lens)
             verdicts.append(verdict)
-        decision = "FAIL" if "FAIL" in verdicts else ("PASS" if verdicts == ["PASS"] * 3 else "REVISE")
+        if vote_lenses != expected_lenses:
+            raise ValueError(
+                "judge votes must match the ordered run-bound review lenses exactly once"
+            )
+        decision = "FAIL" if "FAIL" in verdicts else (
+            "PASS" if verdicts == ["PASS"] * len(bound_lenses) else "REVISE"
+        )
         if bundle.get("decision") != decision:
             raise ValueError("vote bundle decision does not match the recomputed decision")
         expected = {a["path"]: a["sha256"] for a in self.verify_stage_artifacts(name)}
@@ -572,7 +603,7 @@ class RunController:
         return decision, bundle
 
     def gate_context(self, name):
-        """Return the verified artifact hashes and run-bound Judge criteria."""
+        """Return verified hashes, criteria, and run-bound Judge lenses."""
         stage = self.stage(name)
         if stage["status"] != "completed":
             raise RuntimeError("gate context requires a completed stage")
@@ -585,6 +616,7 @@ class RunController:
         if not hashes:
             raise ValueError("a Judge gate requires at least one registered artifact")
         return {"stage": name, "criteria": list(stage["gate_criteria"]),
+                "review_lenses": [dict(lens) for lens in stage["gate_review_lenses"]],
                 "artifact_sha256": hashes}
 
     def record_gate(self, name, verdict=None, evidence=None, votes_path=None):

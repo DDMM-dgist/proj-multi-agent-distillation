@@ -2,7 +2,8 @@
 
 The operational, re-runnable gate for the distillation workflow. Each gate is
 decided by three `judge` instances that run in **separate contexts**, read the
-**same** artifact, and vote **blind to each other**. The
+**same** artifact and common criteria through complementary run-bound review
+lenses, and vote **blind to each other**. The
 Orchestrator convenes them, tallies, and records **every individual vote** — so
 split votes show up in the audit trail.
 
@@ -23,14 +24,16 @@ configuration and are snapshot-bound when the run is initialized.
 ### Standard Claude Code
 
 The main Orchestrator invokes three registered `judge` agents with identical
-artifact paths and criteria. Each returns one JSON object without seeing the
+artifact paths and common criteria, plus one distinct lens from `gate-context`.
+Each returns one JSON object without seeing the
 other votes. Apply the same tally below: any FAIL blocks; otherwise unanimous
 PASS is required; a missing/malformed vote is REVISE. Save the three JSON votes
 and aggregate JSON under `runs/<run>/gates/`, then record the aggregate through
 `python -m workflow.controller gate ... --votes <bundle.json>`.
 
-The saved bundle must contain the stage name, non-empty criteria, exactly three
-structured votes, the recomputed aggregate decision, and the SHA-256 mapping of
+The saved bundle must contain the stage name, non-empty criteria, the exact
+ordered run-bound `review_lenses`, exactly three structured votes, the
+recomputed aggregate decision, and the SHA-256 mapping of
 the registered stage artifacts. The controller recomputes the decision and
 compares the hashes; a bare manual `PASS` is rejected. A researcher or Orchestrator
 may still record `REVISE` or `FAIL` directly to stop work conservatively.
@@ -48,8 +51,9 @@ artifacts are compared with the previous iteration baseline.
 
 Before convening the judges, obtain the verified hash map and ordered criteria with
 `python -m workflow.controller gate-context <run_dir> <stage>`. Pass its
-`artifact_sha256` and `criteria` fields to the optional workflow. The controller
-rejects a vote bundle whose criteria differ from this run-bound list. If a judge invocation fails,
+`artifact_sha256`, `criteria`, and `review_lenses` fields to the optional
+workflow. The controller rejects a vote bundle whose criteria or lenses differ
+from these run-bound lists. If a judge invocation fails,
 the workflow emits a synthetic REVISE vote containing every criterion with
 `ok: false`; it never fabricates a PASS or silently drops the failed slot.
 
@@ -57,14 +61,19 @@ the workflow emits a synthetic REVISE vote containing every criterion with
 {
   "stage": "dataset_split",
   "criteria": ["train/test parent groups do not overlap"],
+  "review_lenses": [
+    {"id": "evidence_provenance", "title": "Evidence and provenance", "focus": "..."},
+    {"id": "scientific_validity", "title": "Scientific validity", "focus": "..."},
+    {"id": "reproducibility_deployment", "title": "Reproducibility and deployment risk", "focus": "..."}
+  ],
   "artifact_sha256": {"/absolute/path/train.extxyz": "..."},
   "decision": "PASS",
   "votes": [
-    {"judge_id": "judge-1", "verdict": "PASS", "criteria_checked": [{"criterion": "...", "ok": true}],
+    {"judge_id": "judge-1", "review_lens": "evidence_provenance", "verdict": "PASS", "criteria_checked": [{"criterion": "...", "value_read": "verified", "ok": true}],
      "rationale": "...", "required_fix": ""},
-    {"judge_id": "judge-2", "verdict": "PASS", "criteria_checked": [{"criterion": "...", "ok": true}],
+    {"judge_id": "judge-2", "review_lens": "scientific_validity", "verdict": "PASS", "criteria_checked": [{"criterion": "...", "value_read": "verified", "ok": true}],
      "rationale": "...", "required_fix": ""},
-    {"judge_id": "judge-3", "verdict": "PASS", "criteria_checked": [{"criterion": "...", "ok": true}],
+    {"judge_id": "judge-3", "review_lens": "reproducibility_deployment", "verdict": "PASS", "criteria_checked": [{"criterion": "...", "value_read": "verified", "ok": true}],
      "rationale": "...", "required_fix": ""}
   ]
 }
@@ -83,6 +92,7 @@ Workflow({ name: 'gate-vote', args: {
     'teacher-vs-DFT force MAE reported alongside as a reference baseline',
     'committee force-std (sigma_F) reported, not just a point metric',
   ],
+  review_lenses: [/* exact review_lenses from gate-context */],
   n: 3,
   rule: 'unanimous',
 }})

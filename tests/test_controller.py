@@ -30,14 +30,20 @@ class RunControllerTests(unittest.TestCase):
         artifacts = {a["path"]: a["sha256"] for a in controller.stage_artifacts(stage)}
         vote_path = controller.run_dir / "gates" / f"{stage}.votes.json"
         criteria = controller.stage(stage).get("gate_criteria")
+        lenses = controller.stage(stage).get("gate_review_lenses")
         self.assertTrue(criteria, "test workflow must bind gate criteria")
-        def vote(judge_id):
-            return {"judge_id": judge_id, "verdict": "PASS", "criteria_checked":
-                    [{"criterion": criterion, "ok": True} for criterion in criteria],
+        self.assertEqual(len(lenses), 3, "test workflow must bind three review lenses")
+        def vote(judge_id, lens):
+            return {"judge_id": judge_id, "review_lens": lens["id"],
+                    "verdict": "PASS", "criteria_checked":
+                    [{"criterion": criterion, "value_read": "verified", "ok": True}
+                     for criterion in criteria],
                     "rationale": "ok", "required_fix": ""}
         vote_path.write_text(json.dumps({"stage": stage, "criteria": criteria,
+                                        "review_lenses": lenses,
                                         "artifact_sha256": artifacts, "decision": "PASS",
-                                        "votes": [vote("judge-1"), vote("judge-2"), vote("judge-3")]}))
+                                        "votes": [vote(f"judge-{index}", lens)
+                                                  for index, lens in enumerate(lenses, 1)]}))
         controller.record_gate(stage, votes_path=vote_path)
 
     def test_gate_blocks_next_stage_and_state_resumes(self):
@@ -264,16 +270,22 @@ class RunControllerTests(unittest.TestCase):
             context = controller.gate_context("data")
             self.assertEqual(context["stage"], "data")
             self.assertEqual(context["criteria"], [self.GATE_CRITERION])
+            self.assertEqual(len(context["review_lenses"]), 3)
             self.assertEqual(context["artifact_sha256"],
                              {str(artifact): artifact_digest(artifact)["sha256"]})
 
             softened = "artifact exists"
             vote_path = controller.run_dir / "gates/softened.votes.json"
-            votes = [{"judge_id": f"judge-{index}", "verdict": "PASS",
-                      "criteria_checked": [{"criterion": softened, "ok": True}]}
+            votes = [{"judge_id": f"judge-{index}",
+                      "review_lens": context["review_lenses"][index - 1]["id"],
+                      "verdict": "PASS",
+                      "criteria_checked": [{"criterion": softened,
+                                            "value_read": "verified", "ok": True}],
+                      "rationale": "ok", "required_fix": ""}
                      for index in range(1, 4)]
             vote_path.write_text(json.dumps({
                 "stage": "data", "criteria": [softened],
+                "review_lenses": context["review_lenses"],
                 "artifact_sha256": context["artifact_sha256"],
                 "decision": "PASS", "votes": votes,
             }))
@@ -297,6 +309,7 @@ class RunControllerTests(unittest.TestCase):
             artifact.write_text("data")
             controller.complete_external_stage("data", [artifact])
             criterion = "artifact is complete"
+            lenses = controller.gate_context("data")["review_lenses"]
             passed = {"verdict": "PASS", "criteria_checked": [
                 {"criterion": criterion, "value_read": "yes", "ok": True}],
                 "rationale": "ok", "required_fix": ""}
@@ -307,9 +320,12 @@ class RunControllerTests(unittest.TestCase):
             bundle = controller.run_dir / "gates/data.votes.json"
             bundle.write_text(json.dumps({
                 "gate": "data", "criteria": [criterion],
+                "review_lenses": lenses,
                 "artifact_sha256": controller.gate_context("data")["artifact_sha256"],
                 "decision": "REVISE",
-                "votes": [dict(passed, id=1), dict(passed, id=2), dict(failed, id=3)],
+                "votes": [dict(passed, id=1, review_lens=lenses[0]["id"]),
+                          dict(passed, id=2, review_lens=lenses[1]["id"]),
+                          dict(failed, id=3, review_lens=lenses[2]["id"])],
             }))
             controller.record_gate("data", votes_path=bundle)
             self.assertEqual(controller.stage("data")["gate"], "REVISE")

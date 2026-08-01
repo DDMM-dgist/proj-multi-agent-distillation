@@ -24,6 +24,15 @@ def _input_reference(value):
     return {"role": role, "path": str(path), "integrity": artifact_digest(path)}
 
 
+def _context_value(value):
+    if "=" not in value:
+        raise argparse.ArgumentTypeError("context must use KEY=VALUE")
+    key, raw = value.split("=", 1)
+    if not key.strip() or not raw.strip():
+        raise argparse.ArgumentTypeError("context key and value must be non-empty")
+    return key.strip(), raw.strip()
+
+
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--spec-dir", default=str(DEFAULT_SPEC_DIR))
@@ -38,6 +47,8 @@ def main(argv=None):
     task.add_argument("--input", action="append", default=[], type=_input_reference)
     task.add_argument("--criterion", action="append", default=[])
     task.add_argument("--constraint", action="append", default=[])
+    task.add_argument("--context", action="append", default=[], type=_context_value,
+                      help="task context as KEY=VALUE; may be repeated")
     result = sub.add_parser("validate-result")
     result.add_argument("agent")
     result.add_argument("task")
@@ -52,9 +63,12 @@ def main(argv=None):
     elif args.action == "make-task":
         if args.agent not in specs:
             parser.error(f"unknown agent: {args.agent}")
+        context = dict(args.context)
+        if len(context) != len(args.context):
+            parser.error("task context keys must be unique")
         packet = make_task(args.agent, args.instruction, run_id=args.run_id,
                            inputs=args.input, criteria=args.criterion,
-                           constraints=args.constraint)
+                           constraints=args.constraint, context=context)
         path = FileExchangeRuntime(args.exchange_dir).dispatch(specs[args.agent], packet)
         print(path)
     else:
