@@ -176,8 +176,10 @@ class FileExchangeRuntime:
         self.exchange_dir = Path(exchange_dir).resolve()
         self.outbox = self.exchange_dir / "tasks"
         self.inbox = self.exchange_dir / "results"
+        self.raw = self.exchange_dir / "raw"
         self.outbox.mkdir(parents=True, exist_ok=True)
         self.inbox.mkdir(parents=True, exist_ok=True)
+        self.raw.mkdir(parents=True, exist_ok=True)
 
     def dispatch(self, spec: AgentSpec, task: Mapping[str, Any]) -> Path:
         task = validate_task(task, spec)
@@ -196,3 +198,50 @@ class FileExchangeRuntime:
             raise FileNotFoundError(f"dispatched task packet is missing: {task_path}")
         return validate_agent_response(json.loads(path.read_text()), spec,
                                        json.loads(task_path.read_text()))
+
+    def _preserve_raw(self, task_id: str, raw_text: str) -> Path:
+        """Write the unedited response bytes before any parse/validation.
+
+        Re-submissions never overwrite a prior raw file: the second and later
+        responses for a task land at ``{task_id}.1.json``, ``.2.json``, ... so
+        the full audit trail of what each agent actually emitted is retained.
+        """
+        target = self.raw / f"{task_id}.json"
+        suffix = 0
+        while target.exists():
+            suffix += 1
+            target = self.raw / f"{task_id}.{suffix}.json"
+        target.write_text(raw_text)
+        return target
+
+    def accept(self, spec: AgentSpec, task_id: str, raw_text: str) -> dict[str, Any]:
+        """Bind an agent's raw response to its dispatched task with audit preservation.
+
+        Order matters: the raw response is preserved on disk FIRST, so even a
+        malformed or validation-failing response is auditable. Only after a
+        successful contract validation (task_id binding, result/JudgeVote schema,
+        and — for Judge tasks — the run-bound review_lens) is the validated
+        payload recorded under ``results/``. A response with no dispatched task is
+        never accepted.
+        """
+        task_path = self.outbox / f"{task_id}.json"
+        if not task_path.is_file():
+            raise FileNotFoundError(f"dispatched task packet is missing: {task_path}")
+
+        raw_path = self._preserve_raw(task_id, raw_text)
+
+        try:
+            payload = json.loads(raw_text)
+        except json.JSONDecodeError as error:
+            raise ValueError(
+                f"agent response is not valid JSON (raw preserved at {raw_path}): {error}"
+            ) from error
+        try:
+            validated = validate_agent_response(
+                payload, spec, json.loads(task_path.read_text()))
+        except ValueError as error:
+            raise ValueError(f"{error} (raw preserved at {raw_path})") from error
+
+        result_path = self.inbox / f"{task_id}.json"
+        result_path.write_text(json.dumps(validated, indent=2) + "\n")
+        return validated

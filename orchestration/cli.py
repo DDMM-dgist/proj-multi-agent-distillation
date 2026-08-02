@@ -53,6 +53,11 @@ def main(argv=None):
     result.add_argument("agent")
     result.add_argument("task")
     result.add_argument("result")
+    accept = sub.add_parser("accept-result")
+    accept.add_argument("agent")
+    accept.add_argument("task", help="dispatched task .json path, or a bare task_id")
+    accept.add_argument("exchange_dir")
+    accept.add_argument("--response", help="raw response .json path; reads stdin if omitted")
     args = parser.parse_args(argv)
     specs = load_agent_specs(args.spec_dir)
     if args.action == "validate-specs":
@@ -71,13 +76,31 @@ def main(argv=None):
                            constraints=args.constraint, context=context)
         path = FileExchangeRuntime(args.exchange_dir).dispatch(specs[args.agent], packet)
         print(path)
-    else:
+    elif args.action == "validate-result":
         if args.agent not in specs:
             parser.error(f"unknown agent: {args.agent}")
         task_payload = json.loads(Path(args.task).read_text())
         result_payload = json.loads(Path(args.result).read_text())
         validate_agent_response(result_payload, specs[args.agent], task_payload)
         print("valid agent result")
+    else:  # accept-result
+        if args.agent not in specs:
+            parser.error(f"unknown agent: {args.agent}")
+        runtime = FileExchangeRuntime(args.exchange_dir)
+        # Accept either a task-file path or a bare task_id resolved under tasks/.
+        task_arg = Path(args.task)
+        if task_arg.is_file():
+            task_id = json.loads(task_arg.read_text())["task_id"]
+        else:
+            task_id = args.task
+        raw_text = (Path(args.response).read_text() if args.response
+                    else sys.stdin.read())
+        try:
+            runtime.accept(specs[args.agent], task_id, raw_text)
+        except (ValueError, FileNotFoundError) as error:
+            print(str(error), file=sys.stderr)
+            raise SystemExit(1)
+        print(runtime.inbox / f"{task_id}.json")
 
 
 if __name__ == "__main__":

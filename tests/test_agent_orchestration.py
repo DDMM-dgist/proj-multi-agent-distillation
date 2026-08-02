@@ -58,6 +58,104 @@ class AgentOrchestrationTests(unittest.TestCase):
             result_path.write_text(json.dumps(result))
             self.assertEqual(runtime.collect(spec, task["task_id"])["status"], "completed")
 
+    def _completed_result(self, task_id, agent):
+        return {"schema_version": 1, "task_id": task_id, "agent": agent,
+                "status": "completed", "summary": "Lineage inspected.",
+                "artifacts": [], "evidence": [], "requested_approval": None,
+                "next_actions": []}
+
+    def test_accept_result_preserves_raw_then_records_validated(self):
+        spec = self.specs["data-curator"]
+        task = make_task(spec.name, "Inspect lineage.", run_id="mock-run")
+        with tempfile.TemporaryDirectory() as tmp:
+            runtime = FileExchangeRuntime(tmp)
+            runtime.dispatch(spec, task)
+            raw = json.dumps(self._completed_result(task["task_id"], spec.name))
+            validated = runtime.accept(spec, task["task_id"], raw)
+            self.assertEqual(validated["status"], "completed")
+            self.assertTrue((runtime.raw / f"{task['task_id']}.json").is_file())
+            self.assertEqual((runtime.raw / f"{task['task_id']}.json").read_text(), raw)
+            self.assertTrue((runtime.inbox / f"{task['task_id']}.json").is_file())
+
+    def test_accept_result_preserves_raw_even_when_validation_fails(self):
+        # The audit guarantee: a contract-violating response is still on disk.
+        spec = self.specs["data-curator"]
+        task = make_task(spec.name, "Inspect lineage.", run_id="mock-run")
+        with tempfile.TemporaryDirectory() as tmp:
+            runtime = FileExchangeRuntime(tmp)
+            runtime.dispatch(spec, task)
+            bad = json.dumps(self._completed_result("wrong-task-id", spec.name))
+            with self.assertRaisesRegex(ValueError, "raw preserved at"):
+                runtime.accept(spec, task["task_id"], bad)
+            self.assertEqual((runtime.raw / f"{task['task_id']}.json").read_text(), bad)
+            self.assertFalse((runtime.inbox / f"{task['task_id']}.json").is_file())
+
+    def test_accept_result_preserves_raw_when_not_json(self):
+        spec = self.specs["data-curator"]
+        task = make_task(spec.name, "Inspect lineage.", run_id="mock-run")
+        with tempfile.TemporaryDirectory() as tmp:
+            runtime = FileExchangeRuntime(tmp)
+            runtime.dispatch(spec, task)
+            with self.assertRaisesRegex(ValueError, "not valid JSON"):
+                runtime.accept(spec, task["task_id"], "this is not json")
+            self.assertEqual((runtime.raw / f"{task['task_id']}.json").read_text(),
+                             "this is not json")
+
+    def test_accept_result_without_dispatched_task_writes_nothing(self):
+        spec = self.specs["data-curator"]
+        with tempfile.TemporaryDirectory() as tmp:
+            runtime = FileExchangeRuntime(tmp)
+            raw = json.dumps(self._completed_result("orphan-task", spec.name))
+            with self.assertRaises(FileNotFoundError):
+                runtime.accept(spec, "orphan-task", raw)
+            self.assertFalse((runtime.raw / "orphan-task.json").exists())
+
+    def test_accept_result_resubmission_retains_prior_raw(self):
+        spec = self.specs["data-curator"]
+        task = make_task(spec.name, "Inspect lineage.", run_id="mock-run")
+        with tempfile.TemporaryDirectory() as tmp:
+            runtime = FileExchangeRuntime(tmp)
+            runtime.dispatch(spec, task)
+            first = json.dumps(self._completed_result(task["task_id"], spec.name))
+            runtime.accept(spec, task["task_id"], first)
+            second = json.dumps({**self._completed_result(task["task_id"], spec.name),
+                                 "summary": "Re-run."})
+            runtime.accept(spec, task["task_id"], second)
+            self.assertEqual((runtime.raw / f"{task['task_id']}.json").read_text(), first)
+            self.assertEqual((runtime.raw / f"{task['task_id']}.1.json").read_text(), second)
+
+    def test_accept_result_rejects_judge_vote_with_wrong_lens(self):
+        # The exchange accept path agrees with the controller's lens enforcement.
+        spec = self.specs["judge"]
+        task = make_task("judge", "Review the gate.", criteria=["artifact is complete"],
+                         context={"review_lens": "scientific_validity",
+                                  "review_focus": "Audit scientific validity."})
+        with tempfile.TemporaryDirectory() as tmp:
+            runtime = FileExchangeRuntime(tmp)
+            runtime.dispatch(spec, task)
+            vote = json.dumps({"review_lens": "evidence_provenance", "verdict": "PASS",
+                               "criteria_checked": [{"criterion": "artifact is complete",
+                                                     "value_read": "yes", "ok": True}],
+                               "rationale": "ok", "required_fix": ""})
+            with self.assertRaisesRegex(ValueError, "raw preserved at"):
+                runtime.accept(spec, task["task_id"], vote)
+            self.assertTrue((runtime.raw / f"{task['task_id']}.json").is_file())
+
+    def test_accept_result_cli_round_trip(self):
+        spec = self.specs["data-curator"]
+        task = make_task(spec.name, "Inspect lineage.", run_id="mock-run")
+        with tempfile.TemporaryDirectory() as tmp:
+            runtime = FileExchangeRuntime(tmp)
+            task_path = runtime.dispatch(spec, task)
+            response_path = Path(tmp) / "response.json"
+            response_path.write_text(json.dumps(
+                self._completed_result(task["task_id"], spec.name)))
+            with redirect_stdout(io.StringIO()):
+                orchestration_main(["accept-result", spec.name, str(task_path), tmp,
+                                    "--response", str(response_path)])
+            self.assertTrue((runtime.inbox / f"{task['task_id']}.json").is_file())
+            self.assertTrue((runtime.raw / f"{task['task_id']}.json").is_file())
+
     def test_result_rejects_cross_agent_or_cross_task_response(self):
         result = {
             "schema_version": 1,
