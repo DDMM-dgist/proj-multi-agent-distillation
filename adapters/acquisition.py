@@ -62,13 +62,21 @@ def run_teacher_md(cfg, teacher_cfg, seed_path, out_path):
         parent_id = source.info.get("parent_structure_id",
                                     source.info.get("structure_id", f"seed-{seed_index:08d}"))
         atoms = source.copy()
-        # Preserve the seed's original constraints exactly (deep-copied so snapshot
-        # restoration does not depend on object identity surviving atoms.copy()).
+        # Snapshot constraint policy: FixCom is a whole-system center-of-mass
+        # dynamics device, not per-atom static data, and ASE 3.26's extxyz writer
+        # cannot serialize it. We therefore omit EVERY FixCom (seed-provided or
+        # runtime-added) from the recorded snapshots, while preserving all other
+        # original constraints (FixAtoms, FixCartesian, ...) exactly. Deep-copied so
+        # the snapshot does not depend on object identity surviving atoms.copy().
         original_constraints = copy.deepcopy(source.constraints)
+        source_had_fixcom = any(isinstance(item, FixCom)
+                                for item in original_constraints)
+        snapshot_constraints = [copy.deepcopy(item) for item in original_constraints
+                                if not isinstance(item, FixCom)]
         fix_center_of_mass = cfg.get("fix_center_of_mass", True)
         runtime_fixcom_added = False
-        if fix_center_of_mass and not any(isinstance(item, FixCom)
-                                          for item in atoms.constraints):
+        if fix_center_of_mass and not source_had_fixcom:
+            # Added only to the live MD atoms object, never to the snapshot copies.
             atoms.set_constraint([*atoms.constraints, FixCom()])
             runtime_fixcom_added = True
         atoms.calc = calc
@@ -86,12 +94,15 @@ def run_teacher_md(cfg, teacher_cfg, seed_path, out_path):
 
         def capture():
             frame = atoms.copy()
-            if runtime_fixcom_added:
-                # ASE 3.29 accepts a FixCom when writing extxyz; ASE 3.26 does not.
-                # The runtime FixCom is only a dynamics device, so restore the seed's
-                # original constraints on the recorded snapshot (removes only the
-                # FixCom this function added; keeps any pre-existing seed constraint).
-                frame.set_constraint(copy.deepcopy(original_constraints))
+            # Apply the FixCom-free snapshot constraints (never mutating the live MD
+            # atoms), and record scalar provenance so an omitted FixCom is auditable
+            # rather than silently dropped. Scalars only (bool) — list/dict info keys
+            # are unstable across ASE extxyz versions.
+            frame.set_constraint(copy.deepcopy(snapshot_constraints))
+            frame.info["source_had_fixcom"] = bool(source_had_fixcom)
+            frame.info["runtime_fixcom_applied"] = bool(runtime_fixcom_added)
+            frame.info["snapshot_fixcom_omitted"] = bool(
+                source_had_fixcom or runtime_fixcom_added)
             frame.info.update(acquisition="teacher-md", seed_structure_index=seed_index,
                               temperature_K=temperature, parent_structure_id=str(parent_id),
                               random_seed=random_seed,

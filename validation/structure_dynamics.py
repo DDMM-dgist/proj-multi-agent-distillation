@@ -35,7 +35,9 @@ def compute_rdf(frames, elements, r_max=6.0, nbins=200):
     out = {}
     r = None
     for e1, e2 in pairs:
+        label = f"{e1}-{e2}"
         rdfs = []
+        grid = None
         # Convert chemical symbols to atomic numbers for ASE get_rdf's `elements`
         # selector while preserving symbol-based report keys. ASE 3.29 accepts the
         # symbol form, whereas ASE 3.26 does not (it matches zero atoms -> divide by
@@ -43,16 +45,31 @@ def compute_rdf(frames, elements, r_max=6.0, nbins=200):
         pair = [atomic_numbers[e1], atomic_numbers[e2]]
         for atoms in frames:
             rdf, distances = get_rdf(atoms, r_max, nbins, elements=pair)
+            rdf = np.asarray(rdf, dtype=float)
+            distances = np.asarray(distances, dtype=float)
+            # Validate every frame result; never silently zero/truncate/interpolate.
+            if rdf.ndim != 1 or distances.ndim != 1:
+                raise ValueError(f"RDF for pair {label} is not one-dimensional")
+            if rdf.shape[0] != nbins or distances.shape[0] != nbins:
+                raise ValueError(
+                    f"RDF for pair {label} has the wrong length (expected {nbins}, "
+                    f"got rdf={rdf.shape[0]}, distances={distances.shape[0]})")
+            if not np.isfinite(rdf).all() or not np.isfinite(distances).all():
+                raise ValueError(
+                    f"non-finite RDF for pair {label}; check r_max against the cell "
+                    f"size and that both species are present in the frames")
+            if grid is None:
+                grid = distances
+                if r is None:
+                    r = distances
+            elif not np.allclose(distances, grid, rtol=0, atol=1e-9):
+                raise ValueError(
+                    f"distance grid mismatch across frames for pair {label}")
             rdfs.append(rdf)
-            if r is None:
-                r = distances
         mean_rdf = np.mean(rdfs, axis=0)
         if not np.isfinite(mean_rdf).all():
-            # Fail loudly rather than silently emitting/zeroing a non-finite RDF.
-            raise ValueError(
-                f"non-finite RDF for pair {e1}-{e2}; check r_max against the cell "
-                f"size and that both species are present in the frames")
-        out[f"{e1}-{e2}"] = mean_rdf
+            raise ValueError(f"non-finite mean RDF for pair {label}")
+        out[label] = mean_rdf
     return r, out
 
 

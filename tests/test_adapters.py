@@ -618,7 +618,16 @@ class AdapterContractTests(unittest.TestCase):
                       cell=[20, 20, 20], pbc=True)
         nan_rdf = (np.full(50, np.nan), np.linspace(0, 6.0, 50))
         with patch("validation.structure_dynamics.get_rdf", return_value=nan_rdf):
-            with self.assertRaisesRegex(ValueError, "non-finite RDF"):
+            with self.assertRaisesRegex(ValueError, "non-finite RDF for pair Cu-Cu"):
+                compute_rdf([atoms], ["Cu"], r_max=6.0, nbins=50)
+
+    def test_rdf_raises_on_wrong_length_with_pair_name(self):
+        atoms = Atoms("Cu2", positions=[[0, 0, 0], [2.5, 0, 0]],
+                      cell=[20, 20, 20], pbc=True)
+        # get_rdf returns fewer bins than requested -> must raise, not truncate.
+        short = (np.ones(10), np.linspace(0, 6.0, 10))
+        with patch("validation.structure_dynamics.get_rdf", return_value=short):
+            with self.assertRaisesRegex(ValueError, "wrong length.*Cu-Cu|Cu-Cu.*wrong length"):
                 compute_rdf([atoms], ["Cu"], r_max=6.0, nbins=50)
 
     def test_nve_drift_uses_sampling_stride(self):
@@ -696,6 +705,10 @@ class AdapterContractTests(unittest.TestCase):
                 self.assertEqual(left.info["random_seed"], 17)
                 # (2) the runtime-added FixCom must not leak into the snapshot
                 self.assertEqual([type(c).__name__ for c in left.constraints], [])
+                # (A) FixCom provenance for a no-constraint seed with runtime FixCom
+                self.assertTrue(left.info["runtime_fixcom_applied"])
+                self.assertFalse(left.info["source_had_fixcom"])
+                self.assertTrue(left.info["snapshot_fixcom_omitted"])
                 # (3) fix_center_of_mass metadata preserved and True
                 self.assertTrue(left.info["fix_center_of_mass"])
                 # (7) provenance metadata preserved through write/read
@@ -742,9 +755,42 @@ class AdapterContractTests(unittest.TestCase):
             self.assertGreater(len(frames), 0)
             for frame in frames:
                 kinds = [type(c).__name__ for c in frame.constraints]
-                # (4) original FixAtoms preserved on the snapshot; (2) runtime FixCom removed
+                # (4/C) original FixAtoms preserved on the snapshot; runtime FixCom removed
                 self.assertIn("FixAtoms", kinds)
                 self.assertNotIn("FixCom", kinds)
+                self.assertFalse(frame.info["source_had_fixcom"])
+                self.assertTrue(frame.info["runtime_fixcom_applied"])
+                self.assertTrue(frame.info["snapshot_fixcom_omitted"])
+
+    def test_teacher_md_seed_with_existing_fixcom_writes_and_records_provenance(self):
+        # A seed that ALREADY carries a FixCom: no runtime FixCom is added, but the
+        # snapshot must still omit FixCom (ASE 3.26 cannot serialize it) and record
+        # that omission, rather than silently dropping it or crashing the writer.
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            seed_path = root / "seed.traj"
+            atoms = Atoms("Cu2", positions=[[0, 0, 0], [2.5, 0, 0]], cell=[6, 6, 6],
+                          pbc=True)
+            atoms.info["parent_structure_id"] = "seed-fixcom"
+            atoms.set_constraint([FixCom()])
+            write(seed_path, atoms)
+            teacher_cfg = {"kind": "mock", "calculator": {
+                "factory": "ase.calculators.emt.EMT", "model_arg": None, "kwargs": {}}}
+            acquisition_cfg = {"temperature_K": 300, "timestep_fs": 0.5,
+                               "friction_per_fs": 0.01, "n_steps": 2,
+                               "snapshot_interval": 1, "seed": 5,
+                               "fix_center_of_mass": True}
+            out_path = root / "out.extxyz"
+            # Real extxyz write + read: must not crash (this is the ASE 3.26 regression).
+            run_teacher_md(acquisition_cfg, teacher_cfg, seed_path, out_path)
+            frames = read(out_path, index=":")
+            self.assertGreater(len(frames), 0)
+            for frame in frames:
+                self.assertNotIn("FixCom",
+                                 [type(c).__name__ for c in frame.constraints])
+                self.assertTrue(frame.info["source_had_fixcom"])
+                self.assertFalse(frame.info["runtime_fixcom_applied"])
+                self.assertTrue(frame.info["snapshot_fixcom_omitted"])
 
     def test_energy_log_reader_accepts_standard_csv_and_legacy_whitespace(self):
         with tempfile.TemporaryDirectory() as tmp:
