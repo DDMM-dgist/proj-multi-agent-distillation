@@ -14,6 +14,20 @@ dependencies = [
     "pyyaml>=6.0",
 ]
 
+# Optional: the provider-neutral PydanticAI runtime adapter (runtimes/pydantic_ai/).
+# The core workflow does NOT depend on these; install only to run the fourth runtime.
+#   pip install -e .[pydantic-ai]
+# Versions are pinned to the combination actually installed, imported, and tested
+# (pydantic-ai-slim 0.8.1 with a real TestModel run, 2026-08-03). The opentelemetry-api
+# upper bound is required: 1.44+ removed the private `opentelemetry._events` module that
+# pydantic-ai-slim 0.8.x imports at load time.
+[project.optional-dependencies]
+pydantic-ai = [
+    "pydantic>=2.0",
+    "pydantic-ai-slim>=0.8,<0.9",
+    "opentelemetry-api>=1.26,<1.44",
+]
+
 [project.scripts]
 distill-run = "workflow.controller:main"
 distill-acquire = "adapters.acquisition:main"
@@ -21,7 +35,7 @@ distill-step = "workflow.steps:main"
 distill-agent = "orchestration.cli:main"
 
 [tool.setuptools]
-packages = ["adapters", "orchestration", "validation", "workflow"]
+packages = ["adapters", "orchestration", "validation", "workflow", "runtimes.pydantic_ai"]
 
 [tool.setuptools.data-files]
 "share/distillation-agents/agent_specs" = ["agent_specs/*.yaml"]
