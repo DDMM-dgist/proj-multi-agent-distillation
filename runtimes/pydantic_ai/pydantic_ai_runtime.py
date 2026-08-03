@@ -16,9 +16,8 @@ from __future__ import annotations
 
 import json
 
-from .interface import AgentInvocation, build_invocation
+from .interface import RUNTIME_VERSION, AgentInvocation, build_invocation
 from .models import AgentResultModel, JudgeVoteModel, RuntimeContext
-from .mock_runtime import RUNTIME_VERSION
 from .tool_registry import ReadOnlyToolset, ToolAccessError
 
 # Map the repo's result_contract to the typed output model pydantic_ai enforces.
@@ -40,14 +39,24 @@ class PydanticAIRuntime:
         system_prompt = (getattr(spec, "prompt", "") + "\n\n" + toolset.context_note())
         agent = Agent(self._model, output_type=output_model, system_prompt=system_prompt)
 
+        # Both read-only tools (EXPOSED_READ_TOOLS) are registered. A blocked or invalid
+        # read returns a refusal to the model (recorded in the audit trail) rather than
+        # crashing the run — enforcement is at the tool, not the agent.
         @agent.tool_plain
-        def read_text(path: str) -> str:  # the only exposed tool: allow-list enforced
-            # A blocked read returns a refusal to the model (recorded in the audit trail)
-            # rather than crashing the run — enforcement is at the tool, not the agent.
+        def read_text(path: str) -> str:
             try:
                 return toolset.read_text(path)
             except (ToolAccessError, OSError) as error:
                 return f"ACCESS DENIED: {error}"
+
+        @agent.tool_plain
+        def read_json(path: str):
+            try:
+                return toolset.read_json(path)
+            except (ToolAccessError, OSError) as error:
+                return {"ok": False, "error": f"ACCESS DENIED: {error}"}
+            except json.JSONDecodeError as error:
+                return {"ok": False, "error": f"INVALID JSON: {error}"}
 
         return agent
 

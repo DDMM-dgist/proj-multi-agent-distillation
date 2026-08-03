@@ -18,6 +18,10 @@ from typing import Any, Protocol
 from .models import RuntimeContext, RuntimeInvocationRecord, ValidationErrorRecord
 from .tool_registry import ReadOnlyToolset
 
+# Shared runtime version string. Lives here (not in a concrete runtime) so both the mock
+# and the real runtime import it from a common place.
+RUNTIME_VERSION = "pydantic-ai-runtime/0.1.0"
+
 
 @dataclass
 class AgentInvocation:

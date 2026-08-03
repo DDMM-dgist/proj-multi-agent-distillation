@@ -48,6 +48,10 @@ DEFAULT_TEXT_EXTENSIONS = frozenset({
 DEFAULT_MAX_FILE_BYTES = 1_000_000        # 1 MB per file
 DEFAULT_INVOCATION_BYTE_BUDGET = 4_000_000  # 4 MB total per agent invocation
 
+# The read-only tools this toolset exposes. Single source of truth shared by the tool
+# manifest and the real Agent registration, so the two cannot drift apart.
+EXPOSED_READ_TOOLS = ("read_text", "read_json")
+
 
 class ToolAccessError(Exception):
     """Raised when a tool call violates containment, secrecy, type, or size limits."""
@@ -114,22 +118,36 @@ class ReadOnlyToolset:
 
     # -- tools -------------------------------------------------------------------
 
-    def read_text(self, path: str) -> str:
-        """Read a text file inside the allow-list, honoring type/size/budget limits."""
+    def _read_recorded(self, path: str, tool_name: str) -> str:
+        """Resolve + guard + read a file, recording the invocation under ``tool_name``.
+
+        Shared by read_text and read_json so each records under its own tool name (no
+        double entry), while path/secret/type/size/budget policy is applied identically.
+        """
         try:
             resolved = self._resolve_allowed(path)
             self._check_type_and_size(resolved)
             text = resolved.read_text()
         except (ToolAccessError, OSError) as error:
-            self._record("read_text", path, ok=False, detail=str(error))
+            self._record(tool_name, path, ok=False, detail=str(error))
             raise
         self._spent += len(text.encode())
-        self._record("read_text", path, ok=True, detail=f"{len(text)} chars")
+        self._record(tool_name, path, ok=True, detail=f"{len(text)} chars")
         return text
 
+    def read_text(self, path: str) -> str:
+        """Read a text file inside the allow-list, honoring type/size/budget limits."""
+        return self._read_recorded(path, "read_text")
+
     def read_json(self, path: str):
-        """Read + parse a JSON file inside the allow-list."""
-        return json.loads(self.read_text(path))
+        """Read + parse a JSON file inside the allow-list.
+
+        Records a single ``read_json`` invocation (not ``read_text``). Invalid JSON in an
+        otherwise-allowed file raises ``json.JSONDecodeError``; the read itself is recorded
+        as ``ok`` (the file was readable) and the caller decides how to surface the parse
+        failure — the real Agent tool wrapper turns it into a refusal, not a crash.
+        """
+        return json.loads(self._read_recorded(path, "read_json"))
 
     def context_note(self) -> str:
         """Text to place in the runtime prompt marking tool output as untrusted data."""
@@ -141,7 +159,7 @@ class ReadOnlyToolset:
     def tool_manifest_sha256(self) -> str:
         """A stable hash of the exposed tool surface, for provenance binding."""
         manifest = json.dumps({
-            "tools": ["read_text", "read_json"],
+            "tools": list(EXPOSED_READ_TOOLS),
             "read_allow_prefixes": sorted(self._allow),
             "text_extensions": sorted(self._text_extensions),
             "max_file_bytes": self._max_file_bytes,

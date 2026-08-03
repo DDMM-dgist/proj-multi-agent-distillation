@@ -245,6 +245,43 @@ class ToolSecurityTests(unittest.TestCase):
             self.assertEqual(len(ts.invocations), 1)
             self.assertFalse(ts.invocations[0].ok)
 
+    def test_read_json_returns_parsed_value_and_records_read_json(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            (Path(tmp) / "d.json").write_text('{"value": 3, "status": "ok"}')
+            ts = self._toolset([tmp])
+            self.assertEqual(ts.read_json(str(Path(tmp) / "d.json")),
+                             {"value": 3, "status": "ok"})
+            # recorded under 'read_json' exactly once (not double-logged as read_text)
+            self.assertEqual([(i.tool, i.ok) for i in ts.invocations], [("read_json", True)])
+
+    def test_read_json_invalid_json_raises_after_a_successful_read_record(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            (Path(tmp) / "bad.json").write_text("{not json")
+            ts = self._toolset([tmp])
+            with self.assertRaises(json.JSONDecodeError):
+                ts.read_json(str(Path(tmp) / "bad.json"))
+            # the file WAS readable (recorded ok); only the parse failed
+            self.assertEqual([(i.tool, i.ok) for i in ts.invocations], [("read_json", True)])
+
+    def test_read_json_outside_and_secret_paths_are_blocked_and_recorded(self):
+        from runtimes.pydantic_ai.tool_registry import ToolAccessError
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / ".env").write_text('{"x":1}')
+            allow = root / "ok"
+            allow.mkdir()
+            ts = self._toolset([str(allow)])
+            with self.assertRaises(ToolAccessError):
+                ts.read_json("/etc/hostname")           # outside allow-list
+            with self.assertRaises(ToolAccessError):
+                ts.read_json(str(root / ".env"))        # secret component
+            self.assertEqual([i.tool for i in ts.invocations], ["read_json", "read_json"])
+            self.assertTrue(all(not i.ok for i in ts.invocations))
+
+    def test_manifest_lists_exactly_the_exposed_read_tools(self):
+        from runtimes.pydantic_ai.tool_registry import EXPOSED_READ_TOOLS
+        self.assertEqual(EXPOSED_READ_TOOLS, ("read_text", "read_json"))
+
 
 @unittest.skipUnless(_HAS_PYDANTIC_AI, "pydantic_ai not installed (optional [pydantic-ai] extra)")
 class RealPydanticAiAgentTests(unittest.TestCase):
@@ -325,6 +362,71 @@ class RealPydanticAiAgentTests(unittest.TestCase):
                            task, spec, self._ctx(exch))
             refusals = [i for i in res.invocation.provenance.tool_invocations if not i.ok]
             self.assertGreaterEqual(len(refusals), 1)
+
+    def test_real_agent_registers_and_calls_both_read_tools(self):
+        # TestModel(call_tools defaults to 'all') calls every registered tool, so both
+        # read_text AND read_json appear in the provenance — proving read_json is wired
+        # onto the real pydantic_ai.Agent, not just present in the toolset/manifest.
+        from pydantic_ai.models.test import TestModel
+        from runtimes.pydantic_ai.pydantic_ai_runtime import PydanticAIRuntime
+        from runtimes.pydantic_ai.driver import run_task
+        from runtimes.pydantic_ai.tool_registry import EXPOSED_READ_TOOLS
+        with tempfile.TemporaryDirectory() as tmp:
+            exch = Path(tmp) / "exchange"
+            rt = FileExchangeRuntime(str(exch))
+            spec = self.specs["judge"]
+            task = make_task("judge", "Review.", criteria=["artifact is complete"],
+                             context={"review_lens": "evidence_provenance", "review_focus": "x"})
+            rt.dispatch(spec, task)
+            tm = TestModel(custom_output_args={
+                "review_lens": "evidence_provenance", "verdict": "PASS",
+                "criteria_checked": [{"criterion": "artifact is complete",
+                                      "value_read": "yes", "ok": True}],
+                "rationale": "ok", "required_fix": ""})
+            res = run_task(PydanticAIRuntime(model=tm, usage_source="test-model"),
+                           task, spec, self._ctx(exch))
+            called = {i.tool for i in res.invocation.provenance.tool_invocations}
+            self.assertEqual(called, set(EXPOSED_READ_TOOLS))  # both tools registered + called
+
+    def test_real_agent_reads_allowed_json_via_read_json_tool(self):
+        # A model that calls read_json on an allowed JSON file: the tool runs, the parsed
+        # value is returned to the model, and the invocation is logged as read_json (ok).
+        from pydantic_ai.models.function import FunctionModel, AgentInfo
+        from pydantic_ai.messages import ModelRequest, ModelResponse, ToolCallPart, TextPart
+        from runtimes.pydantic_ai.pydantic_ai_runtime import PydanticAIRuntime
+        from runtimes.pydantic_ai.driver import run_task
+        with tempfile.TemporaryDirectory() as tmp:
+            exch = Path(tmp) / "exchange"
+            rt = FileExchangeRuntime(str(exch))
+            exch.mkdir(parents=True, exist_ok=True)
+            (exch / "evidence.json").write_text('{"k": 1}')
+            spec = self.specs["judge"]
+            task = make_task("judge", "Review.", criteria=["artifact is complete"],
+                             context={"review_lens": "evidence_provenance", "review_focus": "x"})
+            rt.dispatch(spec, task)
+            target = str(exch / "evidence.json")
+
+            calls = {"n": 0}
+
+            def responder(messages, info: AgentInfo):
+                # First turn: call read_json on the allowed file. Second turn: final output.
+                if calls["n"] == 0:
+                    calls["n"] += 1
+                    return ModelResponse(parts=[ToolCallPart("read_json", {"path": target})])
+                out = {"review_lens": "evidence_provenance", "verdict": "PASS",
+                       "criteria_checked": [{"criterion": "artifact is complete",
+                                             "value_read": "yes", "ok": True}],
+                       "rationale": "ok", "required_fix": ""}
+                # The final result is delivered via the output tool pydantic_ai injects.
+                return ModelResponse(parts=[ToolCallPart(info.output_tools[0].name, out)])
+
+            res = run_task(PydanticAIRuntime(model=FunctionModel(responder),
+                                             usage_source="test-model"),
+                           task, spec, self._ctx(exch))
+            read_json_ok = [i for i in res.invocation.provenance.tool_invocations
+                            if i.tool == "read_json" and i.ok]
+            self.assertGreaterEqual(len(read_json_ok), 1)
+            self.assertTrue(res.accepted)
 
 
 if __name__ == "__main__":
