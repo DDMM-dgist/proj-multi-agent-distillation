@@ -21,3 +21,33 @@ jobs:
       - run: python -m pip install -e .
       - run: python -m compileall -q adapters orchestration validation workflow tests examples/mock
       - run: python -m unittest discover -s tests -v
+
+  # Optional runtime: install the [pydantic-ai] extra and actually EXECUTE the PydanticAI
+  # runtime tests (they skip in the core job above). No provider API key is used — a real
+  # pydantic_ai.Agent is driven by TestModel, so there is no network call. The guard step
+  # fails if the deps are missing; the run step fails if every runtime test skipped, so
+  # this job cannot pass by skipping.
+  pydantic-ai-runtime:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.10"
+          cache: pip
+      - run: python -m pip install --upgrade pip
+      - run: python -m pip install -e ".[pydantic-ai]"
+      - name: Assert optional deps are importable
+        run: python -c "import pydantic, pydantic_ai; print('pydantic_ai', pydantic_ai.__version__)"
+      - name: Run runtime tests and fail if all skipped
+        run: |
+          python - <<'PY'
+          import unittest
+          result = unittest.TextTestRunner(verbosity=2).run(
+              unittest.TestLoader().loadTestsFromName("tests.test_pydantic_ai_runtime"))
+          if result.testsRun == 0 or len(result.skipped) == result.testsRun:
+              raise SystemExit("pydantic-ai runtime tests did not execute (all skipped)")
+          if not result.wasSuccessful():
+              raise SystemExit("pydantic-ai runtime tests failed")
+          print(f"ran={result.testsRun} skipped={len(result.skipped)}")
+          PY
