@@ -39,24 +39,33 @@ class PydanticAIRuntime:
         system_prompt = (getattr(spec, "prompt", "") + "\n\n" + toolset.context_note())
         agent = Agent(self._model, output_type=output_model, system_prompt=system_prompt)
 
-        # Both read-only tools (EXPOSED_READ_TOOLS) are registered. A blocked or invalid
-        # read returns a refusal to the model (recorded in the audit trail) rather than
-        # crashing the run — enforcement is at the tool, not the agent.
+        # Both read-only tools (matching tool_registry.EXPOSED_READ_TOOLS) are registered.
+        # Any failure — blocked path, read error, bad encoding, or invalid JSON — is
+        # returned to the model as an explicit, distinguishable refusal and recorded in the
+        # audit trail, rather than crashing the run. Enforcement is at the tool, not the agent.
         @agent.tool_plain
         def read_text(path: str) -> str:
             try:
                 return toolset.read_text(path)
-            except (ToolAccessError, OSError) as error:
+            except ToolAccessError as error:
                 return f"ACCESS DENIED: {error}"
+            except UnicodeError as error:
+                return f"INVALID ENCODING: {error}"
+            except OSError as error:
+                return f"READ ERROR: {error}"
 
         @agent.tool_plain
         def read_json(path: str):
             try:
                 return toolset.read_json(path)
-            except (ToolAccessError, OSError) as error:
+            except ToolAccessError as error:
                 return {"ok": False, "error": f"ACCESS DENIED: {error}"}
+            except UnicodeError as error:
+                return {"ok": False, "error": f"INVALID ENCODING: {error}"}
             except json.JSONDecodeError as error:
                 return {"ok": False, "error": f"INVALID JSON: {error}"}
+            except OSError as error:
+                return {"ok": False, "error": f"READ ERROR: {error}"}
 
         return agent
 

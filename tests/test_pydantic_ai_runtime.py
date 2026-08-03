@@ -254,14 +254,39 @@ class ToolSecurityTests(unittest.TestCase):
             # recorded under 'read_json' exactly once (not double-logged as read_text)
             self.assertEqual([(i.tool, i.ok) for i in ts.invocations], [("read_json", True)])
 
-    def test_read_json_invalid_json_raises_after_a_successful_read_record(self):
+    def test_read_json_invalid_json_records_a_single_failed_invocation(self):
         with tempfile.TemporaryDirectory() as tmp:
             (Path(tmp) / "bad.json").write_text("{not json")
             ts = self._toolset([tmp])
             with self.assertRaises(json.JSONDecodeError):
                 ts.read_json(str(Path(tmp) / "bad.json"))
-            # the file WAS readable (recorded ok); only the parse failed
-            self.assertEqual([(i.tool, i.ok) for i in ts.invocations], [("read_json", True)])
+            # ok reflects the WHOLE operation: the read succeeded but the parse failed.
+            self.assertEqual(len(ts.invocations), 1)
+            self.assertEqual(ts.invocations[0].tool, "read_json")
+            self.assertFalse(ts.invocations[0].ok)
+            self.assertIn("JSON", ts.invocations[0].detail.upper())
+
+    def test_read_text_invalid_utf8_records_failed_invocation(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            bad = Path(tmp) / "bad.txt"
+            bad.write_bytes(b"\xff\xfe\x00")
+            ts = self._toolset([tmp])
+            with self.assertRaises(UnicodeError):
+                ts.read_text(str(bad))
+            self.assertEqual(len(ts.invocations), 1)
+            self.assertEqual(ts.invocations[0].tool, "read_text")
+            self.assertFalse(ts.invocations[0].ok)
+
+    def test_read_json_invalid_utf8_records_failed_invocation(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            bad = Path(tmp) / "bad.json"
+            bad.write_bytes(b"\xff\xfe\x00")
+            ts = self._toolset([tmp])
+            with self.assertRaises(UnicodeError):   # decode fails before json.loads
+                ts.read_json(str(bad))
+            self.assertEqual(len(ts.invocations), 1)
+            self.assertEqual(ts.invocations[0].tool, "read_json")
+            self.assertFalse(ts.invocations[0].ok)
 
     def test_read_json_outside_and_secret_paths_are_blocked_and_recorded(self):
         from runtimes.pydantic_ai.tool_registry import ToolAccessError
@@ -426,6 +451,64 @@ class RealPydanticAiAgentTests(unittest.TestCase):
             read_json_ok = [i for i in res.invocation.provenance.tool_invocations
                             if i.tool == "read_json" and i.ok]
             self.assertGreaterEqual(len(read_json_ok), 1)
+            self.assertTrue(res.accepted)
+
+    def _agent_calls_read_json_then_finishes(self, exch, target, spec):
+        """A FunctionModel that calls read_json(target) then returns a valid vote."""
+        from pydantic_ai.messages import ModelResponse, ToolCallPart
+        calls = {"n": 0}
+
+        def responder(messages, info):
+            if calls["n"] == 0:
+                calls["n"] += 1
+                return ModelResponse(parts=[ToolCallPart("read_json", {"path": target})])
+            out = {"review_lens": "evidence_provenance", "verdict": "PASS",
+                   "criteria_checked": [{"criterion": "artifact is complete",
+                                         "value_read": "yes", "ok": True}],
+                   "rationale": "ok", "required_fix": ""}
+            return ModelResponse(parts=[ToolCallPart(info.output_tools[0].name, out)])
+        return responder
+
+    def test_real_agent_invalid_json_is_refused_not_crashed(self):
+        from pydantic_ai.models.function import FunctionModel
+        from runtimes.pydantic_ai.pydantic_ai_runtime import PydanticAIRuntime
+        from runtimes.pydantic_ai.driver import run_task
+        with tempfile.TemporaryDirectory() as tmp:
+            exch = Path(tmp) / "exchange"
+            rt = FileExchangeRuntime(str(exch))
+            exch.mkdir(parents=True, exist_ok=True)
+            (exch / "bad.json").write_text("{not json")
+            spec = self.specs["judge"]
+            task = make_task("judge", "Review.", criteria=["artifact is complete"],
+                             context={"review_lens": "evidence_provenance", "review_focus": "x"})
+            rt.dispatch(spec, task)
+            responder = self._agent_calls_read_json_then_finishes(exch, str(exch / "bad.json"), spec)
+            res = run_task(PydanticAIRuntime(model=FunctionModel(responder),
+                                             usage_source="test-model"), task, spec, self._ctx(exch))
+            failed = [i for i in res.invocation.provenance.tool_invocations
+                      if i.tool == "read_json" and not i.ok]
+            self.assertGreaterEqual(len(failed), 1)   # recorded ok=False
+            self.assertTrue(res.accepted)             # run completed, no crash
+
+    def test_real_agent_invalid_utf8_json_is_refused_not_crashed(self):
+        from pydantic_ai.models.function import FunctionModel
+        from runtimes.pydantic_ai.pydantic_ai_runtime import PydanticAIRuntime
+        from runtimes.pydantic_ai.driver import run_task
+        with tempfile.TemporaryDirectory() as tmp:
+            exch = Path(tmp) / "exchange"
+            rt = FileExchangeRuntime(str(exch))
+            exch.mkdir(parents=True, exist_ok=True)
+            (exch / "enc.json").write_bytes(b"\xff\xfe\x00")
+            spec = self.specs["judge"]
+            task = make_task("judge", "Review.", criteria=["artifact is complete"],
+                             context={"review_lens": "evidence_provenance", "review_focus": "x"})
+            rt.dispatch(spec, task)
+            responder = self._agent_calls_read_json_then_finishes(exch, str(exch / "enc.json"), spec)
+            res = run_task(PydanticAIRuntime(model=FunctionModel(responder),
+                                             usage_source="test-model"), task, spec, self._ctx(exch))
+            failed = [i for i in res.invocation.provenance.tool_invocations
+                      if i.tool == "read_json" and not i.ok]
+            self.assertGreaterEqual(len(failed), 1)
             self.assertTrue(res.accepted)
 
 

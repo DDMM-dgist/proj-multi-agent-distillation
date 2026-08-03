@@ -53,19 +53,22 @@ API key. This is the default path for CI and local development.
 
 In the Claude Code frontend every agent holds an unrestricted `Bash` tool and can read
 anything on disk (`work/agent-framework-audit.md` §6). Here the real `pydantic_ai.Agent`
-is given exactly two read-only tools — **`read_text` and `read_json`** (the single source
-of truth is `EXPOSED_READ_TOOLS`, used by both the tool manifest and the tests). Both tools
-share the identical policy: every path is checked against an explicit allow-list (resolved
-with `realpath`, so a symlink or `..` that escapes the allow-list is blocked and prefix
-confusion like `/repo` vs `/repo-safe` is not possible), secret-like path components are
-refused, only whitelisted text extensions are allowed (binaries blocked), a per-file and
-per-invocation byte budget is enforced, and every call (including refusals) is recorded
-under its own tool name for the audit trail. `read_json` additionally parses the file;
-invalid JSON, a blocked path, or a secret path is returned to the model as an explicit
-refusal (`{"ok": false, "error": ...}`), never a crash. **No directory-listing or glob
-tool is exposed**, so a recursive dump of large files (WAVECAR, CHGCAR, trajectories) into
-the model context is impossible by construction, not merely by a count limit. A
-review/planner agent needs nothing more — heavy compute stays in the controller/adapters.
+is given exactly two read-only tools — **`read_text` and `read_json`**. `EXPOSED_READ_TOOLS`
+defines the expected and manifested tool surface; the Agent registers its tools explicitly,
+and a network-free integration test verifies the Agent's actual registration matches it.
+Both tools share the identical policy: every path is checked against an explicit allow-list
+(resolved with `realpath`, so a symlink or `..` that escapes the allow-list is blocked and
+prefix confusion like `/repo` vs `/repo-safe` is not possible), secret-like path components
+are refused, only whitelisted text extensions are allowed (binaries blocked), files are
+read as UTF-8, and a per-file and per-invocation byte budget is enforced. Each call records
+exactly one invocation under its own tool name whose `ok` reflects the WHOLE operation: a
+`read_json` invocation is `ok` only when file access, UTF-8 decoding, AND JSON parsing all
+succeed. Access, decoding, and parsing failures are recorded as `ok=False` and returned to
+the model as an explicit, distinguishable refusal (`ACCESS DENIED` / `READ ERROR` /
+`INVALID ENCODING` / `INVALID JSON`), never a crash. **No directory-listing or glob tool is
+exposed**, so a recursive dump of large files (WAVECAR, CHGCAR, trajectories) into the model
+context is impossible by construction, not merely by a count limit. A review/planner agent
+needs nothing more — heavy compute stays in the controller/adapters.
 
 ## Shadow mode (safe comparison before switching)
 

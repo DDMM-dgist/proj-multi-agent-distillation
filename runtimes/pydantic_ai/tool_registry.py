@@ -48,8 +48,9 @@ DEFAULT_TEXT_EXTENSIONS = frozenset({
 DEFAULT_MAX_FILE_BYTES = 1_000_000        # 1 MB per file
 DEFAULT_INVOCATION_BYTE_BUDGET = 4_000_000  # 4 MB total per agent invocation
 
-# The read-only tools this toolset exposes. Single source of truth shared by the tool
-# manifest and the real Agent registration, so the two cannot drift apart.
+# The read-only tools this toolset exposes. This defines the EXPECTED and MANIFESTED tool
+# surface; the real Agent registers its tools explicitly, and a network-free integration
+# test verifies that the Agent's actual registration matches this tuple.
 EXPOSED_READ_TOOLS = ("read_text", "read_json")
 
 
@@ -118,36 +119,45 @@ class ReadOnlyToolset:
 
     # -- tools -------------------------------------------------------------------
 
-    def _read_recorded(self, path: str, tool_name: str) -> str:
-        """Resolve + guard + read a file, recording the invocation under ``tool_name``.
+    def _read_text_unrecorded(self, path: str) -> str:
+        """Resolve + guard + read a file as UTF-8, WITHOUT recording an invocation.
 
-        Shared by read_text and read_json so each records under its own tool name (no
-        double entry), while path/secret/type/size/budget policy is applied identically.
+        Applies path/secret/type/size/budget policy and charges the byte budget for a file
+        that was actually read. Recording is left to the public tools so each records a
+        single invocation whose ``ok`` reflects the WHOLE requested operation.
         """
-        try:
-            resolved = self._resolve_allowed(path)
-            self._check_type_and_size(resolved)
-            text = resolved.read_text()
-        except (ToolAccessError, OSError) as error:
-            self._record(tool_name, path, ok=False, detail=str(error))
-            raise
-        self._spent += len(text.encode())
-        self._record(tool_name, path, ok=True, detail=f"{len(text)} chars")
+        resolved = self._resolve_allowed(path)
+        self._check_type_and_size(resolved)
+        text = resolved.read_text(encoding="utf-8")   # UnicodeError on non-UTF-8 input
+        self._spent += len(text.encode("utf-8"))
         return text
 
     def read_text(self, path: str) -> str:
-        """Read a text file inside the allow-list, honoring type/size/budget limits."""
-        return self._read_recorded(path, "read_text")
+        """Read a UTF-8 text file inside the allow-list. One invocation is recorded; ``ok``
+        is False on any access, size/budget, or decoding failure."""
+        try:
+            text = self._read_text_unrecorded(path)
+        except (ToolAccessError, OSError, UnicodeError) as error:
+            self._record("read_text", path, ok=False,
+                         detail=f"{type(error).__name__}: {error}")
+            raise
+        self._record("read_text", path, ok=True, detail=f"{len(text)} chars")
+        return text
 
     def read_json(self, path: str):
-        """Read + parse a JSON file inside the allow-list.
-
-        Records a single ``read_json`` invocation (not ``read_text``). Invalid JSON in an
-        otherwise-allowed file raises ``json.JSONDecodeError``; the read itself is recorded
-        as ``ok`` (the file was readable) and the caller decides how to surface the parse
-        failure — the real Agent tool wrapper turns it into a refusal, not a crash.
-        """
-        return json.loads(self._read_recorded(path, "read_json"))
+        """Read + parse a JSON file inside the allow-list. Exactly one ``read_json``
+        invocation is recorded, and ``ok`` is True ONLY when file access, UTF-8 decoding,
+        AND JSON parsing all succeed. Access, decoding, and parsing failures are recorded
+        as ``ok=False`` and re-raised (the real Agent wrapper turns them into a refusal)."""
+        try:
+            text = self._read_text_unrecorded(path)
+            value = json.loads(text)
+        except (ToolAccessError, OSError, UnicodeError, json.JSONDecodeError) as error:
+            self._record("read_json", path, ok=False,
+                         detail=f"{type(error).__name__}: {error}")
+            raise
+        self._record("read_json", path, ok=True, detail=f"{len(text)} chars; valid JSON")
+        return value
 
     def context_note(self) -> str:
         """Text to place in the runtime prompt marking tool output as untrusted data."""
