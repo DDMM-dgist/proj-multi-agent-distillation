@@ -22,6 +22,7 @@ from pathlib import Path
 import numpy as np
 import yaml
 from ase.io import read
+from ase.data import atomic_numbers
 from ase.geometry.rdf import get_rdf
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
@@ -35,12 +36,23 @@ def compute_rdf(frames, elements, r_max=6.0, nbins=200):
     r = None
     for e1, e2 in pairs:
         rdfs = []
+        # Convert chemical symbols to atomic numbers for ASE get_rdf's `elements`
+        # selector while preserving symbol-based report keys. ASE 3.29 accepts the
+        # symbol form, whereas ASE 3.26 does not (it matches zero atoms -> divide by
+        # zero -> non-finite RDF); atomic numbers work across the declared range.
+        pair = [atomic_numbers[e1], atomic_numbers[e2]]
         for atoms in frames:
-            rdf, distances = get_rdf(atoms, r_max, nbins, elements=[e1, e2])
+            rdf, distances = get_rdf(atoms, r_max, nbins, elements=pair)
             rdfs.append(rdf)
             if r is None:
                 r = distances
-        out[f"{e1}-{e2}"] = np.mean(rdfs, axis=0)
+        mean_rdf = np.mean(rdfs, axis=0)
+        if not np.isfinite(mean_rdf).all():
+            # Fail loudly rather than silently emitting/zeroing a non-finite RDF.
+            raise ValueError(
+                f"non-finite RDF for pair {e1}-{e2}; check r_max against the cell "
+                f"size and that both species are present in the frames")
+        out[f"{e1}-{e2}"] = mean_rdf
     return r, out
 
 

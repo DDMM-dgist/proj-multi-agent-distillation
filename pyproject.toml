@@ -8,7 +8,9 @@ version = "0.1.0"
 description = "Genericized multi-agent workflow for teacher->student MLIP distillation"
 requires-python = ">=3.10"
 dependencies = [
-    "ase>=3.22",
+    # ase 3.23 is the first release with `ase.geometry.rdf`; 3.22 cannot import the
+    # RDF adapter. Verified: the suite passes on ase 3.23.0-3.29.0 (min pinned in CI).
+    "ase>=3.23",
     "numpy>=1.24",
     "scipy>=1.10",
     "pyyaml>=6.0",

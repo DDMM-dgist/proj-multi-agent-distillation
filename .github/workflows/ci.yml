@@ -22,6 +22,23 @@ jobs:
       - run: python -m compileall -q adapters orchestration validation workflow tests examples/mock
       - run: python -m unittest discover -s tests -v
 
+  # Verify the declared minimum ASE (the pyproject floor). ase 3.23 is the first
+  # release with `ase.geometry.rdf`; pinning it here guards against regressions that
+  # would silently only work on newer ASE. Fails if the pinned floor stops passing.
+  min-ase:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.10"
+          cache: pip
+      - run: python -m pip install --upgrade pip
+      - run: python -m pip install -e .
+      - run: python -m pip install "ase==3.23.0"
+      - run: python -c "import ase; print('ase', ase.__version__)"
+      - run: python -m unittest discover -s tests -v
+
   # Optional runtime: install the [pydantic-ai] extra and actually EXECUTE the PydanticAI
   # runtime tests (they skip in the core job above). No provider API key is used — a real
   # pydantic_ai.Agent is driven by TestModel, so there is no network call. The guard step

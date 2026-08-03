@@ -1,4 +1,5 @@
 """Structure acquisition and teacher pseudo-labeling backends."""
+import copy
 import hashlib
 import importlib
 import importlib.metadata
@@ -61,10 +62,15 @@ def run_teacher_md(cfg, teacher_cfg, seed_path, out_path):
         parent_id = source.info.get("parent_structure_id",
                                     source.info.get("structure_id", f"seed-{seed_index:08d}"))
         atoms = source.copy()
+        # Preserve the seed's original constraints exactly (deep-copied so snapshot
+        # restoration does not depend on object identity surviving atoms.copy()).
+        original_constraints = copy.deepcopy(source.constraints)
         fix_center_of_mass = cfg.get("fix_center_of_mass", True)
+        runtime_fixcom_added = False
         if fix_center_of_mass and not any(isinstance(item, FixCom)
                                           for item in atoms.constraints):
             atoms.set_constraint([*atoms.constraints, FixCom()])
+            runtime_fixcom_added = True
         atoms.calc = calc
         temperature = float(cfg["temperature_K"])
         random_seed = int(cfg.get("seed", 0)) + seed_index
@@ -80,6 +86,12 @@ def run_teacher_md(cfg, teacher_cfg, seed_path, out_path):
 
         def capture():
             frame = atoms.copy()
+            if runtime_fixcom_added:
+                # ASE 3.29 accepts a FixCom when writing extxyz; ASE 3.26 does not.
+                # The runtime FixCom is only a dynamics device, so restore the seed's
+                # original constraints on the recorded snapshot (removes only the
+                # FixCom this function added; keeps any pre-existing seed constraint).
+                frame.set_constraint(copy.deepcopy(original_constraints))
             frame.info.update(acquisition="teacher-md", seed_structure_index=seed_index,
                               temperature_K=temperature, parent_structure_id=str(parent_id),
                               random_seed=random_seed,
