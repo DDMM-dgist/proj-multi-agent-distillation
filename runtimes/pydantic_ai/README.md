@@ -31,8 +31,9 @@ Core install has no Pydantic. Enable this runtime explicitly:
 pip install -e .[pydantic-ai]      # adds pydantic + pydantic-ai only
 ```
 
-Provider/model and API key come from the environment (never committed). Set them on
-`RuntimeContext` and via the provider's standard env var:
+Provider/model and API key come from the environment (never committed). `PydanticAIRuntime`
+takes a `model` (a provider model-id string that pydantic_ai infers, or a `TestModel`/
+`FunctionModel` for network-free tests) and a `usage_source` label:
 
 ```python
 from runtimes.pydantic_ai.models import RuntimeContext
@@ -40,11 +41,44 @@ from runtimes.pydantic_ai.pydantic_ai_runtime import PydanticAIRuntime
 from runtimes.pydantic_ai.driver import run_task
 
 ctx = RuntimeContext(exchange_dir="runs/<run>/exchange", repo_root=".",
-                     provider="anthropic", model_id="claude-...",
+                     provider="anthropic", model_id="anthropic:claude-...",
                      read_allow_prefixes=["runs/<run>"])   # read-only allow-list
-result = run_task(PydanticAIRuntime(provider="anthropic", model_id="claude-..."),
-                  task, spec, ctx)
+result = run_task(PydanticAIRuntime(model="anthropic:claude-...", usage_source="provider"),
+                  task, spec, ctx, shadow=True)
 ```
+
+### Optional Anthropic provider smoke harness (manual; not run in CI)
+
+`examples/pydantic_ai_provider_smoke.py` is a harness for ONE real external-provider call
+end to end: real call → `read_json` tool → typed JudgeVote → existing validator → shadow
+mode (provenance only, no accepted result, no workflow-state change).
+
+**Implemented (verified network-free):**
+- the harness entry point and its shadow-mode reviewer scenario using `read_json`
+- environment-based credential/model configuration
+- a credential preflight that exits **before** importing the provider or making any call
+- safe, no-call exit when `ANTHROPIC_API_KEY`/`PYDANTIC_AI_MODEL` are absent (in CI and locally)
+
+**Prepared but NOT executed here:** the actual Anthropic provider construction, real
+`read_json` tool calling, real typed output, and provider usage/cost. This harness has not
+been run against a live provider in this work, and this does **not** establish scientific
+parity with the Claude runtime.
+
+The external smoke is optional and is not run in CI. **No API credential is required for the
+repository's network-free test suite.** To run the smoke yourself:
+
+```bash
+pip install -e ".[pydantic-ai,anthropic]"     # anthropic extra only for this smoke
+export ANTHROPIC_API_KEY="..."
+export PYDANTIC_AI_MODEL="anthropic:<a model id available to your account>"
+python examples/pydantic_ai_provider_smoke.py
+```
+
+Without the credentials it prints a `SKIPPED` message and exits (code 2) **without calling
+any provider**. The `anthropic` extra is pinned `>=0.61,<0.65` — the combination
+locally import-tested with pydantic-ai-slim 0.8.1 for this path (0.65 relocated a symbol
+pydantic-ai-slim 0.8.x imports); it is a tested-compatibility pin, not a claim about all
+future versions.
 
 Without a provider, use `MockAgentRuntime` (a test double) — the PoC and tests run with no
 API key. This is the default path for CI and local development.

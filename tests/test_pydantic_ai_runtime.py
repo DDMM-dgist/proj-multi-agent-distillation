@@ -512,5 +512,40 @@ class RealPydanticAiAgentTests(unittest.TestCase):
             self.assertTrue(res.accepted)
 
 
+class ProviderSmokeScriptTests(unittest.TestCase):
+    """Network-free checks on the manual real-provider smoke script. These make NO
+    external call: they only verify the script imports and refuses to call any provider
+    when the API key/model are absent."""
+
+    def _run_main(self, env):
+        import contextlib
+        import importlib.util
+        import io
+        script = ROOT / "examples" / "pydantic_ai_provider_smoke.py"
+        spec = importlib.util.spec_from_file_location("provider_smoke", script)
+        mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(mod)  # import must succeed with no deps/key
+        saved = {k: os.environ.get(k) for k in ("ANTHROPIC_API_KEY", "PYDANTIC_AI_MODEL")}
+        try:
+            for k in ("ANTHROPIC_API_KEY", "PYDANTIC_AI_MODEL"):
+                os.environ.pop(k, None)
+            os.environ.update({k: v for k, v in env.items()})
+            with contextlib.redirect_stdout(io.StringIO()):
+                return mod.main()
+        finally:
+            for k, v in saved.items():
+                if v is None:
+                    os.environ.pop(k, None)
+                else:
+                    os.environ[k] = v
+
+    def test_script_imports_without_optional_deps_or_key(self):
+        # exec_module happening inside _run_main proves import is dependency-free.
+        self.assertEqual(self._run_main({}), 2)  # no key -> clean BLOCKED exit, no call
+
+    def test_missing_model_id_also_refuses_to_call(self):
+        self.assertEqual(self._run_main({"ANTHROPIC_API_KEY": "dummy-not-used"}), 2)
+
+
 if __name__ == "__main__":
     unittest.main()

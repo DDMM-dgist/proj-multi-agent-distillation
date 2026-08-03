@@ -27,6 +27,16 @@ pydantic-ai = [
     "pydantic-ai-slim>=0.8,<0.9",
     "opentelemetry-api>=1.26,<1.44",
 ]
+# Only for the manual real-provider smoke (examples/pydantic_ai_provider_smoke.py).
+# NOT needed by the network-free runtime tests, and NOT part of the core install.
+# This range is the combination locally import-tested with pydantic-ai-slim 0.8.1 for this
+# experimental smoke path (anthropic 0.64.0, 2026-08-03). The upper bound reflects that
+# 0.65 relocated a symbol (UserLocation) that pydantic-ai-slim 0.8.x imports at load time;
+# it is a tested-compatibility pin for this path, not a claim about all future versions.
+#   pip install -e ".[pydantic-ai,anthropic]"
+anthropic = [
+    "anthropic>=0.61,<0.65",
+]
 
 [project.scripts]
 distill-run = "workflow.controller:main"
