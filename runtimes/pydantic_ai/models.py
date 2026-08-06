@@ -10,9 +10,12 @@ Requires ``pydantic`` (optional dependency). Not imported by any core package.
 """
 from __future__ import annotations
 
-from typing import Any, Literal, Optional
+from typing import Annotated, Any, Literal, Optional
 
 from pydantic import BaseModel, Field
+
+# A non-empty string, mirroring the JSON Schema ``{"type": "string", "minLength": 1}``.
+NonEmptyStr = Annotated[str, Field(min_length=1)]
 
 
 # --- Contract mirrors (typed output for the LLM) --------------------------------
@@ -23,6 +26,32 @@ class EvidenceReference(BaseModel):
     role: str = Field(min_length=1)
     path: str = Field(min_length=1)
     integrity: Optional[dict[str, Any]] = None
+
+
+# --- Typed input mirror (Phase 2 / D1) ------------------------------------------
+
+class AgentTaskModel(BaseModel):
+    """Typed mirror of ``orchestration/schema/agent_task.schema.json``.
+
+    NOT authoritative. Parsing a task as this model does NOT make it valid: the canonical
+    ``orchestration.exchange.validate_task`` MUST still run (it also enforces spec-specific
+    rules the JSON Schema cannot express, e.g. a Judge task requiring ``context.review_lens``
+    and ``context.review_focus``). This model exists only so a runtime can carry a task with
+    typed field access and reject obviously-malformed packets early. Required/optional and
+    ``extra='forbid'`` are kept in lockstep with the canonical schema by
+    ``tests/test_pydantic_ai_schema_drift.py``.
+    """
+    model_config = {"extra": "forbid"}
+    schema_version: Literal[1]
+    task_id: NonEmptyStr
+    agent: NonEmptyStr
+    run_id: Optional[str] = None
+    created_at: NonEmptyStr
+    instruction: NonEmptyStr
+    inputs: list[EvidenceReference]
+    criteria: list[NonEmptyStr]
+    constraints: list[NonEmptyStr]
+    context: dict[str, Any]
 
 
 class CriterionCheck(BaseModel):
