@@ -120,6 +120,34 @@ class RuntimeContext(BaseModel):
     max_retries: int = 1
     # A read-only allow-list: absolute path prefixes the agent's tools may read.
     read_allow_prefixes: list[str] = Field(default_factory=list)
+    # Bounded-retry policy (Phase 2/D5). provider_retries = extra attempts after the first on a
+    # RETRYABLE failure; max_total_calls caps total provider calls (cost guard); backoff is
+    # exponential with jitter between attempts.
+    provider_retries: int = 0
+    structured_output_retries: int = 0
+    backoff_base_s: float = 0.5
+    backoff_max_s: float = 8.0
+    max_total_calls: int = 1
+    correlation_id: str = ""
+
+
+class ProviderConfiguration(BaseModel):
+    """Typed provider/runtime configuration (Phase 2/D3), assembled by the CLI from env + flags.
+
+    ``model_id`` and any credential come from the ENVIRONMENT, never from a committed config.
+    """
+    model_config = {"extra": "forbid"}
+    provider: NonEmptyStr
+    model_id: NonEmptyStr
+    provider_sdk_version: str = ""
+    timeout_s: float = 120.0
+    provider_retries: int = 2
+    structured_output_retries: int = 1
+    backoff_base_s: float = 0.5
+    backoff_max_s: float = 8.0
+    max_total_calls: int = 3
+    usage_source: Literal["mock", "test-model", "provider", "estimated", "unavailable"] = "provider"
+    correlation_id: str = ""
 
 
 class RuntimeInvocationRecord(BaseModel):
@@ -157,8 +185,20 @@ class RuntimeInvocationRecord(BaseModel):
     usage_source: Literal["mock", "test-model", "provider", "estimated", "unavailable"] = "unavailable"
     prompt_tokens: int = 0
     completion_tokens: int = 0
-    # UTC ISO-8601 time the provenance record was built. Per-call start/end timing (to
-    # measure provider latency) arrives with the real provider path (P4); this PoC records
-    # only the record-build time.
+    # UTC ISO-8601 time the provenance record was built.
     recorded_at: str = ""
     accepted: bool = False
+    # --- Phase 2/D4-D5 additive failure + timing + mode fields --------------------
+    # A provider exception is recorded here (not lost): exception_message is ALWAYS redacted.
+    failure_category: str = ""          # "" on success; else a failures.FailureCategory value
+    exception_class: str = ""
+    exception_message: str = ""         # redacted before storage
+    retryable: bool = False
+    started_at: str = ""
+    finished_at: str = ""
+    latency_s: float = 0.0
+    correlation_id: str = ""
+    # Execution mode + whether this attempt mutated controller-visible state.
+    mode: Literal["", "primary", "shadow", "dry_run", "validate_only"] = ""
+    controller_mutated: bool = False
+    estimated_cost: Optional[float] = None
