@@ -80,7 +80,10 @@ class JudgeReviewLensTests(unittest.TestCase):
     def test_controller_binds_default_lenses_and_accepts_one_vote_per_lens(self):
         with tempfile.TemporaryDirectory() as tmp:
             controller = self.make_completed_gate(Path(tmp))
-            self.assertEqual(controller.state["schema_version"], 6)
+            # A freshly initialized run targets the current schema version (v7 adds only
+            # additive operational metadata; gate/recovery semantics are unchanged).
+            from workflow.controller import SCHEMA_VERSION
+            self.assertEqual(controller.state["schema_version"], SCHEMA_VERSION)
             bundle = self.passing_bundle(controller)
             controller.record_gate(
                 "validation", votes_path=self.write_bundle(controller, bundle)
