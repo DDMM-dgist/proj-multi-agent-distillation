@@ -134,3 +134,26 @@ Status:
 - LOCAL_LIVE_STAGE_A_PENDING  (blocked: no GPU on reachable cluster; GPU-host deployment prepared)
 - ANTHROPIC_BILLING_BLOCKED_NON_FATAL
 - ANTHROPIC_NOT_REQUIRED_FOR_LOCAL_RUNTIME
+
+## L4C LOCAL Stage A — PASS (jbnu-gpu2, 2026-08-07)
+Executed commit 7694fe3; vLLM 0.26.0 / Qwen2.5-3B-Instruct / tool-parser hermes on GPU1
+(co-scheduled with VASP, conservative profile: gpu-mem-util 0.20, max-model-len 4096,
+max-num-seqs 1, enforce-eager). Server + PydanticAI client co-located; base_url 127.0.0.1:8000.
+
+- ATTEMPT_1 (task attempt-6a8dcd89): INTEGRATION_VALIDATED / EVIDENCE_GROUNDING_BLOCKED_BY_FIXTURE_PATH
+  (read_json refused an out-of-allow-list cpu1 absolute path -> verdict REVISE; security guard
+  behaved correctly). Preserved, not overwritten.
+- ATTEMPT_2 (task attempt-f35300d8): CONFIRMATORY_END_TO_END_PASS. read_json ok=true (rel path,
+  90 chars valid JSON), evidence.json read, structure_count 12 observed, verdict PASS, typed
+  JudgeVote parse PASS, canonical validation PASS, validation_errors [], lens evidence_provenance,
+  unauthorized tools 0, nonexistent-artifact citations 0, raw+parsed preserved, tokens 3340/129,
+  latency 2.069s, stdout.log persisted (506B), controller_mutated false (shadow), Anthropic/paid
+  calls 0. vLLM terminated after; VASP PID 559725 unaffected.
+
+Status:
+- NETWORK_FREE_FULL_RUNTIME_READY
+- LOCAL_PROVIDER_IMPLEMENTATION_COMPLETE
+- LOCAL_LIVE_STAGE_A = PASS
+- ANTHROPIC_BILLING_BLOCKED_NON_FATAL
+- ANTHROPIC_NOT_REQUIRED_FOR_LOCAL_RUNTIME
+Next (separate approval): Stage B seven-role local smoke (producers dry-run) — NOT started.
