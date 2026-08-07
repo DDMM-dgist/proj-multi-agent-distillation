@@ -115,6 +115,16 @@ def main(argv=None) -> int:
             _print_kv(out, runtime="pydantic-ai", preflight=pf.status, reason=pf.reason,
                       provider=pf.provider, model=pf.model_id)
             return EXIT_PROVIDER_UNAVAILABLE
+        # Explicit human confirmation gate for a REAL (billable) provider call. Preflight being
+        # READY (credential present) is not sufficient; a live call also requires an intentional
+        # PYDANTIC_AI_SMOKE_CONFIRM=yes, so merely having a key in the shell never bills. Mirrors
+        # examples/pydantic_ai_provider_smoke.py's gate. Mock/TestModel paths are unaffected.
+        if os.environ.get("PYDANTIC_AI_SMOKE_CONFIRM") != "yes":
+            _print_kv(out, runtime="pydantic-ai", preflight="READY", provider=pf.provider,
+                      model=pf.model_id, confirmation="MISSING",
+                      note=("set PYDANTIC_AI_SMOKE_CONFIRM=yes to authorize ONE real provider "
+                            "call; no provider was called"))
+            return EXIT_APPROVAL_REQUIRED
         from .pydantic_ai_runtime import PydanticAIRuntime
         model_id = pf.model_id
         provider = pf.provider
@@ -152,11 +162,18 @@ def main(argv=None) -> int:
         print(f"internal error: {exc}", file=sys.stderr)
         return EXIT_INTERNAL
 
+    # canonical_validation is explicit so a shadow run (which never "accepts") still reports
+    # whether validate_agent_response passed: for judge_gate/agent_result an empty error + a
+    # non-None validated payload means the contract validator passed.
+    canonical_validation = "n/a"
+    if res.strategy in ("judge_gate", "agent_result"):
+        canonical_validation = "passed" if (res.detail is not None and not res.error) else "failed"
     _print_kv(
         out,
         task_path=str(task_path), task_id=task.get("task_id", ""), role=args.agent,
         runtime=args.runtime, provider=provider, model=model_id or "mock", mode=args.mode,
-        strategy=res.strategy, accepted=res.accepted, controller_mutation=res.controller_mutated,
+        strategy=res.strategy, canonical_validation=canonical_validation,
+        accepted=res.accepted, controller_mutation=res.controller_mutated,
         provenance_path=str(res.provenance_path), error=(res.error or ""))
 
     # Map the routed result to an exit code.

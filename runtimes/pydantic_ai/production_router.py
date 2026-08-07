@@ -89,6 +89,7 @@ def _validate_typed(candidate, spec):
 
 def _accept_via_exchange(invocation, spec, task, context, mode, strategy) -> RouteResult:
     from orchestration.exchange import FileExchangeRuntime, validate_agent_response
+    from .models import ValidationErrorRecord
     from .redaction import redact
     rec = invocation.provenance
     error = None
@@ -97,6 +98,10 @@ def _accept_via_exchange(invocation, spec, task, context, mode, strategy) -> Rou
         validated = validate_agent_response(invocation.candidate, spec, task)
     except (ValueError, KeyError, TypeError) as exc:
         error = redact(str(exc))
+        # Preserve the contract-validation failure in the provenance record (mirrors the driver),
+        # so a FAIL is auditable from the persisted artifact, not only from stdout.
+        rec.validation_errors.append(
+            ValidationErrorRecord(stage="contract_validation", message=error))
     accepted = False
     if validated is not None and mode == "primary":
         FileExchangeRuntime(context.exchange_dir).accept(spec, task["task_id"],

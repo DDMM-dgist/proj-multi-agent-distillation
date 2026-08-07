@@ -138,6 +138,31 @@ class CliTests(unittest.TestCase):
                              "--exchange-dir", str(d / "ex"), "--mode", "shadow"])
             self.assertEqual(code, cli.EXIT_PROVIDER_UNAVAILABLE)
 
+    def test_pydantic_ai_ready_but_unconfirmed_requires_approval_and_calls_no_provider(self):
+        # Preflight READY (credential present) is NOT sufficient for a billable call: without
+        # PYDANTIC_AI_SMOKE_CONFIRM=yes the CLI returns APPROVAL_REQUIRED and never constructs the
+        # real runtime / provider model. This is the explicit live-call confirmation gate.
+        from runtimes.pydantic_ai import cli
+        from runtimes.pydantic_ai.provider import PreflightResult
+        built = {"model": False, "runtime": False}
+        with tempfile.TemporaryDirectory() as tmp, \
+                mock.patch.dict("os.environ", {}, clear=True):
+            d = Path(tmp)
+            task = self._write(d, "task.json", _judge_task())
+            with mock.patch("runtimes.pydantic_ai.provider.preflight_credentials",
+                            return_value=PreflightResult("READY", "ok", "anthropic",
+                                                         "anthropic:fake", True, True)), \
+                 mock.patch("runtimes.pydantic_ai.provider.build_provider_model",
+                            side_effect=lambda m: built.__setitem__("model", True)), \
+                 mock.patch("runtimes.pydantic_ai.pydantic_ai_runtime.PydanticAIRuntime",
+                            side_effect=lambda *a, **k: built.__setitem__("runtime", True)):
+                code = cli.main(["run-task", "--runtime", "pydantic-ai", "--agent", "judge",
+                                 "--agent-specs-dir", SPECS, "--task", str(task),
+                                 "--exchange-dir", str(d / "ex"), "--mode", "shadow"])
+            self.assertEqual(code, cli.EXIT_APPROVAL_REQUIRED)
+            self.assertFalse(built["model"], "no provider model may be built without confirmation")
+            self.assertFalse(built["runtime"], "no real runtime may be built without confirmation")
+
     def test_unknown_agent_blocked(self):
         from runtimes.pydantic_ai import cli
         with tempfile.TemporaryDirectory() as tmp:
