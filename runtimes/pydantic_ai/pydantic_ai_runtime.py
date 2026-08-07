@@ -78,6 +78,32 @@ class PydanticAIRuntime:
             except OSError as error:
                 return {"ok": False, "error": f"READ ERROR: {error}"}
 
+        @agent.tool_plain
+        def read_csv_summary(path: str):
+            try:
+                return toolset.read_csv_summary(path)
+            except ToolAccessError as error:
+                return {"ok": False, "error": f"ACCESS DENIED: {error}"}
+            except UnicodeError as error:
+                return {"ok": False, "error": f"INVALID ENCODING: {error}"}
+            except OSError as error:
+                return {"ok": False, "error": f"READ ERROR: {error}"}
+            except Exception as error:  # csv.Error etc. — refuse, never crash
+                return {"ok": False, "error": f"CSV ERROR: {error}"}
+
+        @agent.tool_plain
+        def read_artifact_manifest(path: str):
+            try:
+                return toolset.read_artifact_manifest(path)
+            except ToolAccessError as error:
+                return {"ok": False, "error": f"ACCESS DENIED: {error}"}
+            except UnicodeError as error:
+                return {"ok": False, "error": f"INVALID ENCODING: {error}"}
+            except json.JSONDecodeError as error:
+                return {"ok": False, "error": f"INVALID JSON: {error}"}
+            except OSError as error:
+                return {"ok": False, "error": f"READ ERROR: {error}"}
+
         return agent
 
     def run(self, task: dict, spec, context: RuntimeContext) -> AgentInvocation:

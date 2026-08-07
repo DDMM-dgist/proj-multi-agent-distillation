@@ -50,8 +50,17 @@ DEFAULT_INVOCATION_BYTE_BUDGET = 4_000_000  # 4 MB total per agent invocation
 
 # The read-only tools this toolset exposes. This defines the EXPECTED and MANIFESTED tool
 # surface; the real Agent registers its tools explicitly, and a network-free integration
-# test verifies that the Agent's actual registration matches this tuple.
-EXPOSED_READ_TOOLS = ("read_text", "read_json")
+# test verifies that the Agent's actual registration matches this tuple. Every tool is
+# read-only and bounded (path/secret/type/size/budget), so the surface is uniform across
+# roles; per-role differences (read roots, proposable actions, approval, side effects) live
+# in runtimes/pydantic_ai/tool_manifests.py, NOT in extra tools.
+EXPOSED_READ_TOOLS = ("read_text", "read_json", "read_csv_summary", "read_artifact_manifest")
+
+# Manifest-like top-level keys that mark a JSON file as an artifact/run manifest.
+_MANIFEST_MARKERS = frozenset({
+    "schema_version", "sha256", "integrity", "artifacts", "manifest_version", "artifact_digest",
+})
+DEFAULT_CSV_SUMMARY_ROWS = 20
 
 
 class ToolAccessError(Exception):
@@ -157,6 +166,50 @@ class ReadOnlyToolset:
                          detail=f"{type(error).__name__}: {error}")
             raise
         self._record("read_json", path, ok=True, detail=f"{len(text)} chars; valid JSON")
+        return value
+
+    def read_csv_summary(self, path: str, max_rows: int = DEFAULT_CSV_SUMMARY_ROWS):
+        """Read a CSV inside the allow-list and return a BOUNDED summary (columns, row count,
+        first ``max_rows`` data rows) — never the whole file into context. One invocation is
+        recorded; ``ok`` is True only when access + decode + parse all succeed."""
+        import csv
+        import io
+        try:
+            text = self._read_text_unrecorded(path)
+            rows = list(csv.reader(io.StringIO(text)))
+        except (ToolAccessError, OSError, UnicodeError, csv.Error) as error:
+            self._record("read_csv_summary", path, ok=False,
+                         detail=f"{type(error).__name__}: {error}")
+            raise
+        header = rows[0] if rows else []
+        data = rows[1:]
+        summary = {
+            "columns": header,
+            "n_columns": len(header),
+            "n_rows": len(data),
+            "head": data[:max_rows],
+            "truncated": len(data) > max_rows,
+        }
+        self._record("read_csv_summary", path, ok=True,
+                     detail=f"{len(data)} rows x {len(header)} cols")
+        return summary
+
+    def read_artifact_manifest(self, path: str):
+        """Read + parse a JSON file inside the allow-list AND require it to look like an
+        artifact/run manifest (a top-level manifest marker key). One invocation is recorded;
+        a non-manifest JSON is refused (``ok=False``) rather than returned as arbitrary data."""
+        try:
+            text = self._read_text_unrecorded(path)
+            value = json.loads(text)
+            if not isinstance(value, dict) or not (_MANIFEST_MARKERS & set(value)):
+                raise ToolAccessError(
+                    "not an artifact manifest (missing a manifest marker key such as "
+                    "schema_version/sha256/integrity/artifacts)")
+        except (ToolAccessError, OSError, UnicodeError, json.JSONDecodeError) as error:
+            self._record("read_artifact_manifest", path, ok=False,
+                         detail=f"{type(error).__name__}: {error}")
+            raise
+        self._record("read_artifact_manifest", path, ok=True, detail="valid manifest")
         return value
 
     def context_note(self) -> str:
