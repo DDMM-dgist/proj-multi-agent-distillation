@@ -161,7 +161,13 @@ def authorize_and_execute(proposal, *, registry: dict, approvals, idempotency,
         # A dry-run/validate-only never consumes the idempotency key (no real side effect).
         return out("DRY_RUN", "dry-run: validated, no side effects",
                    executor=(desc.executor.__name__ if desc.executor else "none"))
-    artifact = desc.executor(proposal)
+    try:
+        artifact = desc.executor(proposal)
+    except Exception as exc:  # noqa: BLE001 - executor/validator failure is fail-closed
+        # A completion/preservation validator raises to signal failure; never emit a passing
+        # artifact. INVALID for a validation failure, EXECUTOR_ERROR otherwise. Key not consumed.
+        status = "INVALID" if type(exc).__name__ == "_ValidationFailure" else "EXECUTOR_ERROR"
+        return out(status, f"{type(exc).__name__}: {exc}")
     outcome = out("EXECUTED", executor=desc.executor.__name__, artifact=artifact)
     if key:
         idempotency.record(key, outcome)  # only real executions consume the key

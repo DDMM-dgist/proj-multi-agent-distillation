@@ -80,10 +80,62 @@ class ExecutorIntegrationTests(unittest.TestCase):
             self.assertEqual(o.status, "EXECUTED")
             self.assertIn("Cu-Cu", o.artifact["metrics"]["rdf_peaks"])
 
-    def test_not_implemented_action_is_never_faked_executed(self):
+    def test_interface_and_reasoning_actions_are_not_executed(self):
+        # scheduler interface (no HPC backend) and Analyst reasoning output carry no inline
+        # executor -> DRY_RUN, never a fake EXECUTED.
         with tempfile.TemporaryDirectory() as tmp:
-            _, o = self._dispatch(tmp, _prop("data-curator", "sample_seed_pool", "s1", {}))
-            self.assertEqual(o.status, "DRY_RUN")   # no executor -> never EXECUTED, never mocked
+            # scheduler submission is approval-gated -> APPROVAL_REQUIRED (still never executed)
+            _, o1 = self._dispatch(tmp, _prop("simulation", "submit_scheduler_job", "sc1", {}))
+            self.assertEqual(o1.status, "APPROVAL_REQUIRED")
+            self.assertFalse(o1.executed)
+        with tempfile.TemporaryDirectory() as tmp:
+            # reasoning output has no executor -> DRY_RUN, never a fake EXECUTED
+            _, o2 = self._dispatch(tmp, _prop("analyst", "classify_root_cause", "rc1", {}))
+            self.assertEqual(o2.status, "DRY_RUN")
+            self.assertFalse(o2.executed)
+
+    def test_detect_atomic_overlap_reaches_real_executor(self):
+        from ase import Atoms
+        from ase.io import write
+        with tempfile.TemporaryDirectory() as tmp:
+            frames = Path(tmp) / "ov.extxyz"
+            write(str(frames), Atoms("Cu2", positions=[[0, 0, 0], [0.2, 0, 0]],
+                                     cell=[20, 20, 20], pbc=True))  # 0.2 A -> overlap
+            _, o = self._dispatch(tmp, _prop("data-curator", "detect_atomic_overlap", "ov1",
+                                             {"frames_path": str(frames),
+                                              "min_distance_threshold": 0.5}))
+            self.assertEqual(o.status, "EXECUTED")
+            self.assertEqual(o.artifact["metrics"]["n_overlapping"], 1)
+
+    def test_sample_seed_pool_is_deterministic(self):
+        from ase import Atoms
+        from ase.io import write
+        with tempfile.TemporaryDirectory() as tmp:
+            frames_path = Path(tmp) / "pool.extxyz"
+            frames = []
+            for i in range(10):
+                a = Atoms("Cu", positions=[[0, 0, 0]], cell=[10, 10, 10], pbc=True)
+                a.info["structure_id"] = f"s{i}"
+                a.info["parent_structure_id"] = f"p{i % 3}"
+                frames.append(a)
+            write(str(frames_path), frames)
+            p = _prop("data-curator", "sample_seed_pool", "sp1",
+                      {"frames_path": str(frames_path), "count": 4, "seed": 20260804})
+            _, o1 = self._dispatch(tmp, p)
+            _, o2 = self._dispatch(tmp, {**p, "idempotency_key": "sp2"})
+            self.assertEqual(o1.status, "EXECUTED")
+            self.assertEqual(o1.artifact["metrics"]["selected_ids"],
+                             o2.artifact["metrics"]["selected_ids"])  # same seed -> same selection
+            self.assertEqual(o1.artifact["metrics"]["selected_count"], 4)
+
+    def test_completion_validator_fails_closed(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            manifest = Path(tmp) / "committee.json"
+            manifest.write_text(json.dumps({"models": []}))  # 0 seeds != expected 4
+            _, o = self._dispatch(tmp, _prop("ml-trainer", "validate_training_completion", "vt1",
+                                             {"committee_manifest": str(manifest),
+                                              "expected_seeds": 4}))
+            self.assertEqual(o.status, "INVALID")   # fail-closed, not a passing artifact
             self.assertFalse(o.executed)
 
     def test_hpc_action_is_gated_and_not_executed(self):
@@ -110,24 +162,30 @@ class BackingMatrixTests(unittest.TestCase):
         all_actions = set().union(*ROLE_ALLOWED_ACTIONS.values())
         self.assertEqual(set(BINDINGS), all_actions)
 
-    def test_available_have_executor_others_do_not(self):
+    def test_ready_executor_has_fn_others_do_not(self):
         from runtimes.pydantic_ai.executors import BINDINGS, build_executor_registry
         reg = build_executor_registry()
         for action, b in BINDINGS.items():
-            if b.status == "AVAILABLE":
+            if b.status == "READY_EXECUTOR":
                 self.assertIsNotNone(b.fn, action)
                 self.assertIsNotNone(reg[action].executor, action)
-            else:  # AVAILABLE_HPC / NOT_IMPLEMENTED never carry an inline executor
+            else:  # HPC / INTERFACE / REASONING never carry an inline executor
                 self.assertIsNone(b.fn, action)
                 self.assertIsNone(reg[action].executor, action)
+
+    def test_no_action_is_left_not_implemented(self):
+        from runtimes.pydantic_ai.executors import BINDINGS
+        self.assertEqual([a for a, b in BINDINGS.items() if b.status == "NOT_IMPLEMENTED"], [])
 
     def test_status_counts_are_honest(self):
         from collections import Counter
         from runtimes.pydantic_ai.executors import BINDINGS
         counts = Counter(b.status for b in BINDINGS.values())
-        self.assertEqual(counts["AVAILABLE"], 12)
-        self.assertEqual(counts["AVAILABLE_HPC"], 5)
-        self.assertEqual(counts["NOT_IMPLEMENTED"], 20)
+        self.assertEqual(counts["READY_EXECUTOR"], 28)
+        self.assertEqual(counts["READY_HPC_APPROVAL_GATED"], 5)
+        self.assertEqual(counts["READY_INTERFACE_BACKEND_NOT_CONFIGURED"], 3)
+        self.assertEqual(counts["READY_REASONING_OUTPUT"], 1)
+        self.assertEqual(counts.get("NOT_IMPLEMENTED", 0), 0)
 
 
 if __name__ == "__main__":  # pragma: no cover
