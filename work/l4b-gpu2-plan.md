@@ -88,3 +88,33 @@ $PWD/examples/stage_a_judge_smoke/out/exchange --read-allow
 $PWD/examples/stage_a_judge_smoke/artifacts --repo-root $PWD --mode shadow --correlation-id
 stageA-judge-0001 --probe-server` → provenance at
 `examples/stage_a_judge_smoke/out/exchange/provenance/stageA-judge-0001.*.json` + `out/stdout.log`.
+
+## L4B RESULTS — confirmed on jbnu-gpu2 (2026-08-07)
+Setup ran; base env UNTOUCHED (both envs under ~/.conda/envs; base = /opt/anaconda3).
+Repo on gpu2: `/home/hyunjin/proj-mad-pydanticai-full-runtime`, HEAD **dff0af8** (verified).
+
+Pinned resolved versions (RECORD for reproducibility of THIS experiment):
+- **vllm-mad** (`/home/hyunjin/.conda/envs/vllm-mad`, Python 3.12):
+  vllm **0.26.0**; torch **2.11.0** (CUDA-13 build: nvidia-cudnn-cu13 9.19.0.56, nvidia-nccl-cu13
+  2.28.9, nvidia-cublas 13.1.0.3, cuda-toolkit 13.0.2, triton 3.6.0); transformers **5.14.1**;
+  tokenizers 0.22.2; numpy 2.3.5; flashinfer-python 0.6.14.
+  Structured-output backends present: **xgrammar 0.2.3**, **lm-format-enforcer 0.11.3**,
+  **outlines_core 0.2.14**, **llguidance 1.7.6** (+ help shows `StructuredOutputsConfig`).
+  (vllm also pulled anthropic 0.120.2 / openai 2.53.0 as its own deps — unused by our runtime.)
+- **mad-client** (`/home/hyunjin/.conda/envs/mad-client`, Python 3.12):
+  distillation-agents 0.1.0 (editable); pydantic **2.13.4**; **pydantic-ai-slim 0.8.1**
+  (pydantic-graph 0.8.1); **openai 2.53.0**; opentelemetry-api 1.43.0; ase 3.29.0; numpy 2.5.1.
+  Local-provider import check expected OK (re-capture with the fixed recorder if blank).
+
+Compatibility notes:
+- Structured/guided JSON output: SUPPORTED (xgrammar/outlines/llguidance/lm-format-enforcer all
+  installed; engine has StructuredOutputsConfig).
+- **Tool-call parser: NOT YET CONFIRMED.** `vllm serve --help` grep matched only
+  `StructuredOutputsConfig` (no `--tool-call-parser`/`hermes` string). vLLM 0.26.0 reorganized the
+  CLI help; the parser set must be enumerated from the registry (see follow-up command). Our Judge
+  Stage A REQUIRES tool calling (the `read_json` tool), so the exact parser name for Qwen2.5 must be
+  confirmed before finalizing the model — do NOT assume `hermes`.
+- torch in vllm-mad (2.11.0) is isolated from the base env's torch 2.12.1 → MLIP/teacher stack safe.
+
+Smoke model: Qwen/Qwen2.5-3B-Instruct remains the candidate, FINAL pending the tool-parser
+enumeration. Pinned experiment stack = vllm 0.26.0 / torch 2.11.0(cu13) / transformers 5.14.1.

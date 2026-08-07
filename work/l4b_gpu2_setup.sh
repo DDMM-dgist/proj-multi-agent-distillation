@@ -37,19 +37,19 @@ run conda run -n vllm-mad python -m pip install --upgrade pip
 run conda run -n vllm-mad python -m pip install vllm
 
 sec "4 record vllm-mad versions"
-conda run -n vllm-mad python - <<'PY' 2>&1 | tee -a "$REPORT"
-import importlib.metadata as M
+# NOTE: use `python -c` (NOT a heredoc) because `conda run ... python - <<EOF` does not forward stdin.
+conda run -n vllm-mad python -c "
+import sys, importlib.metadata as M
 def v(p):
     try: return M.version(p)
-    except Exception as e: return f"absent ({type(e).__name__})"
-print("python :", __import__("sys").version.split()[0])
-print("vllm   :", v("vllm"))
-print("torch  :", v("torch"))
+    except Exception: return 'absent'
+print('python:', sys.version.split()[0])
+for p in ('vllm','torch','transformers','tokenizers','numpy','xgrammar','lm-format-enforcer','outlines-core','llguidance'):
+    print(p+':', v(p))
 try:
-    import torch; print("torch.cuda_build:", torch.version.cuda, "| torch.cuda.is_available:", torch.cuda.is_available())
-except Exception as e: print("torch import:", type(e).__name__, e)
-print("transformers:", v("transformers"))
-PY
+    import torch; print('torch.cuda_build:', torch.version.cuda)
+except Exception as e: print('torch cuda import:', type(e).__name__, e)
+" 2>&1 | tee -a "$REPORT"
 
 sec "5 vllm serve --help : tool parser + guided/structured-output support"
 # try the modern CLI, then the module entrypoint
@@ -58,30 +58,36 @@ HELP="$(conda run -n vllm-mad vllm serve --help 2>&1)"
 echo "$HELP" | grep -iE -- "--tool-call-parser|hermes|--enable-auto-tool-choice|--guided-decoding|--structured|xgrammar|outlines|lm-format|json" | tee -a "$REPORT"
 say "--- (full help saved to work/l4b_gpu2_vllm_help.txt) ---"
 echo "$HELP" > "$REPO/work/l4b_gpu2_vllm_help.txt"
-# best-effort: list the exact choices offered for --tool-call-parser
-echo "$HELP" | grep -iA3 -- "--tool-call-parser" | tee -a "$REPORT"
+echo "$HELP" | grep -in "tool" | tee -a "$REPORT"     # broad: any 'tool' mention + line numbers
+# AUTHORITATIVE: enumerate the tool-call parsers actually registered in THIS vLLM (no server/GPU)
+conda run -n vllm-mad python -c "
+try:
+    from vllm.entrypoints.openai.tool_parsers import ToolParserManager as T
+    d = getattr(T,'tool_parsers',None) or getattr(T,'_tool_parsers',None) or {}
+    print('registered_tool_parsers:', sorted(d.keys()))
+except Exception as e:
+    print('tool-parser introspection failed:', type(e).__name__, e)
+" 2>&1 | tee -a "$REPORT"
 
 sec "6 install client into mad-client (our runtime + openai provider; NO GPU)"
 run conda run -n mad-client python -m pip install --upgrade pip
 run conda run -n mad-client python -m pip install -e "$REPO"'[pydantic-ai,local-openai]'
 
 sec "7 record mad-client versions"
-conda run -n mad-client python - <<'PY' 2>&1 | tee -a "$REPORT"
-import importlib.metadata as M, sys
+conda run -n mad-client python -c "
+import sys, importlib.metadata as M
 def v(p):
     try: return M.version(p)
-    except Exception as e: return f"absent ({type(e).__name__})"
-print("python       :", sys.version.split()[0])
-print("pydantic     :", v("pydantic"))
-print("pydantic-ai-slim:", v("pydantic-ai-slim"))
-print("openai       :", v("openai"))
-# prove the local provider path imports offline (no server, no key)
+    except Exception: return 'absent'
+print('python:', sys.version.split()[0])
+for p in ('pydantic','pydantic-ai-slim','openai','opentelemetry-api','distillation-agents'):
+    print(p+':', v(p))
 try:
     from runtimes.pydantic_ai.provider import select_provider_kind, build_local_model  # noqa
-    print("runtime import: OK (select_provider_kind/build_local_model importable)")
+    print('runtime import: OK (select_provider_kind/build_local_model importable)')
 except Exception as e:
-    print("runtime import FAILED:", type(e).__name__, e)
-PY
+    print('runtime import FAILED:', type(e).__name__, e)
+" 2>&1 | tee -a "$REPORT"
 
 sec "8 env paths"
 run conda env list
