@@ -228,7 +228,8 @@ class RunController:
                                      "started_at": created_at, "trigger": None}],
                      "recoveries": [], "pending_recovery": None,
                      # v7 additive operational metadata (safe empty defaults):
-                     "runtime_attempts": [], "idempotency": {}, "action_approvals": {}}
+                     "runtime_attempts": [], "idempotency": {}, "action_approvals": {},
+                     "scheduler_jobs": {}}
             (temporary / "manifest.json").write_text(json.dumps(state, indent=2) + "\n")
             temporary.rename(run_dir)
         except Exception:
@@ -269,6 +270,34 @@ class RunController:
 
     def has_action_approval(self, boundary):
         return bool(self.state.get("action_approvals", {}).get(boundary, {}).get("granted"))
+
+    # --- v7 additive: scheduler job lifecycle (pending -> collect -> resume) ------------------
+    def record_scheduler_submission(self, job):
+        """Record a submitted (external) scheduler job as PENDING. ``job`` is a dict with at least
+        external_job_id, backend, idempotency_key, protocol_hash. Additive; no scientific
+        semantics. The controller never waits on the job; a later collect resumes the stage."""
+        jid = job["external_job_id"]
+        rec = dict(job)
+        rec.setdefault("state", "PENDING")
+        rec["submitted_at"] = now()
+        self.state.setdefault("scheduler_jobs", {})[jid] = rec
+        self.save()
+        return rec
+
+    def get_scheduler_job(self, external_job_id):
+        return self.state.get("scheduler_jobs", {}).get(external_job_id)
+
+    def record_scheduler_collection(self, external_job_id, *, artifact_ref, artifact_sha256=""):
+        """Record collected artifacts for a job and mark it COLLECTED (enables stage resume)."""
+        jobs = self.state.get("scheduler_jobs", {})
+        if external_job_id not in jobs:
+            raise KeyError(f"unknown scheduler job: {external_job_id}")
+        jobs[external_job_id]["state"] = "COLLECTED"
+        jobs[external_job_id]["artifact_ref"] = artifact_ref
+        jobs[external_job_id]["artifact_sha256"] = artifact_sha256
+        jobs[external_job_id]["collected_at"] = now()
+        self.save()
+        return jobs[external_job_id]
 
     def record_action(self, idempotency_key, *, action_type="", status="", artifact_ref=""):
         if not idempotency_key:

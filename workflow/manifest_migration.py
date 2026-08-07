@@ -20,6 +20,7 @@ def apply_v7_fields(state: dict) -> dict:
     state.setdefault("runtime_attempts", [])
     state.setdefault("idempotency", {})
     state.setdefault("action_approvals", {})
+    state.setdefault("scheduler_jobs", {})
     return state
 
 
