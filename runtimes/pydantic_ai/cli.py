@@ -43,6 +43,8 @@ def _build_parser() -> argparse.ArgumentParser:
     r.add_argument("--agent-specs-dir", default="agent_specs")
     r.add_argument("--task", required=True, help="path to the task JSON")
     r.add_argument("--exchange-dir", required=True)
+    r.add_argument("--run-dir", default=None,
+                   help="controller run dir (required for producer roles' dispatch)")
     r.add_argument("--repo-root", default=".")
     r.add_argument("--read-allow", action="append", default=[],
                    help="read-only allow-list prefix (repeatable)")
@@ -123,13 +125,26 @@ def main(argv=None) -> int:
         provider=provider, model_id=model_id or "mock",
         read_allow_prefixes=args.read_allow, correlation_id=args.correlation_id)
 
-    mode_flags = {
-        "primary": {}, "shadow": {"shadow": True},
-        "dry-run": {"dry_run": True}, "validate-only": {"validate_only": True},
-    }[args.mode]
+    cli_mode = {"primary": "primary", "shadow": "shadow", "dry-run": "dry_run",
+                "validate-only": "validate_only"}[args.mode]
+
+    # The production router selects the acceptance strategy from the role/typed output; producer
+    # dispatch needs a controller + executor registry. No manual per-role function selection.
+    from .production_router import run_role, acceptance_strategy
+    from .executors import build_executor_registry
+    controller = None
+    strategy = acceptance_strategy(spec)
+    if strategy == "producer_dispatch":
+        if not args.run_dir:
+            print("producer roles require --run-dir (controller manifest)", file=sys.stderr)
+            return EXIT_INTERNAL
+        from workflow.controller import RunController
+        controller = RunController(args.run_dir)
+    registry = build_executor_registry()
 
     try:
-        res = run_task(runtime, task, spec, ctx, **mode_flags)
+        res = run_role(runtime, task, spec, ctx, controller=controller, registry=registry,
+                       mode=cli_mode)
     except FileExistsError:
         print("duplicate task dispatch (task packet already exists)", file=sys.stderr)
         return EXIT_DUPLICATE
@@ -137,23 +152,25 @@ def main(argv=None) -> int:
         print(f"internal error: {exc}", file=sys.stderr)
         return EXIT_INTERNAL
 
-    rec = res.invocation.provenance
     _print_kv(
         out,
         task_path=str(task_path), task_id=task.get("task_id", ""), role=args.agent,
         runtime=args.runtime, provider=provider, model=model_id or "mock", mode=args.mode,
-        result_path=str(Path(args.exchange_dir) / "results" / f"{task.get('task_id','')}.json"),
-        raw_response_path=str(Path(args.exchange_dir) / "raw" / f"{task.get('task_id','')}.json"),
-        provenance_path=str(res.provenance_path),
-        accepted=res.accepted, validation_status=("ok" if res.validated is not None else "rejected"),
-        attempt_id=rec.attempt_id, controller_mutation=rec.controller_mutated,
-        failure_category=rec.failure_category or "")
+        strategy=res.strategy, accepted=res.accepted, controller_mutation=res.controller_mutated,
+        provenance_path=str(res.provenance_path), error=(res.error or ""))
 
-    if rec.failure_category:
-        return (EXIT_PROVIDER_UNAVAILABLE
-                if rec.failure_category in _PROVIDER_UNAVAILABLE_FAILURES
-                else EXIT_PROVIDER_FAILURE)
-    if res.validated is None:
+    # Map the routed result to an exit code.
+    outcome_status = getattr(res.detail, "status", None)  # ActionOutcome for producer_dispatch
+    if outcome_status is not None:
+        return {
+            "EXECUTED": EXIT_SUCCESS, "DRY_RUN": EXIT_SUCCESS,
+            "DENIED": EXIT_BLOCKED_POLICY, "BLOCKED_CAPABILITY": EXIT_BLOCKED_POLICY,
+            "APPROVAL_REQUIRED": EXIT_APPROVAL_REQUIRED, "DUPLICATE": EXIT_DUPLICATE,
+            "INVALID": EXIT_VALIDATION_REJECTED, "EXECUTOR_ERROR": EXIT_VALIDATION_REJECTED,
+        }.get(outcome_status, EXIT_INTERNAL)
+    if res.error and res.strategy in ("judge_gate", "agent_result"):
+        return EXIT_VALIDATION_REJECTED
+    if res.error:
         return EXIT_VALIDATION_REJECTED
     return EXIT_SUCCESS
 
