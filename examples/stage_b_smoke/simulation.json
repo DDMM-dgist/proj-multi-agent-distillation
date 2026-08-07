@@ -1,0 +1,15 @@
+{
+  "schema_version": 1,
+  "task_id": "stageB-simulation-0001",
+  "agent": "simulation",
+  "created_at": "2026-08-07T00:00:00Z",
+  "instruction": "You are the Simulation agent. Propose EXACTLY ONE typed ActionProposal and execute nothing. Emit ONLY these fields and no others: requested_by_role='simulation', action_type='compute_nve_drift', schema_version=1, run_id='stageB-smoke', stage='validation', requested_at='2026-08-07T00:00:00Z', rationale='Assess NVE energy drift as an MD-stability diagnostic; no MD/DFT run.', idempotency_key='stageB-sim-nve-0001', dry_run=true, parameters={}. Do not add any other fields and do not run MD, DFT, or submit any scheduler job.",
+  "inputs": [],
+  "criteria": [
+    "Return a typed SimulationActionProposal with action_type 'compute_nve_drift' and dry_run true."
+  ],
+  "constraints": [
+    "propose only: dry-run; no MD/DFT; no scheduler submission; no side effects"
+  ],
+  "context": {}
+}

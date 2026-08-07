@@ -1,0 +1,15 @@
+{
+  "schema_version": 1,
+  "task_id": "stageB-analyst-0001",
+  "agent": "analyst",
+  "created_at": "2026-08-07T00:00:00Z",
+  "instruction": "You are the Analyst. Propose EXACTLY ONE typed ActionProposal and execute nothing; you may not alter any Judge verdict or controller state. Emit ONLY these fields and no others: requested_by_role='analyst', action_type='compare_force_errors', schema_version=1, run_id='stageB-smoke', stage='validation', requested_at='2026-08-07T00:00:00Z', rationale='Compare student-vs-reference force errors as a diagnostic channel.', idempotency_key='stageB-an-cfe-0001', dry_run=true, parameters={}. Do not add any other fields.",
+  "inputs": [],
+  "criteria": [
+    "Return a typed AnalystActionProposal with action_type 'compare_force_errors' and dry_run true."
+  ],
+  "constraints": [
+    "propose only: dry-run; cannot mutate Judge verdict or controller state"
+  ],
+  "context": {}
+}

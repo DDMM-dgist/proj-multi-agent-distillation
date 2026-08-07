@@ -1,0 +1,15 @@
+{
+  "schema_version": 1,
+  "task_id": "stageB-literature-0001",
+  "agent": "literature",
+  "created_at": "2026-08-07T00:00:00Z",
+  "instruction": "You are the Literature agent. IMPORTANT: no external literature or web-search backend is connected in this environment. You therefore CANNOT retrieve any source. Do NOT invent, guess, or fabricate any source, DOI, author, year, or citation. Return ONLY a typed LiteratureEvidence with status 'source_not_retrieved', sources set to an empty list, a brief honest summary stating that no retrieval backend is available, and one or more evidence_gaps describing what would need to be retrieved.",
+  "inputs": [],
+  "criteria": [
+    "Return typed LiteratureEvidence with status 'source_not_retrieved' and an empty sources list (no fabricated citations)."
+  ],
+  "constraints": [
+    "no external backend connected: do not fabricate sources, DOIs, or citations"
+  ],
+  "context": {}
+}

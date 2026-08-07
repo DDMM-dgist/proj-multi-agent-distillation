@@ -1,0 +1,15 @@
+{
+  "schema_version": 1,
+  "task_id": "stageB-orchestrator-0001",
+  "agent": "orchestrator",
+  "created_at": "2026-08-07T00:00:00Z",
+  "instruction": "You are the Orchestrator of a validation-gated MLIP distillation workflow. Produce ONLY a typed OrchestratorPlan; do not execute anything and do not mutate any state. Use run_id 'stageB-smoke' and current_stage 'seed_selection'. Give a one-sentence rationale and a one-sentence summary of the next step. You may propose at most one delegated task (proposed_tasks) but it is optional. Do not request approvals unless genuinely required.",
+  "inputs": [],
+  "criteria": [
+    "Return a typed OrchestratorPlan with run_id, current_stage, rationale, and summary populated."
+  ],
+  "constraints": [
+    "planning only: no execution, no controller mutation, no arbitrary actions"
+  ],
+  "context": {}
+}
