@@ -81,3 +81,22 @@ No in-scope SiO2 action is NOT_IMPLEMENTED. All seven roles have typed IO, enfor
 manifests, controller integration, approval + idempotency, failure provenance, dry-run and
 sandbox-primary paths. Actual-provider smoke + golden-shadow provider run remain, behind
 explicit approval. Do NOT claim PRODUCTION_READY / end-to-end-validated before that.
+
+## Production routing (item 0) — COMPLETE
+Single production router (runtimes/pydantic_ai/production_router.run_role, used by the CLI)
+auto-selects the acceptance strategy per role from the typed output (judge_gate / producer_dispatch
+/ typed_result / agent_result). All seven roles route from `distill-agent-run`; wrong-role output
+is fail-closed; shadow never mutates. 6 routing tests pass. No scientific semantics changed.
+
+## Actual-provider credential preflight (item 1, 2026-08-07) — DOES NOT PASS (no call made)
+- ANTHROPIC_API_KEY: absent; PYDANTIC_AI_MODEL: absent.
+- preflight_credentials() => NOT_CONFIGURED (network-free; no provider contacted).
+- anthropic SDK: NOT installed (the [anthropic] optional extra was not installed in this venv).
+- pydantic-ai-slim: 0.8.1 installed.
+- Effective caps if configured: timeout_s=120, provider_retries=2, structured_output_retries=1,
+  max_total_calls=3.
+- The model identifier cannot be validated without the SDK + credential; NOT guessing a name/price.
+
+Stage A/B/C (paid provider calls) are BLOCKED until a credential + the anthropic SDK are provided.
+To enable: `pip install -e ".[pydantic-ai,anthropic]"`; export ANTHROPIC_API_KEY and
+PYDANTIC_AI_MODEL=anthropic:<a model id valid for the account>; re-run preflight -> READY.
