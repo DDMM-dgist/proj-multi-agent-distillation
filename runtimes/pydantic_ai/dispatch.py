@@ -158,11 +158,11 @@ def authorize_and_execute(proposal, *, registry: dict, approvals, idempotency,
 
     # (7) trusted executor (heavy compute lives here, never in the agent)
     if mode != "primary" or desc.executor is None:
-        outcome = out("DRY_RUN", "dry-run: validated, no side effects",
-                      executor=(desc.executor.__name__ if desc.executor else "none"))
-    else:
-        artifact = desc.executor(proposal)
-        outcome = out("EXECUTED", executor=desc.executor.__name__, artifact=artifact)
+        # A dry-run/validate-only never consumes the idempotency key (no real side effect).
+        return out("DRY_RUN", "dry-run: validated, no side effects",
+                   executor=(desc.executor.__name__ if desc.executor else "none"))
+    artifact = desc.executor(proposal)
+    outcome = out("EXECUTED", executor=desc.executor.__name__, artifact=artifact)
     if key:
-        idempotency.record(key, outcome)
+        idempotency.record(key, outcome)  # only real executions consume the key
     return outcome

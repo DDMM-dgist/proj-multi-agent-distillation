@@ -19,6 +19,7 @@ def apply_v7_fields(state: dict) -> dict:
     """Add missing v7 additive fields with safe empty defaults. Never changes an existing field."""
     state.setdefault("runtime_attempts", [])
     state.setdefault("idempotency", {})
+    state.setdefault("action_approvals", {})
     return state
 
 

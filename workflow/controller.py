@@ -228,7 +228,7 @@ class RunController:
                                      "started_at": created_at, "trigger": None}],
                      "recoveries": [], "pending_recovery": None,
                      # v7 additive operational metadata (safe empty defaults):
-                     "runtime_attempts": [], "idempotency": {}}
+                     "runtime_attempts": [], "idempotency": {}, "action_approvals": {}}
             (temporary / "manifest.json").write_text(json.dumps(state, indent=2) + "\n")
             temporary.rename(run_dir)
         except Exception:
@@ -258,6 +258,17 @@ class RunController:
     def action_seen(self, idempotency_key):
         """True if an action with this idempotency key was already recorded (duplicate guard)."""
         return idempotency_key in self.state.get("idempotency", {})
+
+    def grant_action_approval(self, boundary, *, scope="run", note=""):
+        """Record a human approval for an approval boundary (e.g. costly_teacher_labeling). This
+        is the durable approval record the action dispatcher checks before a costly/side-effecting
+        action may execute. Additive; independent of the recovery human-approval state machine."""
+        self.state.setdefault("action_approvals", {})[boundary] = {
+            "granted": True, "scope": scope, "note": note, "at": now()}
+        self.save()
+
+    def has_action_approval(self, boundary):
+        return bool(self.state.get("action_approvals", {}).get(boundary, {}).get("granted"))
 
     def record_action(self, idempotency_key, *, action_type="", status="", artifact_ref=""):
         if not idempotency_key:
