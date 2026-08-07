@@ -115,3 +115,22 @@ Status update:
 - NETWORK_FREE_FULL_RUNTIME_READY
 - LOCAL_PROVIDER_IMPLEMENTATION_PENDING  (L1/L2 done, L3 shortlisted; L4 server run pending)
 - ANTHROPIC_BILLING_BLOCKED_NON_FATAL
+
+## L4A topology (2026-08-07): reachable cluster is CPU-only; GPU host required
+- JBNU OpenPBS cluster: master + j001, 64c/527GB each, naccelerators=0, no CUDA/vLLM (CPU-only
+  DFT/MD: VASP/LAMMPS modules). /home is shared 66T; /tmp is local to master (worktree/venv NOT
+  visible on other nodes). Backing git repo lived under /tmp -> CLONED to shared /home:
+  /home/hyunjin/mad-pydanticai-persist/proj-mad-pydanticai-full-runtime (HEAD b383ffa, 16 commits
+  preserved). No push/PR/merge; /tmp worktree retained.
+- Decision (user): L4 runs on a SEPARATE GPU host with vLLM (NOT CPU llama.cpp/Ollama), server +
+  client co-located so PYDANTIC_AI_BASE_URL=http://127.0.0.1:8000/v1. Portable deployment runbook:
+  work/gpu-host-deployment-runbook.md (git-bundle transfer, env, packages, CUDA verify, smoke
+  model, vLLM launch template, Stage A command, provenance). Nothing launched/downloaded; awaiting
+  GPU-host info (nvidia-smi, python, internet, filesystem, scheduler, ports).
+
+Status:
+- NETWORK_FREE_FULL_RUNTIME_READY
+- LOCAL_PROVIDER_IMPLEMENTATION_COMPLETE
+- LOCAL_LIVE_STAGE_A_PENDING  (blocked: no GPU on reachable cluster; GPU-host deployment prepared)
+- ANTHROPIC_BILLING_BLOCKED_NON_FATAL
+- ANTHROPIC_NOT_REQUIRED_FOR_LOCAL_RUNTIME
