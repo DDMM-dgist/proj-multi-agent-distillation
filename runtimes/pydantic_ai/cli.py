@@ -48,8 +48,13 @@ def _build_parser() -> argparse.ArgumentParser:
     r.add_argument("--repo-root", default=".")
     r.add_argument("--read-allow", action="append", default=[],
                    help="read-only allow-list prefix (repeatable)")
-    r.add_argument("--provider", default=None)
+    r.add_argument("--provider", default=None,
+                   help="provider kind: local-openai | ollama | anthropic; else $PYDANTIC_AI_PROVIDER")
     r.add_argument("--model", default=None, help="provider model id, else $PYDANTIC_AI_MODEL")
+    r.add_argument("--base-url", default=None,
+                   help="[local] OpenAI-compatible base URL, else $PYDANTIC_AI_BASE_URL")
+    r.add_argument("--probe-server", action="store_true",
+                   help="[local] TCP-probe the server during preflight (no inference)")
     r.add_argument("--mode", choices=("primary", "shadow", "dry-run", "validate-only"),
                    default="shadow")
     r.add_argument("--mock-response", default=None,
@@ -109,26 +114,59 @@ def main(argv=None) -> int:
         runtime = MockAgentRuntime(lambda t, s, ts: (raw, (0, 0)))
         provider = provider if provider != "mock" else "mock"
     else:  # pydantic-ai
-        from .provider import preflight_credentials, build_provider_model
-        pf = preflight_credentials()
-        if pf.status != "READY":
-            _print_kv(out, runtime="pydantic-ai", preflight=pf.status, reason=pf.reason,
-                      provider=pf.provider, model=pf.model_id)
-            return EXIT_PROVIDER_UNAVAILABLE
-        # Explicit human confirmation gate for a REAL (billable) provider call. Preflight being
-        # READY (credential present) is not sufficient; a live call also requires an intentional
-        # PYDANTIC_AI_SMOKE_CONFIRM=yes, so merely having a key in the shell never bills. Mirrors
-        # examples/pydantic_ai_provider_smoke.py's gate. Mock/TestModel paths are unaffected.
-        if os.environ.get("PYDANTIC_AI_SMOKE_CONFIRM") != "yes":
-            _print_kv(out, runtime="pydantic-ai", preflight="READY", provider=pf.provider,
-                      model=pf.model_id, confirmation="MISSING",
+        # Route to the selected backend. A LOCAL (OpenAI-compatible/Ollama) backend needs NO
+        # Anthropic credential; the hosted Anthropic path is kept but optional.
+        from . import provider as _prov
+        if args.provider:
+            os.environ.setdefault("PYDANTIC_AI_PROVIDER", args.provider)
+        if args.base_url:
+            os.environ.setdefault("PYDANTIC_AI_BASE_URL", args.base_url)
+        kind = _prov.select_provider_kind()
+
+        def _confirm_missing(provider_name, model_name, note_extra=""):
+            _print_kv(out, runtime="pydantic-ai", provider=provider_name, model=model_name,
+                      confirmation="MISSING",
                       note=("set PYDANTIC_AI_SMOKE_CONFIRM=yes to authorize ONE real provider "
-                            "call; no provider was called"))
+                            "call; no provider was called" + note_extra))
             return EXIT_APPROVAL_REQUIRED
-        from .pydantic_ai_runtime import PydanticAIRuntime
-        model_id = pf.model_id
-        provider = pf.provider
-        runtime = PydanticAIRuntime(model=build_provider_model(model_id), usage_source="provider")
+
+        if kind in _prov.LOCAL_KINDS:
+            pf = _prov.preflight_local(probe=args.probe_server)
+            if pf.status != _prov.LOCAL_READY:
+                # A not-running server is an OPERATIONAL status, not a runtime/scientific failure.
+                _print_kv(out, runtime="pydantic-ai", provider=kind, preflight=pf.status,
+                          reason=pf.reason, base_url=pf.base_url, model=pf.model_id,
+                          anthropic_key_required=pf.anthropic_key_required)
+                return EXIT_PROVIDER_UNAVAILABLE
+            if os.environ.get("PYDANTIC_AI_SMOKE_CONFIRM") != "yes":
+                return _confirm_missing(kind, pf.model_id, " (local inference)")
+            from .pydantic_ai_runtime import PydanticAIRuntime
+            model_id = pf.model_id
+            provider = kind
+            runtime = PydanticAIRuntime(
+                model=_prov.build_local_model(kind, pf.model_id, pf.base_url),
+                usage_source="provider")
+        elif kind == "anthropic":
+            pf = _prov.preflight_credentials()
+            if pf.status != "READY":
+                _print_kv(out, runtime="pydantic-ai", preflight=pf.status, reason=pf.reason,
+                          provider=pf.provider, model=pf.model_id)
+                return EXIT_PROVIDER_UNAVAILABLE
+            # Explicit human confirmation gate for a REAL (billable) provider call. Preflight being
+            # READY (credential present) is not sufficient; a live call also requires an intentional
+            # PYDANTIC_AI_SMOKE_CONFIRM=yes, so merely having a key in the shell never bills.
+            if os.environ.get("PYDANTIC_AI_SMOKE_CONFIRM") != "yes":
+                return _confirm_missing(pf.provider, pf.model_id)
+            from .pydantic_ai_runtime import PydanticAIRuntime
+            model_id = pf.model_id
+            provider = pf.provider
+            runtime = PydanticAIRuntime(model=_prov.build_provider_model(model_id),
+                                        usage_source="provider")
+        else:
+            _print_kv(out, runtime="pydantic-ai", preflight="NOT_CONFIGURED",
+                      reason=("set PYDANTIC_AI_PROVIDER to local-openai|ollama|anthropic "
+                              "(local needs PYDANTIC_AI_BASE_URL; no Anthropic key required)"))
+            return EXIT_PROVIDER_UNAVAILABLE
 
     ctx = RuntimeContext(
         exchange_dir=args.exchange_dir, repo_root=args.repo_root,

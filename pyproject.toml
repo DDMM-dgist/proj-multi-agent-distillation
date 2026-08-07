@@ -36,6 +36,14 @@ pydantic-ai = [
 anthropic = [
     "anthropic>=0.61,<0.65",
 ]
+# Local, OpenAI-compatible inference backend (vLLM first; also Ollama and any OpenAI-compatible
+# server). Pulls in the `openai` SDK that pydantic_ai's OpenAI/Ollama providers require. NO
+# provider API key and NO Anthropic credential are needed for a locally served model — the
+# providers inject a non-secret placeholder key. Connects over a base URL (PYDANTIC_AI_BASE_URL).
+#   pip install -e ".[pydantic-ai,local-openai]"
+local-openai = [
+    "pydantic-ai-slim[openai]>=0.8,<0.9",
+]
 
 [project.scripts]
 distill-run = "workflow.controller:main"

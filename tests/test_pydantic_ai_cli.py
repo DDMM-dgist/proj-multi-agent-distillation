@@ -146,7 +146,8 @@ class CliTests(unittest.TestCase):
         from runtimes.pydantic_ai.provider import PreflightResult
         built = {"model": False, "runtime": False}
         with tempfile.TemporaryDirectory() as tmp, \
-                mock.patch.dict("os.environ", {}, clear=True):
+                mock.patch.dict("os.environ",
+                                {"PYDANTIC_AI_MODEL": "anthropic:fake"}, clear=True):
             d = Path(tmp)
             task = self._write(d, "task.json", _judge_task())
             with mock.patch("runtimes.pydantic_ai.provider.preflight_credentials",

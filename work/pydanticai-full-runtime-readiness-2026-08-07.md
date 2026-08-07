@@ -100,3 +100,18 @@ is fail-closed; shadow never mutates. 6 routing tests pass. No scientific semant
 Stage A/B/C (paid provider calls) are BLOCKED until a credential + the anthropic SDK are provided.
 To enable: `pip install -e ".[pydantic-ai,anthropic]"`; export ANTHROPIC_API_KEY and
 PYDANTIC_AI_MODEL=anthropic:<a model id valid for the account>; re-run preflight -> READY.
+
+## Backend pivot: local OpenAI-compatible LLM (2026-08-07, L1-L3)
+Anthropic billing is unavailable, so the inference backend pivots to a LOCAL OpenAI-compatible
+server (vLLM first). See work/local-provider-audit-2026-08-07.md for the source-grounded audit.
+- L1 provider abstraction (test/local-openai/ollama/anthropic-optional) + L2 fail-closed local
+  preflight DONE; L3 model shortlist produced (no download/run).
+- Local path requires NO ANTHROPIC_API_KEY and NO real API key (non-secret placeholder). New
+  extra `.[pydantic-ai,local-openai]` (openai SDK). Production router unchanged.
+- Full suite 309 OK / 4 optional skips. No server launched, no inference, local commits only.
+
+Status update:
+- ANTHROPIC_LIVE_PROVIDER = BILLING_UNAVAILABLE / NOT_REQUIRED_FOR_LOCAL_RUNTIME
+- NETWORK_FREE_FULL_RUNTIME_READY
+- LOCAL_PROVIDER_IMPLEMENTATION_PENDING  (L1/L2 done, L3 shortlisted; L4 server run pending)
+- ANTHROPIC_BILLING_BLOCKED_NON_FATAL
