@@ -48,3 +48,5 @@ output/
 
 # License decision is intentionally deferred by the maintainers
 LICENSE
+work/l4b_gpu2_report.txt
+work/l4b_gpu2_vllm_help.txt
