@@ -1,0 +1,83 @@
+# PydanticAI full-runtime readiness (network-free) — 2026-08-07
+
+Network-free assessment. Actual-provider validation is PENDING (no key; no call made).
+
+## Role readiness
+
+| role | typed input | typed output | tool manifest | runtime enforcement | controller integ. | approval | idempotency | failure provenance | dry-run | sandbox-primary | actual-provider | status |
+|---|---|---|---|---|---|---|---|---|---|---|---|---|
+| orchestrator | AgentTaskModel | OrchestratorPlan | yes | yes | yes | yes | yes | yes | yes | yes | PENDING | NETWORK_FREE_READY |
+| literature | AgentTaskModel | LiteratureEvidence | yes | yes | yes | yes | yes | yes | yes | yes | PENDING | NETWORK_FREE_READY |
+| data-curator | AgentTaskModel | DataCuratorActionProposal | yes | yes | yes | yes | yes | yes | yes | yes | PENDING | NETWORK_FREE_READY |
+| ml-trainer | AgentTaskModel | MLTrainerActionProposal | yes | yes | yes | yes | yes | yes | yes | yes | PENDING | NETWORK_FREE_READY |
+| simulation | AgentTaskModel | SimulationActionProposal | yes | yes | yes | yes | yes | yes | yes | yes | PENDING | NETWORK_FREE_READY |
+| analyst | AgentTaskModel | AnalystActionProposal | yes | yes | yes | yes | yes | yes | yes | yes | PENDING | NETWORK_FREE_READY |
+| judge | AgentTaskModel | JudgeVote | yes | yes | yes | yes | yes | yes | yes | yes | PENDING | NETWORK_FREE_READY |
+
+## Action readiness
+
+| action_type | role | taxonomy | backing | validator | approval | real exec later | status |
+|---|---|---|---|---|---|---|---|
+| inspect_dataset | data-curator | READY_EXECUTOR | ase.io.read + metadata | - | - | no | READY_EXECUTOR |
+| summarize_source_categories | data-curator | READY_EXECUTOR | frame metadata (cf. validation.data_coverage) | - | - | no | READY_EXECUTOR |
+| sample_seed_pool | data-curator | READY_EXECUTOR | deterministic policy seed_pool_v1 | - | - | no | READY_EXECUTOR |
+| reconstruct_lineage | data-curator | READY_EXECUTOR | adapters.acquisition.validate_lineage grouping | - | - | no | READY_EXECUTOR |
+| generate_group_split | data-curator | READY_EXECUTOR | workflow.steps.split_dataset | workflow.steps split integrity | - | no | READY_EXECUTOR |
+| label_with_teacher | data-curator | READY_HPC_APPROVAL_GATED | adapters.acquisition.label_with_teacher | labeling manifest integrity | costly_teacher_labeling | yes | READY_HPC_APPROVAL_GATED |
+| validate_label_preservation | data-curator | READY_EXECUTOR | ase.io.read + acquisition.validate_lineage | artifact completeness | - | no | READY_EXECUTOR |
+| build_dataset_manifest | data-curator | READY_EXECUTOR | workflow.integrity.artifact_digest | - | - | no | READY_EXECUTOR |
+| compare_deployment_coverage | data-curator | READY_EXECUTOR | validation.data_coverage.validate_data_coverage_report | data_coverage validator | - | no | READY_EXECUTOR |
+| detect_duplicates | data-curator | READY_EXECUTOR | workflow.steps._structure_fingerprint | - | - | no | READY_EXECUTOR |
+| detect_atomic_overlap | data-curator | READY_EXECUTOR | ASE get_all_distances(mic=True) | - | - | no | READY_EXECUTOR |
+| prepare_student_inputs | ml-trainer | READY_EXECUTOR | adapters.student._render_simple_nn_config | - | - | no | READY_EXECUTOR |
+| train_committee | ml-trainer | READY_HPC_APPROVAL_GATED | workflow.steps.train_committee | - | costly_training | yes | READY_HPC_APPROVAL_GATED |
+| collect_checkpoints | ml-trainer | READY_EXECUTOR | committee manifest convention | - | - | no | READY_EXECUTOR |
+| evaluate_heldout_fidelity | ml-trainer | READY_HPC_APPROVAL_GATED | workflow.steps.evaluate_committee | four_channel_audit | - | yes | READY_HPC_APPROVAL_GATED |
+| summarize_seed_variation | ml-trainer | READY_EXECUTOR | adapters.uncertainty.committee_force_std | - | - | no | READY_EXECUTOR |
+| compute_committee_disagreement | ml-trainer | READY_EXECUTOR | adapters.uncertainty.committee_force_std | - | - | no | READY_EXECUTOR |
+| validate_training_completion | ml-trainer | READY_EXECUTOR | workflow.integrity.artifact_digest | artifact completeness | - | no | READY_EXECUTOR |
+| run_teacher_md | simulation | READY_HPC_APPROVAL_GATED | adapters.acquisition.run_teacher_md | - | production_md | yes | READY_HPC_APPROVAL_GATED |
+| run_student_md | simulation | READY_HPC_APPROVAL_GATED | workflow.steps.run_md / adapters.md_backend.run | - | production_md | yes | READY_HPC_APPROVAL_GATED |
+| compute_rdf | simulation | READY_EXECUTOR | validation.structure_dynamics.compute_rdf | - | - | no | READY_EXECUTOR |
+| compute_coordination | simulation | READY_EXECUTOR | validation.structure_dynamics.compute_coordination | - | - | no | READY_EXECUTOR |
+| compute_minimum_distance | simulation | READY_EXECUTOR | ASE get_all_distances(mic=True) | - | - | no | READY_EXECUTOR |
+| detect_force_spike | simulation | READY_EXECUTOR | ASE forces + norm | - | - | no | READY_EXECUTOR |
+| compute_nve_drift | simulation | READY_EXECUTOR | validation.structure_dynamics.compute_nve_drift | - | - | no | READY_EXECUTOR |
+| validate_simulation_completion | simulation | READY_EXECUTOR | artifact existence + finiteness | artifact completeness | - | no | READY_EXECUTOR |
+| submit_scheduler_job | simulation | READY_INTERFACE_BACKEND_NOT_CONFIGURED | scheduler interface (no HPC backend configured) | - | scheduler_submission | yes | READY_INTERFACE_BACKEND_NOT_CONFIGURED |
+| query_scheduler_job | simulation | READY_INTERFACE_BACKEND_NOT_CONFIGURED | scheduler interface (no HPC backend configured) | - | - | yes | READY_INTERFACE_BACKEND_NOT_CONFIGURED |
+| collect_scheduler_artifact | simulation | READY_INTERFACE_BACKEND_NOT_CONFIGURED | scheduler interface (no HPC backend configured) | - | - | yes | READY_INTERFACE_BACKEND_NOT_CONFIGURED |
+| compare_force_errors | analyst | READY_EXECUTOR | validation.four_channel_audit.channel | - | - | no | READY_EXECUTOR |
+| compare_energy_errors | analyst | READY_EXECUTOR | validation.four_channel_audit.channel | - | - | no | READY_EXECUTOR |
+| summarize_committee_disagreement | analyst | READY_EXECUTOR | adapters.uncertainty.committee_force_std | - | - | no | READY_EXECUTOR |
+| compare_rdf | analyst | READY_EXECUTOR | validation.structure_dynamics.compute_rdf | - | - | no | READY_EXECUTOR |
+| compare_coordination | analyst | READY_EXECUTOR | validation.structure_dynamics.compute_coordination | - | - | no | READY_EXECUTOR |
+| fit_nve_drift | analyst | READY_EXECUTOR | validation.structure_dynamics.compute_nve_drift | - | - | no | READY_EXECUTOR |
+| summarize_md_stability | analyst | READY_EXECUTOR | compose NVE drift + min distance (validation.structure_dynamics) | - | - | no | READY_EXECUTOR |
+| classify_root_cause | analyst | READY_REASONING_OUTPUT | Analyst typed reasoning output (not a deterministic executor) | - | - | no | READY_REASONING_OUTPUT |
+
+## Summary counts
+- READY_EXECUTOR: 28
+- READY_HPC_APPROVAL_GATED: 5
+- READY_INTERFACE_BACKEND_NOT_CONFIGURED: 3
+- READY_REASONING_OUTPUT: 1
+
+## CI jobs (evidence)
+- test (3.10, 3.12): core, pydantic tests skip
+- min-ase (3.10, ase==3.23.0): declared floor
+- pydantic-ai-runtime (3.10): runtime module, fails if all skip
+- pydantic-ai-full (3.10): FULL suite with extra (schema/tool/dispatch/controller/executor/scheduler/root-cause/golden-shadow/seven-role E2E)
+- max-ase (3.12, ase==3.29.0): max tested dependency
+- actual-provider smoke: NOT in CI (manual, credential+approval gated)
+
+## Verdict
+
+```
+NETWORK_FREE_FULL_RUNTIME_READY
+ACTUAL_PROVIDER_VALIDATION_PENDING
+```
+
+No in-scope SiO2 action is NOT_IMPLEMENTED. All seven roles have typed IO, enforced tool
+manifests, controller integration, approval + idempotency, failure provenance, dry-run and
+sandbox-primary paths. Actual-provider smoke + golden-shadow provider run remain, behind
+explicit approval. Do NOT claim PRODUCTION_READY / end-to-end-validated before that.
