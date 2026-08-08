@@ -95,6 +95,36 @@ class StageBFixtureTests(unittest.TestCase):
                 # zero controller mutation: idempotency key never consumed on a dry run
                 self.assertNotIn(key, ctrl.state.get("idempotency", {}), role)
 
+    def test_orchestrator_fixture_is_plan_only(self):
+        # attempt-2 fix 1: the orchestrator smoke is plan-only — no artifact dependency and an
+        # explicit "call NO tools" instruction (so it cannot enter a read-tool loop).
+        task = json.loads((ROOT / "examples/stage_b_smoke/orchestrator.json").read_text())
+        self.assertEqual(task["inputs"], [])
+        instr = task["instruction"].lower()
+        self.assertIn("plan-only", instr)
+        self.assertIn("not call any tool", instr)
+
+    def test_judge_fixture_two_ordered_criteria_and_strict_contract(self):
+        # attempt-2 fix 2: the compound criterion is split into two atomic ORDERED criteria; a
+        # vote mirroring both passes canonical validation, while a mismatched vote still fails
+        # (the contract is NOT relaxed).
+        from orchestration.specs import load_agent_specs
+        from orchestration.exchange import validate_agent_response
+        task = json.loads((ROOT / "examples/stage_b_smoke/judge.json").read_text())
+        self.assertEqual(len(task["criteria"]), 2, "judge task must have two atomic criteria")
+        spec = load_agent_specs(str(ROOT / "agent_specs"))["judge"]
+        good = {"review_lens": "evidence_provenance", "verdict": "PASS",
+                "criteria_checked": [{"criterion": task["criteria"][0], "value_read": 12, "ok": True},
+                                     {"criterion": task["criteria"][1], "value_read": "passed", "ok": True}],
+                "rationale": "structure_count 12 and validation_status passed", "required_fix": ""}
+        validate_agent_response(good, spec, task)  # must not raise
+        # a vote that collapses the two criteria into one still fails the ordered-match contract
+        bad = dict(good, criteria_checked=[
+            {"criterion": "evidence.json has structure_count == 12 and validation_status == 'passed'",
+             "value_read": True, "ok": True}])
+        with self.assertRaises((ValueError, KeyError, TypeError)):
+            validate_agent_response(bad, spec, task)
+
     def test_producer_action_authorization_matrix(self):
         # Each chosen action is allowed for its role, not approval-gated, not out-of-scope.
         from runtimes.pydantic_ai.actions import (

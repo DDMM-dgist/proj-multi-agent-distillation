@@ -117,8 +117,15 @@ class PydanticAIRuntime:
         # Values that must never reach provenance/logs, masked wherever they appear.
         extra_secrets = secrets_from_env(dict(os.environ))
 
+        # Deterministic per-invocation bound: request_limit caps model requests (each tool
+        # round-trip is one), so an unproductive tool loop fails closed (UsageLimitExceeded ->
+        # classified terminal, provenance keeps every attempted tool call) rather than running
+        # until the context window is exhausted.
+        from pydantic_ai.usage import UsageLimits  # lazy: only when a real agent runs
+        limits = UsageLimits(request_limit=getattr(context, "request_limit", 6))
+
         def _call():
-            run = agent.run_sync(json.dumps({"task": task}))
+            run = agent.run_sync(json.dumps({"task": task}), usage_limits=limits)
             usage = run.usage()
             return (run.output.model_dump_json(),
                     getattr(usage, "input_tokens", 0) or 0,

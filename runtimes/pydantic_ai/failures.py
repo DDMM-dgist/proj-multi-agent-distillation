@@ -17,6 +17,7 @@ FailureCategory = Literal[
     "provider_internal_failure",
     "malformed_output",
     "structured_output_failure",
+    "usage_limit_exceeded",
     "tool_failure",
     "tool_policy_refusal",
     "pydantic_parse_failure",
@@ -37,6 +38,10 @@ def classify_failure(exc: BaseException) -> Tuple[str, bool]:
     msg = str(exc).lower()
     status = _status_code(exc)
 
+    # Bounded tool-call / request budget tripped (pydantic_ai UsageLimitExceeded): a runaway
+    # tool loop was stopped BEFORE context exhaustion. Terminal + operational — never retry.
+    if "usagelimit" in name or "request_limit" in msg or "exceed the request" in msg:
+        return "usage_limit_exceeded", False
     if "authentication" in name or "permission" in name or status in (401, 403) \
             or "invalid api key" in msg or "unauthorized" in msg or "authentication" in msg:
         return "authentication_failure", False

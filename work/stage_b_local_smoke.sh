@@ -68,10 +68,15 @@ echo "== [4b] fail closed if port 8000 already occupied =="
 if ss -ltnH 2>/dev/null | awk '{print $4}' | grep -qE '(:|\.)8000$'; then echo "port 8000 in use -> stop."; exit 4; fi
 
 echo "== [5] launch ONE vLLM server on GPU1 (conservative) =="
+# max-model-len raised 4096 (Stage A / Stage B attempt-1) -> 8192 for attempt-2: 4096 was our
+# conservative smoke limit, not a real ceiling. This is a documented smoke-runtime config change,
+# NOT the fix for the tool loop — the loop is bounded deterministically by the runtime's
+# request_limit (RuntimeContext.request_limit, pydantic_ai UsageLimits). Attempt-1's 4096 config
+# is preserved in provenance/docs.
 CUDA_VISIBLE_DEVICES=1 setsid conda run -n vllm-mad --no-capture-output \
   vllm serve Qwen/Qwen2.5-3B-Instruct --served-model-name qwen2.5-3b-instruct \
     --host 127.0.0.1 --port 8000 \
-    --dtype bfloat16 --max-model-len 4096 --max-num-seqs 1 --enforce-eager \
+    --dtype bfloat16 --max-model-len 8192 --max-num-seqs 1 --enforce-eager \
     --gpu-memory-utilization 0.20 \
     --enable-auto-tool-choice --tool-call-parser hermes \
   > "$LOG" 2>&1 &

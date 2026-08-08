@@ -128,6 +128,12 @@ class RuntimeContext(BaseModel):
     backoff_base_s: float = 0.5
     backoff_max_s: float = 8.0
     max_total_calls: int = 1
+    # Deterministic per-invocation bound on the number of MODEL REQUESTS (pydantic_ai
+    # UsageLimits.request_limit). Each tool round-trip consumes one request, so this fails a
+    # runaway tool loop closed BEFORE the context window is exhausted. Legitimate current tasks
+    # need <=2 requests (e.g. Judge: read_json + final vote); 6 leaves headroom for a few tool
+    # round-trips while stopping a loop like Stage B attempt-1's 20x read_artifact_manifest.
+    request_limit: int = 6
     correlation_id: str = ""
 
 
