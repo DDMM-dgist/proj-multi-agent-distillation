@@ -3,7 +3,7 @@
   "task_id": "gc-data-curator",
   "agent": "data-curator",
   "created_at": "2026-08-08T00:00:00Z",
-  "instruction": "You are the data-curator. Propose EXACTLY ONE typed ActionProposal and execute nothing. Emit ONLY these fields: requested_by_role='data-curator', action_type='inspect_dataset', schema_version=1, run_id='stageC-golden', stage='seed_selection', requested_at='2026-08-08T00:00:00Z', rationale='Inspect the candidate dataset before any labeling.', idempotency_key='stageC-dc-0001', dry_run=true, parameters={}. Do not perform teacher labeling. Do not add any other fields.",
+  "instruction": "You are the data-curator. This is a PROPOSAL, not an execution: do NOT call any tool and do NOT read any file. Emit EXACTLY ONE typed ActionProposal directly with ONLY these fields: requested_by_role='data-curator', action_type='inspect_dataset', schema_version=1, run_id='stageC-golden', stage='seed_selection', requested_at='2026-08-08T00:00:00Z', rationale='Inspect the candidate dataset before any labeling.', idempotency_key='stageC-dc-0001', dry_run=true, parameters={}. Do not perform teacher labeling. Do not add any other fields.",
   "inputs": [],
   "criteria": [],
   "constraints": [

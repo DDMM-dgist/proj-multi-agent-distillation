@@ -193,5 +193,33 @@ class StageCGoldenTests(unittest.TestCase):
         self.assertFalse(orr["semantic_pass"])   # plan-only role must not call tools
 
 
+    def test_producer_fixtures_are_propose_only_no_tools(self):
+        # attempt-2 fix: every producer-proposal fixture is explicitly propose-only / call-no-tools
+        # (a producer_dispatch role emits a typed proposal; evidence is read downstream, not now).
+        prod = ["gc-analyst", "gc-data-curator", "gc-ml-trainer", "gc-simulation",
+                "gc-data-curator-unauthorized"]
+        for tid in prod:
+            task = json.loads((ROOT / BASE / "tasks" / f"{tid}.json").read_text())
+            self.assertEqual(task["inputs"], [], tid)
+            self.assertIn("do not call any tool", task["instruction"].lower(), tid)
+        # the analyst rationale must not imply an immediate evidence read
+        an = json.loads((ROOT / BASE / "tasks" / "gc-analyst.json").read_text())["instruction"].lower()
+        self.assertIn("not during this proposal", an)
+
+    def test_producer_reading_during_proposal_is_semantic_fail(self):
+        # a producer that calls a read tool during proposal emission is a forbidden-tool use ->
+        # semantic FAIL (this is exactly the gc-analyst attempt-1 behaviour, now covered).
+        ev = _load("stage_c_evaluate", "work/stage_c_evaluate.py")
+        exp = dict(_gold()["gc-analyst"], _task_id="gc-analyst")
+        parsed = {"requested_by_role": "analyst", "action_type": "classify_root_cause",
+                  "dry_run": True, "run_id": "r", "stage": "s", "requested_at": "t",
+                  "rationale": "r", "idempotency_key": "k", "parameters": {}}
+        prov = _prov("gc-analyst", "analyst", parsed=parsed, accepted=True,
+                     tools=[{"tool": "read_artifact_manifest", "argument": "x", "ok": False, "detail": ""}])
+        r = ev.evaluate_task(exp, prov, {"strategy": "producer_dispatch", "accepted": "True",
+                                         "controller_mutation": "False", "error": ""})
+        self.assertFalse(r["semantic_pass"])   # forbidden read tool during a proposal
+
+
 if __name__ == "__main__":  # pragma: no cover
     unittest.main()

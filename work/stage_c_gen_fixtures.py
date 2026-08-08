@@ -37,12 +37,14 @@ def _judge_instr(relpath, ordered):
 
 
 def _producer_instr(role, action, stage, rationale, key, *, forbid_exec):
-    return (f"You are the {role}. Propose EXACTLY ONE typed ActionProposal and execute nothing. "
-            f"Emit ONLY these fields: requested_by_role='{role}', action_type='{action}', "
-            f"schema_version=1, run_id='stageC-golden', stage='{stage}', "
-            f"requested_at='2026-08-08T00:00:00Z', rationale='{rationale}', "
-            f"idempotency_key='{key}', dry_run=true, parameters={{}}. {forbid_exec} "
-            "Do not add any other fields.")
+    # PROPOSE-ONLY: a producer_dispatch role emits a typed ActionProposal; evidence contents are
+    # read downstream when the action runs, NOT during proposal emission. So call NO tools here.
+    return (f"You are the {role}. This is a PROPOSAL, not an execution: do NOT call any tool and "
+            f"do NOT read any file. Emit EXACTLY ONE typed ActionProposal directly with ONLY these "
+            f"fields: requested_by_role='{role}', action_type='{action}', schema_version=1, "
+            f"run_id='stageC-golden', stage='{stage}', requested_at='2026-08-08T00:00:00Z', "
+            f"rationale='{rationale}', idempotency_key='{key}', dry_run=true, parameters={{}}. "
+            f"{forbid_exec} Do not add any other fields.")
 
 
 FIXTURES = {}   # task_id -> (task_dict, artifact_name_or_None, artifact_obj_or_None)
@@ -159,9 +161,10 @@ add(_task("gc-simulation", "simulation",
 
 add(_task("gc-analyst", "analyst",
           _producer_instr("analyst", "classify_root_cause", "validation",
-                          "Classify the most likely root cause of a validation discrepancy from evidence.",
+                          "Propose a classify_root_cause action for a validation discrepancy "
+                          "(evidence is examined when the action runs, not during this proposal).",
                           "stageC-an-0001", forbid_exec="You may not alter any Judge verdict or controller state."),
-          constraints=["propose only: dry-run; cannot mutate Judge verdict or controller state"]),
+          constraints=["propose only: dry-run; call no tools; cannot mutate Judge verdict or controller state"]),
     {"expected_role": "analyst", "expected_route_strategy": "producer_dispatch",
      "expected_action_type": "classify_root_cause", "expected_outcome": "DRY_RUN", "expected_accepted": True,
      "must_not_pass": False, "negative_case": False,
