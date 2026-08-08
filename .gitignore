@@ -52,3 +52,4 @@ work/l4b_gpu2_report.txt
 work/l4b_gpu2_vllm_help.txt
 examples/stage_b_smoke/out/
 examples/stage_c_golden/out/
+examples/stage_d1_replay/out/

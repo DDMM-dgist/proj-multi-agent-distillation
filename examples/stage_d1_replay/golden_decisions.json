@@ -1,0 +1,164 @@
+{
+  "d1-committee-v3": {
+    "acceptable_verdicts": [
+      "REVISE",
+      "FAIL"
+    ],
+    "evidence_file": "examples/stage_d1_replay/evidence/d1-committee-v3.json",
+    "expected_controller_mutation": false,
+    "expected_paid_api_calls": 0,
+    "expected_role": "judge",
+    "expected_route_strategy": "judge_gate",
+    "historical_verdict": "REVISE",
+    "must_not_pass": true,
+    "notes": "NEGATIVE: v3 regresses on all three -> do NOT adopt (historical REJECT/REVISE).",
+    "ordered_criteria": [
+      "committee does NOT regress vs the original student on the deployment u_max (u_max_mean_deploy <= original_u_max_mean_deploy)",
+      "committee error(c) <= 0.368 eV/Angstrom (teacher-vs-DFT baseline)",
+      "committee F_RMSE <= original student F_RMSE"
+    ],
+    "required_observations": {
+      "F_RMSE_eV_A": 0.481,
+      "error_c_eV_A": 0.475,
+      "u_max_mean_deploy": 0.4895
+    },
+    "source": "coordination_log.csv 2026-06-27 committee-reliability-gate v3 REJECT (evidence) / gates/coordination_votes.csv v3 rows"
+  },
+  "d1-committee-v5": {
+    "acceptable_verdicts": [
+      "PASS"
+    ],
+    "evidence_file": "examples/stage_d1_replay/evidence/d1-committee-v5.json",
+    "expected_controller_mutation": false,
+    "expected_paid_api_calls": 0,
+    "expected_role": "judge",
+    "expected_route_strategy": "judge_gate",
+    "historical_verdict": "PASS",
+    "must_not_pass": false,
+    "notes": "v5 lower u_max at every x, error(c) 0.337<0.368, F_RMSE 0.285<0.309 -> ADOPT (PASS).",
+    "ordered_criteria": [
+      "committee does NOT regress vs the original student on the deployment u_max (u_max_mean_deploy <= original_u_max_mean_deploy)",
+      "committee error(c) <= 0.368 eV/Angstrom (teacher-vs-DFT baseline)",
+      "committee F_RMSE <= original student F_RMSE"
+    ],
+    "required_observations": {
+      "F_RMSE_eV_A": 0.285,
+      "error_c_eV_A": 0.337
+    },
+    "source": "coordination_log.csv 2026-07-16 committee-reliability-gate v5-committee-ADOPT PASS (3/0/0)"
+  },
+  "d1-data-provenance": {
+    "acceptable_verdicts": [
+      "REVISE",
+      "FAIL"
+    ],
+    "evidence_file": "examples/stage_d1_replay/evidence/d1-data-provenance.json",
+    "expected_controller_mutation": false,
+    "expected_paid_api_calls": 0,
+    "expected_role": "judge",
+    "expected_route_strategy": "judge_gate",
+    "historical_verdict": "REVISE",
+    "must_not_pass": true,
+    "notes": "NEGATIVE/incomplete: split not committed -> criterion 1 not demonstrably met -> REVISE.",
+    "ordered_criteria": [
+      "training/held-out split manifest is committed and available for cross-check",
+      "leakage cross-check is complete with zero unresolved train/held-out duplicates"
+    ],
+    "required_observations": {
+      "leakage_duplicates_found": 1,
+      "split_manifest_committed": false
+    },
+    "source": "coordination_log.csv 2026-06-27 data-provenance-gate REVISE (0/3/0)"
+  },
+  "d1-dft-cc001": {
+    "acceptable_verdicts": [
+      "FAIL"
+    ],
+    "evidence_file": "examples/stage_d1_replay/evidence/d1-dft-cc001.json",
+    "expected_controller_mutation": false,
+    "expected_paid_api_calls": 0,
+    "expected_role": "judge",
+    "expected_route_strategy": "judge_gate",
+    "historical_verdict": "FAIL",
+    "must_not_pass": true,
+    "notes": "NEGATIVE: E/atom +17.29 unphysical + Fmax 6750 + atoms overlap 0.18A -> FAIL. scf_converged is True (must not be fooled by convergence). Rationale should cite the overlap/energy.",
+    "ordered_criteria": [
+      "E_per_atom_eV is physical (between -11 and -8 eV/atom)",
+      "max_force_eV_A is physical (<= 50 eV/Angstrom; no atom-overlap force)"
+    ],
+    "required_observations": {
+      "E_per_atom_eV": 17.29,
+      "max_force_eV_A": 6750.0,
+      "min_interatomic_distance_A": 0.18
+    },
+    "source": "coordination_log.csv 2026-06-19 judge-gate-clustered clustered_cell_001 FAIL (0/0/3)"
+  },
+  "d1-dft-cell_001": {
+    "acceptable_verdicts": [
+      "PASS"
+    ],
+    "evidence_file": "examples/stage_d1_replay/evidence/d1-dft-cell_001.json",
+    "expected_controller_mutation": false,
+    "expected_paid_api_calls": 0,
+    "expected_role": "judge",
+    "expected_route_strategy": "judge_gate",
+    "historical_verdict": "PASS",
+    "must_not_pass": false,
+    "notes": "physical energy/force -> PASS",
+    "ordered_criteria": [
+      "E_per_atom_eV is physical (between -11 and -8 eV/atom)",
+      "max_force_eV_A is physical (<= 50 eV/Angstrom; no atom-overlap force)"
+    ],
+    "required_observations": {
+      "E_per_atom_eV": -9.697804,
+      "max_force_eV_A": 6.8116
+    },
+    "source": "scan_labeled_structures/manifest.csv row cell_001 (judge_decision=PASS)"
+  },
+  "d1-dft-clustered_cell_002": {
+    "acceptable_verdicts": [
+      "PASS"
+    ],
+    "evidence_file": "examples/stage_d1_replay/evidence/d1-dft-clustered_cell_002.json",
+    "expected_controller_mutation": false,
+    "expected_paid_api_calls": 0,
+    "expected_role": "judge",
+    "expected_route_strategy": "judge_gate",
+    "historical_verdict": "PASS",
+    "must_not_pass": false,
+    "notes": "physical energy/force -> PASS",
+    "ordered_criteria": [
+      "E_per_atom_eV is physical (between -11 and -8 eV/atom)",
+      "max_force_eV_A is physical (<= 50 eV/Angstrom; no atom-overlap force)"
+    ],
+    "required_observations": {
+      "E_per_atom_eV": -9.412514,
+      "max_force_eV_A": 3.2016
+    },
+    "source": "scan_labeled_structures/manifest.csv row clustered_cell_002 (judge_decision=PASS)"
+  },
+  "d1-physical-validation": {
+    "acceptable_verdicts": [
+      "PASS"
+    ],
+    "evidence_file": "examples/stage_d1_replay/evidence/d1-physical-validation.json",
+    "expected_controller_mutation": false,
+    "expected_paid_api_calls": 0,
+    "expected_role": "judge",
+    "expected_route_strategy": "judge_gate",
+    "historical_verdict": "PASS",
+    "must_not_pass": false,
+    "notes": "all structural/dynamical targets met -> PASS.",
+    "ordered_criteria": [
+      "density is within 2.20-2.23 g/cm3",
+      "Si-O first-peak is ~1.61 Angstrom and CN_Si~4, CN_O~2",
+      "NVE drift is small (< 0.05 meV/atom/ns) and MSD shows a non-diffusive plateau"
+    ],
+    "required_observations": {
+      "density_g_cm3": 2.2129,
+      "nve_drift_meV_atom_ns": 0.005,
+      "si_o_peak_A": 1.61
+    },
+    "source": "coordination_log.csv 2026-06-27 physical-validation-gate PASS (3/0/0)"
+  }
+}

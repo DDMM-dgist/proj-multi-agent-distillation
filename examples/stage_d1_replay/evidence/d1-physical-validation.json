@@ -1,0 +1,11 @@
+{
+  "gate": "physical-validation",
+  "density_g_cm3": 2.2129,
+  "si_o_peak_A": 1.61,
+  "o_o_peak_A": 2.63,
+  "cn_si": 4.0016,
+  "cn_o": 2.0008,
+  "fsdp_A_inv": 1.55,
+  "nve_drift_meV_atom_ns": 0.005,
+  "msd_plateau": true
+}

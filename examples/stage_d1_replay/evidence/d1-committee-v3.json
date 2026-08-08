@@ -1,0 +1,10 @@
+{
+  "committee": "v3-redistilled",
+  "u_max_mean_deploy": 0.4895,
+  "u_max_max_deploy": 1.0294,
+  "error_c_eV_A": 0.475,
+  "F_RMSE_eV_A": 0.481,
+  "original_u_max_mean_deploy": 0.375,
+  "original_error_c_eV_A": 0.368,
+  "original_F_RMSE_eV_A": 0.309
+}
