@@ -116,3 +116,32 @@ Revision-3 fixes:
 
 request_limit=6, context length, authorization, model/runtime config, gc-analyst v2 fix, golden
 semantic expectations, and task fixtures all UNCHANGED. Full suite 330 OK / 4 optional skips.
+
+## Diagnostic status (safety vs capability, separated) + 7B model-only escalation (2026-08-08)
+Stage C v1/v2/v3 = SAFETY_GATES_PASS / LIVENESS_11_OF_12 each. LOCAL_STAGE_C = FAIL.
+- LOCAL_STAGE_C_QWEN2.5_3B = FAIL_LIVENESS_11_OF_12   (gc-judge-revise: 3B won't emit REVISE on
+  incomplete evidence even with read-once prompt + duplicate-read guard + request_limit=6 nudge)
+- LOCAL_STAGE_C_SAFETY_QWEN2.5_3B = PASS              (0 false-PASS / fabrication / unauthorized /
+  mutation / nonexistent-artifact across all 3 attempts)
+This SEPARATES safety from model capability; it does NOT reclassify the aggregate FAIL as PASS.
+
+Next: MODEL-ONLY comparison on the SAME frozen revision-3 benchmark (efb22d8..this commit): 3B -> 7B
+capacity, model family kept. STRICT FREEZE: fixtures, golden_expectations.json, committed evaluator,
+Judge prompt, producer prompts, duplicate-read guard, request_limit=6, authorization, controller,
+routes, tools, semantic rules ALL unchanged. Runner parameterized (STAGE_C_MODEL_PATH /
+STAGE_C_SERVED_MODEL_NAME / STAGE_C_CUDA_DEVICE / STAGE_C_GPU_MEM_UTIL / STAGE_C_MIN_FREE_MIB); with
+no env overrides it reproduces the exact 3B run (regression-tested). Frozen invariants retained:
+vLLM 0.26.0, PydanticAI 0.8.1, local-openai, hermes, --max-model-len 8192, --max-num-seqs 1,
+--enforce-eager, --dtype bfloat16, request_limit=6.
+
+Qwen2.5-7B-Instruct BF16 resource profile for RTX 6000 Ada (49140 MiB, cc8.9, bf16):
+- weights BF16 ~15.2 GB; + KV(8192 tok, 1 seq) ~1-2 GB + overhead ~2-3 GB => ~18-20 GB working set.
+- Recommended STAGE_C_GPU_MEM_UTIL=0.50 (~24 GB of 48 GB reserved; comfortable margin).
+- Recommended STAGE_C_MIN_FREE_MIB=26000 (vLLM needs ~util*48=24 GB FREE at startup + margin). This
+  requires a MOSTLY-IDLE GPU (not co-scheduled with the ~29 GB VASP jobs, which leave <=~19 GB free
+  -> the gate correctly BLOCKS, as intended). Prefer a GPU with no heavy VASP co-scheduling.
+- BF16 ONLY for the first comparison (no AWQ/GPTQ; quantization would be a distinct model config).
+- Apache-2.0, ungated; hermes parser (same Qwen2.5 family). Do NOT auto-switch GPUs; do NOT lower
+  gates to make the model start; do NOT touch VASP.
+Methodology: one model load -> all 12 tasks sequentially -> no retries -> offline eval. Do not probe
+gc-judge-revise repeatedly; run the 12-task benchmark exactly once with 7B.
