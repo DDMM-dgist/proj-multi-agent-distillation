@@ -18,7 +18,11 @@ FIX="$REPO/examples/stage_b_smoke"
 OUT="$FIX/out"
 RUNDIR="$OUT/run"                      # controller manifest dir for producer roles
 LOG="$OUT/stage_b_vllm.log"
-MIN_FREE_MIB=16000
+# Co-scheduled smoke-test RESOURCE POLICY (not a scientific/runtime-semantics change): this is a
+# single sequential Qwen2.5-3B / max-num-seqs=1 workload, so the VRAM gate was relaxed from
+# 16000 -> 12000 MiB to co-schedule with VASP (attempt-2 PASSED under the older 16000/0.20). If
+# free < MIN_FREE_MIB the run STOPS (no auto-lowering, no GPU switch); GPU1 only; VASP untouched.
+MIN_FREE_MIB=12000
 EXPECT_HEAD="${EXPECT_HEAD:-}"
 
 PGID=""; STOPPED=0
@@ -77,7 +81,7 @@ CUDA_VISIBLE_DEVICES=1 setsid conda run -n vllm-mad --no-capture-output \
   vllm serve Qwen/Qwen2.5-3B-Instruct --served-model-name qwen2.5-3b-instruct \
     --host 127.0.0.1 --port 8000 \
     --dtype bfloat16 --max-model-len 8192 --max-num-seqs 1 --enforce-eager \
-    --gpu-memory-utilization 0.20 \
+    --gpu-memory-utilization 0.18 \
     --enable-auto-tool-choice --tool-call-parser hermes \
   > "$LOG" 2>&1 &
 VP=$!; PGID=$(ps -o pgid= -p "$VP" | tr -d ' '); echo "vLLM pid=$VP pgid=$PGID log=$LOG"

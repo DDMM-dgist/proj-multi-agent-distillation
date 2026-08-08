@@ -78,3 +78,24 @@ Attempt-2 acceptance = all seven roles PASS their role criteria (Orchestrator: t
 loop, within request_limit, mutation 0; Judge: evidence read, structure_count 12 + validation
 passed, criteria_checked mirrors BOTH ordered criteria, canonical validation PASS; other five as
 before). Only then: LOCAL_STAGE_B_ATTEMPT_2 = CONFIRMATORY_END_TO_END_PASS and LOCAL_STAGE_B = PASS.
+
+## Attempt 2 RESULT — 7/7 PASS (jbnu-gpu2, 2026-08-08)
+LOCAL_STAGE_B_ATTEMPT_1 = PARTIAL_PASS_5_OF_7 (preserved).
+LOCAL_STAGE_B_ATTEMPT_2 = CONFIRMATORY_END_TO_END_PASS ; LOCAL_STAGE_B = PASS.
+All seven: provider local-openai / model qwen2.5-3b-instruct / usage_source provider; typed output
+parsed; tokens+latency recorded; 0 unauthorized tools; 0 nonexistent-artifact refs; controller
+mutation 0 (run manifest idempotency {} ); 0 Anthropic/paid calls.
+- Orchestrator: valid OrchestratorPlan, **0 tool calls** (plan-only fixture), no loop, within
+  request_limit, mutation 0. (request_limit=6 guard in place as the safety net.)
+- Judge: read_json ok, structure_count 12 + validation_status 'passed' observed, criteria_checked
+  = the two ordered criteria, verdict PASS, **canonical validation PASS** (validation_errors []).
+- data-curator/ml-trainer/simulation/analyst: correct typed ActionProposal (inspect_dataset /
+  compute_committee_disagreement / compute_nve_drift / compare_force_errors), dry_run, DRY_RUN, 0
+  scientific side effect. Literature: source_not_retrieved, sources [], 0 fabricated citations.
+
+## Resource-policy adjustment (co-scheduled smoke test; NOT scientific/runtime semantics)
+GPU1-only VRAM gate MIN_FREE_MIB 16000 -> 12000 and vLLM --gpu-memory-utilization 0.20 -> 0.18, to
+co-schedule the single sequential Qwen2.5-3B/max-num-seqs=1 smoke with running VASP. Other flags
+unchanged (max-model-len 8192, max-num-seqs 1, enforce-eager, bfloat16, auto-tool-choice, hermes).
+Fail-closed below 12000 MiB (no auto-lowering, no GPU switch); VASP never touched. Attempt-2 PASSED
+under the earlier 16000/0.20; this only widens the co-scheduling window for future runs.

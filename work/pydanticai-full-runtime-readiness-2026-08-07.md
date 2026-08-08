@@ -157,3 +157,7 @@ Status:
 - ANTHROPIC_BILLING_BLOCKED_NON_FATAL
 - ANTHROPIC_NOT_REQUIRED_FOR_LOCAL_RUNTIME
 Next (separate approval): Stage B seven-role local smoke (producers dry-run) — NOT started.
+
+## L4 Stage B — PASS (2026-08-08)
+LOCAL_STAGE_B = PASS (attempt-2 7/7 confirmatory; attempt-1 preserved PARTIAL_PASS_5_OF_7).
+Bounded tool-call guard (request_limit) added; smoke VRAM policy relaxed to 12000/0.18 (co-scheduled, non-semantic). Stage C not started.
