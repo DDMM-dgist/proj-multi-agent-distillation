@@ -1,0 +1,25 @@
+[
+  {
+    "operator": "in_range",
+    "lhs": {
+      "field": "E_per_atom_eV"
+    },
+    "rhs": {
+      "low": -11,
+      "high": -8
+    },
+    "invalidating": true,
+    "criterion": "E_per_atom_eV is physical (between -11 and -8 eV/atom)"
+  },
+  {
+    "operator": "le",
+    "lhs": {
+      "field": "max_force_eV_A"
+    },
+    "rhs": {
+      "const": 50
+    },
+    "invalidating": true,
+    "criterion": "max_force_eV_A is physical (<= 50 eV/Angstrom; no atom-overlap force)"
+  }
+]

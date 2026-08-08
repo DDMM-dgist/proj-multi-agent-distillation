@@ -1,0 +1,8 @@
+{
+  "gate": "committee-uncertainty",
+  "claimed_enrichment_ratio": 3.5,
+  "artifact_enrichment_ratio": 2.97,
+  "claim_supported_by_artifacts": false,
+  "pipeline_traceable": false,
+  "note": "cited artifacts give defSi/normSi 2.97x (sphere_x012); 40-frame->11-cell chain not single pipeline"
+}

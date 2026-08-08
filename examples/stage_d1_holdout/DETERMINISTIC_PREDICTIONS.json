@@ -1,0 +1,68 @@
+{
+  "hd-committee-uncertainty": {
+    "deterministic_suggested_severity": "REVISE",
+    "historical_verdict": "REVISE",
+    "results": [
+      "False == True => False",
+      "False == True => False"
+    ]
+  },
+  "hd-committee-v3final": {
+    "deterministic_suggested_severity": "REVISE",
+    "historical_verdict": "REVISE",
+    "results": [
+      "0.3978 <= 0.3747 => False",
+      "0.7501 <= 0.6233 => False",
+      "0.353 <= 0.309 => False"
+    ]
+  },
+  "hd-committee-v3final-v2": {
+    "deterministic_suggested_severity": "REVISE",
+    "historical_verdict": "REVISE",
+    "results": [
+      "0.3931 <= 0.3747 => False",
+      "0.48 <= 0.6233 => True",
+      "0.327 <= 0.309 => False"
+    ]
+  },
+  "hd-dft-cell_011": {
+    "deterministic_suggested_severity": "PASS",
+    "historical_verdict": "PASS",
+    "results": [
+      "-11 <= -9.631564 <= -8 => True",
+      "6.6776 <= 50 => True"
+    ]
+  },
+  "hd-dft-cell_016": {
+    "deterministic_suggested_severity": "PASS",
+    "historical_verdict": "PASS",
+    "results": [
+      "-11 <= -9.65862 <= -8 => True",
+      "5.7883 <= 50 => True"
+    ]
+  },
+  "hd-dft-clustered_cell_005": {
+    "deterministic_suggested_severity": "PASS",
+    "historical_verdict": "PASS",
+    "results": [
+      "-11 <= -9.783143 <= -8 => True",
+      "4.9955 <= 50 => True"
+    ]
+  },
+  "hd-error-decomposition": {
+    "deterministic_suggested_severity": "REVISE",
+    "historical_verdict": "REVISE",
+    "results": [
+      "False == True => False",
+      "False == True => False"
+    ]
+  },
+  "hd-production-sizing-revote": {
+    "deterministic_suggested_severity": "REVISE",
+    "historical_verdict": "REVISE",
+    "results": [
+      "|2.0 - 1.0| <= 0.1 => False",
+      "|2.9 - 4.75| <= 0.25 => False"
+    ]
+  }
+}

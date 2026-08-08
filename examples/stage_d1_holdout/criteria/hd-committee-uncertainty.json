@@ -1,0 +1,22 @@
+[
+  {
+    "operator": "eq",
+    "lhs": {
+      "field": "claim_supported_by_artifacts"
+    },
+    "rhs": {
+      "const": true
+    },
+    "criterion": "the claimed enrichment ratio is supported by the cited artifacts"
+  },
+  {
+    "operator": "eq",
+    "lhs": {
+      "field": "pipeline_traceable"
+    },
+    "rhs": {
+      "const": true
+    },
+    "criterion": "the selection pipeline (frames -> AL cells) is a single traceable chain"
+  }
+]

@@ -1,0 +1,24 @@
+[
+  {
+    "operator": "approx",
+    "lhs": {
+      "field": "effective_cooling_rate_K_per_ps"
+    },
+    "rhs": {
+      "value": 1.0,
+      "tol": 0.1
+    },
+    "criterion": "effective cooling rate matches the intended 1 K/ps protocol"
+  },
+  {
+    "operator": "approx",
+    "lhs": {
+      "field": "effective_total_quench_ns"
+    },
+    "rhs": {
+      "value": 4.75,
+      "tol": 0.25
+    },
+    "criterion": "effective total quench time matches the intended 4.75 ns protocol"
+  }
+]

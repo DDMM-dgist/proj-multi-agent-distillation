@@ -1,0 +1,9 @@
+{
+  "gate": "error-decomposition",
+  "error_c_broad_eV_A": 0.233,
+  "error_c_alcell_eV_A": 0.368,
+  "scope_labels_present": false,
+  "aggregation_labels_present": false,
+  "broad_alcell_distinguished": false,
+  "note": "numbers correct but CSVs lacked scope/aggregation labels at gate time"
+}

@@ -1,0 +1,9 @@
+{
+  "committee": "v3-final-v2",
+  "u_max_mean_deploy": 0.3931,
+  "u_max_max_deploy": 0.48,
+  "original_u_max_mean_deploy": 0.3747,
+  "original_u_max_max_deploy": 0.6233,
+  "F_RMSE_eV_A": 0.327,
+  "original_F_RMSE_eV_A": 0.309
+}
