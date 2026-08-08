@@ -83,12 +83,45 @@ A missing operand never crashes and never silently passes: the result is `False`
 
 ## Integration (upstream of the Judge)
 
-`attach_to_task(task, results)` writes into `task["context"]`:
-`deterministic_criterion_results` (list of `CriterionResult`), `deterministic_suggested_severity`, and
-a `deterministic_note`. The runtime already serializes the full task (context included) into the model
-input (`pydantic_ai_runtime.run` → `agent.run_sync(json.dumps({"task": task}))`), so the Judge receives
-the authoritative facts before it reasons. `judge.md` binds the Judge to them. This is the whole fix
-for failure (1): the model can no longer be the arbiter of `0.339 <= 0.376`.
+`attach_to_task(task, results, *, authoritative=True)` writes into `task["context"]`:
+`deterministic_criterion_results` (list of `CriterionResult`), `deterministic_suggested_severity`,
+`deterministic_authoritative` (the gate MODE, see below), and a `deterministic_note`. The runtime
+already serializes the full task (context included) into the model input (`pydantic_ai_runtime.run` →
+`agent.run_sync(json.dumps({"task": task}))`), so the Judge receives the authoritative facts before it
+reasons. `judge.md` instructs the Judge to obey them. This is the whole fix for failure (1): the model
+can no longer be the arbiter of `0.339 <= 0.376`.
+
+## Structural enforcement (not just prompt instruction)
+
+Prompt instruction is necessary but not sufficient — a model can still emit a contradicting vote. The
+**canonical post-model validator** rejects it, so the guarantee holds structurally on the acceptance
+path (Pydantic parse → `validate_agent_response` → `validate_judge_vote`, the same path FileExchange
+and the driver use). In `orchestration/exchange.py`:
+
+- `validate_agent_response` extracts the block from `task.context` and passes it to
+  `validate_judge_vote(..., deterministic=...)`.
+- `_enforce_deterministic(payload, checked, criteria, deterministic)` then rejects a JudgeVote that:
+  - reverses a computed boolean in **either** direction (`criteria_checked[i].ok != result[i]`) —
+    including a missing-value result (`MISSING_FIELD → False`), so a missing value can never be
+    converted into an unsupported positive;
+  - does not cover every ordered criterion with a deterministic result, or whose block criterion
+    identity/order does not match the task criteria (a dropped or extra criterion is a mismatch — this
+    composes with the pre-existing `checked_names == criteria` check);
+  - for a **fully deterministic** gate, carries a verdict `!= deterministic_suggested_severity`.
+
+This is general: `_enforce_deterministic` keys off criterion order + identity + the mode flag, never a
+task id (regression-tested). It is the whole fix for failure (2): `cc001` (deterministic severity FAIL)
+cannot be accepted as REVISE/PASS.
+
+### Gate MODE (explicit in the typed context)
+
+- `deterministic_authoritative: true` — **fully deterministic** gate (every criterion is a
+  numeric/physical/boolean predicate; all Stage D-1 gates). Deterministic truth is binding: both the
+  criterion booleans and the verdict are enforced. Deterministic truth is **not left advisory**.
+- `deterministic_authoritative: false` — **advisory** block for a gate with genuinely semantic
+  criteria: provided for reference, not enforced; the Judge supplies the semantic verdict. A mixed gate
+  should be split into deterministic (authoritative) + semantic criteria rather than mislabel a numeric
+  criterion as advisory.
 
 ## Verification (deterministic, network-free)
 
@@ -105,6 +138,12 @@ Regression tests in `tests/test_pydantic_ai_criterion_eval.py`:
   tasks carry a block whose booleans + severity equal a fresh evaluation and the historical severity.
 - `judge.md` states the results are authoritative and must not be recomputed/reversed.
 - **no task-ID special-casing** in the module or any spec.
+
+Enforcement regression tests in `tests/test_authoritative_criterion_enforcement.py` drive the canonical
+`validate_agent_response` path: deterministic-true + vote-false → rejected; deterministic-false +
+vote-true → rejected; deterministic FAIL + vote REVISE/PASS → rejected; deterministic PASS + vote
+REVISE/FAIL → rejected; a fully consistent vote → accepted; missing value cannot be flipped positive;
+missing/extra criterion → rejected; advisory block is not verdict-binding; no task-ID special-casing.
 
 Deterministic severity now MATCHES historical for all 7 development checkpoints (was 5/7 with the LLM
 doing the arithmetic). This does **not** by itself certify generalization — see below.

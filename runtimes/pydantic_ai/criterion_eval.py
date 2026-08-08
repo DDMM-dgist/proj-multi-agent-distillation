@@ -162,16 +162,27 @@ _AUTHORITATIVE_NOTE = (
     "job is the scientific interpretation and rationale, not the arithmetic.")
 
 
-def attach_to_task(task: dict, results: list) -> dict:
+def attach_to_task(task: dict, results: list, *, authoritative: bool = True) -> dict:
     """Return a copy of a Judge task with the deterministic criterion results injected into its
     ``context`` as authoritative facts (this is the integration point that puts the deterministic
     layer UPSTREAM of the LLM Judge: the runtime serializes ``task`` — context included — into the
     model input, so the Judge receives the booleans it may not reverse). General: no per-task logic;
-    ``results`` is whatever ``evaluate_criteria`` produced for this task's evidence + specs."""
+    ``results`` is whatever ``evaluate_criteria`` produced for this task's evidence + specs.
+
+    ``authoritative`` records the gate MODE in the typed context so the canonical validator can
+    enforce it (see ``orchestration.exchange.validate_judge_vote``):
+      - ``True``  — a FULLY DETERMINISTIC gate (all criteria are numeric/physical/boolean predicates,
+        as with the Stage D-1 gates): every ``criteria_checked.ok`` must equal the computed result AND
+        the verdict must equal ``deterministic_suggested_severity``. Deterministic truth is binding.
+      - ``False`` — an ADVISORY block for a gate with genuinely semantic criteria: the block is
+        provided for reference but is not verdict-binding; the Judge supplies the semantic verdict.
+    Mixed gates should split into deterministic (authoritative) + semantic criteria explicitly rather
+    than mislabel a numeric criterion as advisory."""
     out = dict(task)
     ctx = dict(out.get("context") or {})
     ctx["deterministic_criterion_results"] = [r.model_dump() for r in results]
     ctx["deterministic_suggested_severity"] = derive_severity(results)
+    ctx["deterministic_authoritative"] = bool(authoritative)
     ctx["deterministic_note"] = _AUTHORITATIVE_NOTE
     out["context"] = ctx
     return out

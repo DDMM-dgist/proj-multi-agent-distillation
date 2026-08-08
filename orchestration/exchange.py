@@ -120,8 +120,55 @@ def validate_result(payload: Mapping[str, Any], spec: AgentSpec, *, task_id: str
     return dict(payload)
 
 
+def _enforce_deterministic(payload: Mapping[str, Any], checked: list[dict],
+                           criteria: list[str], deterministic: Mapping[str, Any]) -> None:
+    """Structurally bind a JudgeVote to the authoritative deterministic criterion block that was
+    attached to the task context (runtimes.pydantic_ai.criterion_eval.attach_to_task). The LLM may
+    interpret, but it may NOT reverse a computed boolean, drop or duplicate a deterministic
+    criterion, or — for a fully deterministic gate — return a verdict that contradicts the
+    deterministic severity. General: keyed by criterion order + identity, never by task id.
+
+    ``checked`` is already verified (upstream) to equal ``criteria`` in order and identity, so
+    ``checked[i]`` <-> ``criteria[i]`` <-> ``results[i]``.
+
+    Mode is explicit in the block: a fully deterministic gate (``authoritative`` true — every
+    criterion is a numeric/physical/boolean predicate, as with the Stage D-1 gates) is binding; an
+    advisory block (``authoritative`` false — a gate with genuinely semantic criteria) is reference
+    only and is not enforced here, leaving the semantic verdict to the Judge."""
+    if not deterministic.get("authoritative"):
+        return
+    results = deterministic.get("results") or []
+    # every ordered criterion must have a deterministic result: a dropped/extra criterion (so a
+    # missing or surplus deterministic result) is a contract mismatch -> reject.
+    if len(results) != len(criteria):
+        raise ValueError(
+            "deterministic criterion block does not cover every task criterion "
+            f"({len(results)} results for {len(criteria)} criteria)")
+    for i, det in enumerate(results):
+        det_name = det.get("criterion")
+        if det_name is not None and det_name != criteria[i]:
+            raise ValueError(
+                f"deterministic criterion[{i}] identity {det_name!r} does not match task "
+                f"criterion {criteria[i]!r}")
+        det_ok = bool(det["result"])
+        vote_ok = bool(checked[i]["ok"])
+        # a deterministic boolean (incl. a missing-value -> False) may not be reversed by the LLM,
+        # in either direction.
+        if vote_ok != det_ok:
+            raise ValueError(
+                f"criteria_checked[{i}].ok={vote_ok} contradicts the authoritative deterministic "
+                f"result {det_ok} :: {det.get('provenance', '')}")
+    # fully deterministic gate: the verdict must equal the deterministically derived severity.
+    expected = deterministic.get("suggested_severity")
+    if expected and payload["verdict"] != expected:
+        raise ValueError(
+            f"judge verdict {payload['verdict']!r} contradicts the authoritative deterministic "
+            f"severity {expected!r} for a fully deterministic gate")
+
+
 def validate_judge_vote(payload: Mapping[str, Any], criteria: list[str],
-                        review_lens: str | None = None) -> dict[str, Any]:
+                        review_lens: str | None = None,
+                        deterministic: Mapping[str, Any] | None = None) -> dict[str, Any]:
     required = {"review_lens", "verdict", "criteria_checked", "rationale", "required_fix"}
     missing = required - set(payload)
     if missing:
@@ -147,6 +194,8 @@ def validate_judge_vote(payload: Mapping[str, Any], criteria: list[str],
         checked_names.append(item["criterion"])
     if checked_names != criteria:
         raise ValueError("judge vote criteria do not match the ordered task criteria")
+    if deterministic is not None:
+        _enforce_deterministic(payload, checked, criteria, deterministic)
     if not isinstance(payload["rationale"], str) or not payload["rationale"].strip():
         raise ValueError("judge vote rationale must be a non-empty string")
     if not isinstance(payload["required_fix"], str):
@@ -163,8 +212,16 @@ def validate_agent_response(payload: Mapping[str, Any], spec: AgentSpec,
     """Validate a response according to the contract selected by the role spec."""
     validate_task(task, spec)
     if spec.result_contract == "JudgeVote":
+        ctx = task.get("context") or {}
+        deterministic = None
+        block = ctx.get("deterministic_criterion_results")
+        if block is not None:
+            # the attached deterministic layer is present -> bind the vote to it structurally.
+            deterministic = {"results": block,
+                             "suggested_severity": ctx.get("deterministic_suggested_severity"),
+                             "authoritative": bool(ctx.get("deterministic_authoritative", False))}
         return validate_judge_vote(
-            payload, list(task["criteria"]), task["context"]["review_lens"]
+            payload, list(task["criteria"]), ctx["review_lens"], deterministic=deterministic
         )
     return validate_result(payload, spec, task_id=task["task_id"])
 
