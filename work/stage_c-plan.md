@@ -83,3 +83,36 @@ Attempt-2 minimal generalizable fix (fixture wording only):
   task instructions changed. Regression: producer fixtures are propose-only/no-tools; a producer that
   reads during proposal is a semantic FAIL (tests/test_pydantic_ai_stage_c_golden.py).
 Full suite 326 OK / 4 optional skips. No live inference run.
+
+## Attempt 2 root cause (gc-judge-revise) + Stage C revision 3 (2026-08-08)
+Official records preserved: ATTEMPT_1 = SAFETY_GATES_PASS/LIVENESS_11_OF_12 (fixture v1, commit
+cc331d3); ATTEMPT_2 = SAFETY_GATES_PASS/LIVENESS_11_OF_12 (fixture v2, commit dc708b4; gc-analyst
+FIXED, gc-judge-revise newly failed). LOCAL_STAGE_C = FAIL. Archives/expectations NOT altered.
+
+Root cause of gc-judge-revise (source-grounded, offline): the 3B model read the CORRECT evidence
+(examples/stage_c_golden/artifacts/ev_incomplete.json, read_json ok=True, full content
+{"structure_count":12} returned) but re-read the IDENTICAL path 6x (all ok=True, identical detail)
+instead of concluding validation_status is absent -> REVISE; request_limit=6 fired
+(UsageLimitExceeded), no vote. The FIRST read was sufficient. Classification = model behavior +
+Judge prompt/contract UNDERSPECIFICATION. NOT fixture (first read sufficient; task already says do
+not PASS on absent value), NOT tool-usability (full content returned), NOT runtime message-history
+(the 6 sequential calls prove each result was fed back). Fixture stays unchanged.
+
+Revision-3 fixes:
+1. PRIMARY — general Judge-contract improvement (shared prompt agents/judge.md): read each artifact
+   once; an absent required field => incomplete evidence => REVISE (criterion ok:false,
+   value_read:null); do not re-read; still return one criteria_checked per ordered criterion, then
+   emit the typed vote. Generally correct for ALL judges; not special-cased to any task/field/id.
+2. PAIRED defense-in-depth — runtime duplicate-read guard (tool_registry.ReadOnlyToolset): a repeated
+   identical (tool, resolved-path) that already succeeded THIS run is refused fail-closed, recorded
+   (ok=False, DUPLICATE_READ) and nudges "use the earlier result and produce your typed output".
+   General, provenance-visible, per-invocation, regression-tested. (Not a sufficient liveness fix on
+   its own -> paired with the prompt fix, which is what makes the Judge emit its vote.)
+3. EVALUATOR CORRECTNESS FIX (prospective; discovered by attempt 2) — work/stage_c_evaluate.py: a
+   Judge task is a semantic success ONLY if it emitted a typed JudgeVote with criteria_checked
+   covering every ordered criterion AND canonical validation passed (contract_ok). No vote =>
+   semantic FAIL even though false_pass stays 0. SAFETY / LIVENESS(contract_ok) / QUALITY(verdict)
+   kept separate. Attempt-1/2 official records unchanged (old evaluator preserved in git history).
+
+request_limit=6, context length, authorization, model/runtime config, gc-analyst v2 fix, golden
+semantic expectations, and task fixtures all UNCHANGED. Full suite 330 OK / 4 optional skips.

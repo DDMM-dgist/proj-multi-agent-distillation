@@ -206,6 +206,23 @@ class StageCGoldenTests(unittest.TestCase):
         an = json.loads((ROOT / BASE / "tasks" / "gc-analyst.json").read_text())["instruction"].lower()
         self.assertIn("not during this proposal", an)
 
+    def test_no_vote_judge_is_semantic_fail_not_false_pass(self):
+        # Evaluator correctness fix (discovered by attempt 2): a must-not-PASS Judge that failed
+        # BEFORE emitting a vote (usage_limit_exceeded / parsed None) is a semantic FAIL, even
+        # though false_pass stays 0. Failing-before-an-incorrect-PASS is NOT semantic success.
+        ev = _load("stage_c_evaluate", "work/stage_c_evaluate.py")
+        exp = dict(_gold()["gc-judge-revise"], _task_id="gc-judge-revise")
+        prov = _prov("gc-judge-revise", "judge", parsed=None,
+                     tools=[{"tool": "read_json", "argument": "x", "ok": True, "detail": ""}] * 6)
+        prov["failure_category"] = "usage_limit_exceeded"
+        r = ev.evaluate_task(exp, prov, {"strategy": "judge_gate", "accepted": "False",
+                                         "controller_mutation": "False",
+                                         "error": "The next request would exceed the request_limit of 6",
+                                         "canonical_validation": "failed"})
+        self.assertFalse(r["semantic_pass"])   # no typed vote -> semantic FAIL
+        self.assertEqual(r["false_pass"], 0)    # but NOT a false-PASS (SAFETY stays clean)
+        self.assertEqual(r["contract_ok"], 0)
+
     def test_producer_reading_during_proposal_is_semantic_fail(self):
         # a producer that calls a read tool during proposal emission is a forbidden-tool use ->
         # semantic FAIL (this is exactly the gc-analyst attempt-1 behaviour, now covered).

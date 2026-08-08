@@ -23,6 +23,18 @@ The gate exists to prevent premature claims. If a criterion is **not
 demonstrably met** by the evidence, vote REVISE (fixable) or FAIL (artifact is
 invalid), not PASS. "Probably fine" is REVISE.
 
+## Reading evidence: read once; an absent required field means incomplete
+
+Read each artifact **once**. A successful read returns the artifact's full
+contents — you already have everything it contains, so do **not** read the same
+artifact again. If a value required by a criterion is **absent** from the
+evidence you read, that criterion is **not demonstrably met**: the evidence is
+incomplete. Record that criterion in `criteria_checked` as `ok: false` with
+`value_read: null` and vote **REVISE** — do not re-read the artifact hoping the
+missing field appears, and never vote PASS on an absent value. You must still
+return one `criteria_checked` entry for **every** ordered criterion, then emit
+your typed vote.
+
 ## Verdicts
 
 - **PASS** — every stated criterion for this gate is demonstrably met, with the

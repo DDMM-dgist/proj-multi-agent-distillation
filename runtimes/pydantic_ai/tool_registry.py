@@ -94,6 +94,8 @@ class ReadOnlyToolset:
         self._budget = int(invocation_byte_budget)
         self._spent = 0
         self.invocations: list[ToolInvocationRecord] = []
+        # (tool, resolved-path) that already succeeded THIS invocation — the duplicate-read guard.
+        self._succeeded_reads: set = set()
 
     # -- guards ------------------------------------------------------------------
 
@@ -126,6 +128,22 @@ class ReadOnlyToolset:
         self.invocations.append(ToolInvocationRecord(
             tool=tool, argument=str(argument), ok=ok, detail=detail))
 
+    def _guard_no_duplicate(self, tool: str, path: str) -> None:
+        """Fail-closed duplicate-read guard (general liveness/safety): if this exact (tool,
+        resolved-path) already succeeded in THIS agent run, refuse the repeat instead of
+        re-serving identical content. The refusal is recorded (provenance-visible) and nudges the
+        agent to consume the earlier result and produce its typed output. Call BEFORE the read so
+        the refusal is recorded exactly once. A read that never succeeded is never a duplicate."""
+        key = (tool, _real(path))
+        if key in self._succeeded_reads:
+            detail = (f"DUPLICATE_READ: '{tool}' already returned this artifact earlier in this "
+                      "run; use that result and produce your typed output — do not read it again.")
+            self._record(tool, path, ok=False, detail=detail)
+            raise ToolAccessError(detail)
+
+    def _mark_succeeded(self, tool: str, path: str) -> None:
+        self._succeeded_reads.add((tool, _real(path)))
+
     # -- tools -------------------------------------------------------------------
 
     def _read_text_unrecorded(self, path: str) -> str:
@@ -144,6 +162,7 @@ class ReadOnlyToolset:
     def read_text(self, path: str) -> str:
         """Read a UTF-8 text file inside the allow-list. One invocation is recorded; ``ok``
         is False on any access, size/budget, or decoding failure."""
+        self._guard_no_duplicate("read_text", path)
         try:
             text = self._read_text_unrecorded(path)
         except (ToolAccessError, OSError, UnicodeError) as error:
@@ -151,6 +170,7 @@ class ReadOnlyToolset:
                          detail=f"{type(error).__name__}: {error}")
             raise
         self._record("read_text", path, ok=True, detail=f"{len(text)} chars")
+        self._mark_succeeded("read_text", path)
         return text
 
     def read_json(self, path: str):
@@ -158,6 +178,7 @@ class ReadOnlyToolset:
         invocation is recorded, and ``ok`` is True ONLY when file access, UTF-8 decoding,
         AND JSON parsing all succeed. Access, decoding, and parsing failures are recorded
         as ``ok=False`` and re-raised (the real Agent wrapper turns them into a refusal)."""
+        self._guard_no_duplicate("read_json", path)
         try:
             text = self._read_text_unrecorded(path)
             value = json.loads(text)
@@ -166,6 +187,7 @@ class ReadOnlyToolset:
                          detail=f"{type(error).__name__}: {error}")
             raise
         self._record("read_json", path, ok=True, detail=f"{len(text)} chars; valid JSON")
+        self._mark_succeeded("read_json", path)
         return value
 
     def read_csv_summary(self, path: str, max_rows: int = DEFAULT_CSV_SUMMARY_ROWS):
@@ -174,6 +196,7 @@ class ReadOnlyToolset:
         recorded; ``ok`` is True only when access + decode + parse all succeed."""
         import csv
         import io
+        self._guard_no_duplicate("read_csv_summary", path)
         try:
             text = self._read_text_unrecorded(path)
             rows = list(csv.reader(io.StringIO(text)))
@@ -192,12 +215,14 @@ class ReadOnlyToolset:
         }
         self._record("read_csv_summary", path, ok=True,
                      detail=f"{len(data)} rows x {len(header)} cols")
+        self._mark_succeeded("read_csv_summary", path)
         return summary
 
     def read_artifact_manifest(self, path: str):
         """Read + parse a JSON file inside the allow-list AND require it to look like an
         artifact/run manifest (a top-level manifest marker key). One invocation is recorded;
         a non-manifest JSON is refused (``ok=False``) rather than returned as arbitrary data."""
+        self._guard_no_duplicate("read_artifact_manifest", path)
         try:
             text = self._read_text_unrecorded(path)
             value = json.loads(text)
@@ -210,6 +235,7 @@ class ReadOnlyToolset:
                          detail=f"{type(error).__name__}: {error}")
             raise
         self._record("read_artifact_manifest", path, ok=True, detail="valid manifest")
+        self._mark_succeeded("read_artifact_manifest", path)
         return value
 
     def context_note(self) -> str:
