@@ -238,5 +238,80 @@ class StageCGoldenTests(unittest.TestCase):
         self.assertFalse(r["semantic_pass"])   # forbidden read tool during a proposal
 
 
+@unittest.skipUnless(_HAS, "pydantic not installed")
+class StageCEvaluatorModelParamTests(unittest.TestCase):
+    """The evaluator's expected provider/model are parameterized (the runner is model-parameterized).
+    real_inference still REQUIRES provider+model+usage_source; a mixed-model archive or a paid
+    provider still fails. This is a generalization fix, NOT an acceptance-rule relaxation."""
+
+    def _ev(self):
+        return _load("stage_c_evaluate", "work/stage_c_evaluate.py")
+
+    def _judge_pass_prov(self, *, model="qwen2.5-3b-instruct", provider="local-openai", usage="provider"):
+        oc = _gold()["gc-judge-pass"]["ordered_criteria"]
+        parsed = {"review_lens": "evidence_provenance", "verdict": "PASS",
+                  "criteria_checked": [{"criterion": oc[0], "value_read": 12, "ok": True},
+                                       {"criterion": oc[1], "value_read": "passed", "ok": True}],
+                  "rationale": "r", "required_fix": ""}
+        return _prov("gc-judge-pass", "judge", parsed=parsed, tools=_rj(True),
+                     provider=provider, model=model, usage=usage)
+
+    _STDOUT = {"strategy": "judge_gate", "accepted": "False", "controller_mutation": "False",
+               "error": "", "canonical_validation": "passed"}
+
+    def _rt(self, prov, *, ep="local-openai", em="qwen2.5-3b-instruct"):
+        exp = dict(_gold()["gc-judge-pass"], _task_id="gc-judge-pass")
+        return self._ev().evaluate_task(exp, prov, self._STDOUT, expected_provider=ep, expected_model=em)
+
+    def test_1_expected_3b_with_3b_provenance_passes(self):
+        r = self._rt(self._judge_pass_prov(model="qwen2.5-3b-instruct"), em="qwen2.5-3b-instruct")
+        self.assertEqual(r["real_inference"], 1); self.assertTrue(r["semantic_pass"])
+
+    def test_2_expected_7b_with_7b_provenance_passes(self):
+        r = self._rt(self._judge_pass_prov(model="qwen2.5-7b-instruct"), em="qwen2.5-7b-instruct")
+        self.assertEqual(r["real_inference"], 1); self.assertTrue(r["semantic_pass"])
+
+    def test_3_expected_7b_with_3b_provenance_fails(self):
+        r = self._rt(self._judge_pass_prov(model="qwen2.5-3b-instruct"), em="qwen2.5-7b-instruct")
+        self.assertEqual(r["real_inference"], 0); self.assertFalse(r["semantic_pass"])
+
+    def test_5_anthropic_paid_provider_fails_when_local_expected(self):
+        r = self._rt(self._judge_pass_prov(provider="anthropic", model="anthropic:claude-x"),
+                     ep="local-openai", em="qwen2.5-3b-instruct")
+        self.assertEqual(r["real_inference"], 0); self.assertEqual(r["paid_api_call"], 1)
+        self.assertFalse(r["semantic_pass"])
+
+    def test_6_usage_source_not_provider_fails(self):
+        r = self._rt(self._judge_pass_prov(usage="mock"), em="qwen2.5-3b-instruct")
+        self.assertEqual(r["real_inference"], 0); self.assertFalse(r["semantic_pass"])
+
+    def test_4_mixed_model_archive_fails_aggregate_consistency(self):
+        ev = self._ev(); gold = _gold()
+
+        def mixed(tid, exp, prov, out):   # half the tasks report 7B, half 3B
+            prov["model_id"] = "qwen2.5-7b-instruct" if hash(tid) % 2 == 0 else "qwen2.5-3b-instruct"
+        with tempfile.TemporaryDirectory() as tmp:
+            _write_archive(tmp, gold, mutate=mixed)
+            metrics, _ = ev.evaluate_all(tmp, str(ROOT), expected_provider="local-openai",
+                                         expected_model="qwen2.5-7b-instruct")
+        self.assertFalse(metrics["model_consistency_ok"])
+        self.assertGreater(len(metrics["models_seen"]), 1)
+        self.assertFalse(metrics["targets_met"])           # mixed-model archive => evaluation failure
+
+    def test_all_7b_archive_with_expected_7b_targets_met(self):
+        ev = self._ev(); gold = _gold()
+
+        def all7b(tid, exp, prov, out):
+            prov["model_id"] = "qwen2.5-7b-instruct"
+        with tempfile.TemporaryDirectory() as tmp:
+            _write_archive(tmp, gold, mutate=all7b)
+            metrics, _ = ev.evaluate_all(tmp, str(ROOT), expected_provider="local-openai",
+                                         expected_model="qwen2.5-7b-instruct")
+        self.assertTrue(metrics["model_consistency_ok"])
+        self.assertEqual(metrics["semantic_pass"], len(gold))
+        self.assertTrue(metrics["targets_met"])
+        self.assertEqual(metrics["models_seen"], ["local-openai/qwen2.5-7b-instruct"])
+
+
 if __name__ == "__main__":  # pragma: no cover
     unittest.main()

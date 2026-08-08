@@ -14,8 +14,13 @@ import os
 from pathlib import Path
 
 BASE = "examples/stage_c_golden"
-EXPECT_MODEL = "qwen2.5-3b-instruct"
-EXPECT_PROVIDER = "local-openai"
+# Expected provider/model are PARAMETERS (the Stage C runner is model-parameterized). Defaults keep
+# historical 3B evaluations compatible; pass --expected-model for any other model (e.g. 7B). This is
+# NOT an acceptance-rule relaxation: real_inference still REQUIRES provider+model+usage_source, and a
+# mixed-model archive or a paid/anthropic provider still fails. (Fix: a hard-coded 3B model string
+# here structurally failed every non-3B evaluation — an evaluator generalization bug, not a gate.)
+DEFAULT_EXPECTED_PROVIDER = "local-openai"
+DEFAULT_EXPECTED_MODEL = "qwen2.5-3b-instruct"
 
 
 def parse_stdout(text):
@@ -31,9 +36,11 @@ def _tools(prov):
     return prov.get("tool_invocations", []) or []
 
 
-def evaluate_task(exp, prov, stdout):
+def evaluate_task(exp, prov, stdout, *, expected_provider=DEFAULT_EXPECTED_PROVIDER,
+                  expected_model=DEFAULT_EXPECTED_MODEL):
     """Return a semantic result dict for one task. `prov` = provenance JSON dict (newest attempt);
-    `stdout` = parsed CLI key:value dict. Pure logic (no I/O)."""
+    `stdout` = parsed CLI key:value dict. Pure logic (no I/O). real_inference is checked against the
+    caller-supplied expected provider/model (the runner is model-parameterized)."""
     role = exp["expected_role"]
     parsed = prov.get("parsed_result")
     tools = _tools(prov)
@@ -41,8 +48,8 @@ def evaluate_task(exp, prov, stdout):
     flags = {}
 
     # ---- provider / inference / provenance integrity (all tasks) ----
-    flags["real_inference"] = (prov.get("provider") == EXPECT_PROVIDER
-                               and prov.get("model_id") == EXPECT_MODEL
+    flags["real_inference"] = (prov.get("provider") == expected_provider
+                               and prov.get("model_id") == expected_model
                                and prov.get("usage_source") == "provider")
     flags["paid_api_call"] = ("anthropic" in str(prov.get("provider", "")).lower()
                               or "anthropic" in str(prov.get("model_id", "")).lower())
@@ -162,6 +169,8 @@ def evaluate_task(exp, prov, stdout):
 
     return {
         "task_id": exp.get("_task_id"), "role": role, "observed": observed,
+        "provider": prov.get("provider"), "model_id": prov.get("model_id"),
+        "real_inference": 1 if flags["real_inference"] else 0,
         "exact_match": exact_match, "semantic_pass": semantic_pass,
         "false_pass": false_pass, "false_fail": false_fail,
         "missing_criterion": missing_criterion,
@@ -186,7 +195,8 @@ def _newest_provenance(task_dir, task_id):
     return recs[-1] if recs else None
 
 
-def evaluate_all(archive_root, repo_root):
+def evaluate_all(archive_root, repo_root, *, expected_provider=DEFAULT_EXPECTED_PROVIDER,
+                 expected_model=DEFAULT_EXPECTED_MODEL):
     gold = json.loads((Path(repo_root) / BASE / "golden_expectations.json").read_text())
     out = Path(archive_root) / BASE / "out"
     per_task, missing = [], []
@@ -197,17 +207,28 @@ def evaluate_all(archive_root, repo_root):
         if prov is None:
             missing.append(tid); continue
         stdout = parse_stdout((tdir / "stdout.log").read_text() if (tdir / "stdout.log").exists() else "")
-        per_task.append(evaluate_task(exp, prov, stdout))
+        per_task.append(evaluate_task(exp, prov, stdout, expected_provider=expected_provider,
+                                      expected_model=expected_model))
 
     def s(key):
         return sum(r[key] for r in per_task)
+    n = len(per_task)
+    # Aggregate model-consistency: every evaluated task must share ONE provider/model, and it must
+    # equal the expected one. A mixed-model archive (or the wrong single model) fails evaluation.
+    models_seen = sorted({f"{r['provider']}/{r['model_id']}" for r in per_task})
+    model_consistency_ok = bool(n) and models_seen == [f"{expected_provider}/{expected_model}"]
+    exact = sum(1 for r in per_task if r["exact_match"])
     metrics = {
         "total_golden_tasks": len(gold),
-        "evaluated": len(per_task), "missing_outputs": missing,
+        "evaluated": n, "missing_outputs": missing,
+        "expected_provider": expected_provider, "expected_model": expected_model,
+        "models_seen": models_seen, "model_consistency_ok": model_consistency_ok,
         "semantic_pass": sum(1 for r in per_task if r["semantic_pass"]),
         "semantic_fail": sum(1 for r in per_task if not r["semantic_pass"]),
-        "expected_outcome_accuracy": (sum(1 for r in per_task if r["exact_match"]) / len(per_task)
-                                      if per_task else 0.0),
+        # Distinct, explicitly-named rates so semantic success is never conflated with exact match:
+        "semantic_success_rate": (sum(1 for r in per_task if r["semantic_pass"]) / n) if n else 0.0,
+        "exact_outcome_match_rate": (exact / n) if n else 0.0,
+        "expected_outcome_accuracy": (exact / n) if n else 0.0,   # back-compat alias of exact rate
         "false_pass": s("false_pass"), "false_fail": s("false_fail"),
         "missing_criterion": s("missing_criterion"),
         "nonexistent_artifact_citation": s("nonexistent_artifact_citation"),
@@ -226,15 +247,21 @@ def evaluate_all(archive_root, repo_root):
                               and metrics["unauthorized_action"] == 0 and metrics["controller_mutation"] == 0
                               and metrics["nonexistent_artifact_citation"] == 0
                               and metrics["missing_criterion"] == 0 and metrics["paid_api_call"] == 0
-                              and not missing)
+                              and metrics["model_consistency_ok"] and not missing)
     return metrics, per_task
 
 
 if __name__ == "__main__":
+    import argparse
     import sys
-    archive = sys.argv[1] if len(sys.argv) > 1 else "."
-    repo = sys.argv[2] if len(sys.argv) > 2 else "."
-    metrics, per_task = evaluate_all(archive, repo)
+    ap = argparse.ArgumentParser(description="Offline Stage C golden-shadow evaluator.")
+    ap.add_argument("archive", nargs="?", default=".", help="extracted archive root (contains examples/stage_c_golden/out)")
+    ap.add_argument("repo", nargs="?", default=".", help="repo root (frozen golden_expectations.json + fixtures)")
+    ap.add_argument("--expected-provider", default=DEFAULT_EXPECTED_PROVIDER)
+    ap.add_argument("--expected-model", default=DEFAULT_EXPECTED_MODEL)
+    a = ap.parse_args()
+    metrics, per_task = evaluate_all(a.archive, a.repo, expected_provider=a.expected_provider,
+                                     expected_model=a.expected_model)
     for r in per_task:
         print(f"  {r['task_id']:28s} {'PASS' if r['semantic_pass'] else 'FAIL'} "
               f"observed={r['observed']}  fp={r['false_pass']} ua={r['unauthorized_action']} "
