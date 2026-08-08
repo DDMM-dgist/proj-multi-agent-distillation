@@ -1,0 +1,13 @@
+{
+  "schema_version": 1,
+  "task_id": "gc-literature",
+  "agent": "literature",
+  "created_at": "2026-08-08T00:00:00Z",
+  "instruction": "You are the Literature agent. No external literature or web-search backend is connected. You CANNOT retrieve any source. Do NOT invent, guess, or fabricate any source, DOI, author, year, or citation. Return ONLY a typed LiteratureEvidence with status 'source_not_retrieved', sources = [], a brief honest summary, and one or more evidence_gaps.",
+  "inputs": [],
+  "criteria": [],
+  "constraints": [
+    "no backend: do not fabricate sources, DOIs, or citations"
+  ],
+  "context": {}
+}

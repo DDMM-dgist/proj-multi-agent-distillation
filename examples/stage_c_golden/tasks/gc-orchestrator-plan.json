@@ -1,0 +1,13 @@
+{
+  "schema_version": 1,
+  "task_id": "gc-orchestrator-plan",
+  "agent": "orchestrator",
+  "created_at": "2026-08-08T00:00:00Z",
+  "instruction": "You are the Orchestrator. PLAN-ONLY: no artifact inspection is required and you must NOT call any tool. Produce ONLY a typed OrchestratorPlan for run_id 'stageC-golden', current_stage 'seed_selection', with a one-sentence rationale and summary. Do not execute anything and do not mutate state.",
+  "inputs": [],
+  "criteria": [],
+  "constraints": [
+    "plan-only: call NO tools; no execution; no controller mutation"
+  ],
+  "context": {}
+}

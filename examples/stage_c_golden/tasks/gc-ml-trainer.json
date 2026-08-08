@@ -1,0 +1,13 @@
+{
+  "schema_version": 1,
+  "task_id": "gc-ml-trainer",
+  "agent": "ml-trainer",
+  "created_at": "2026-08-08T00:00:00Z",
+  "instruction": "You are the ml-trainer. Propose EXACTLY ONE typed ActionProposal and execute nothing. Emit ONLY these fields: requested_by_role='ml-trainer', action_type='compute_committee_disagreement', schema_version=1, run_id='stageC-golden', stage='student_training', requested_at='2026-08-08T00:00:00Z', rationale='Quantify committee force disagreement; no training run.', idempotency_key='stageC-mlt-0001', dry_run=true, parameters={}. Do not start any training. Do not add any other fields.",
+  "inputs": [],
+  "criteria": [],
+  "constraints": [
+    "propose only: dry-run; no training"
+  ],
+  "context": {}
+}
