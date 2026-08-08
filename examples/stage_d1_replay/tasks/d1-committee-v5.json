@@ -15,6 +15,37 @@
   ],
   "context": {
     "review_lens": "scientific_validity",
-    "review_focus": "v5 is the first re-distillation to beat the original on deployment AND error(c)."
+    "review_focus": "v5 is the first re-distillation to beat the original on deployment AND error(c).",
+    "deterministic_criterion_results": [
+      {
+        "criterion": "committee does NOT regress vs the original student on the deployment u_max (u_max_mean_deploy <= original_u_max_mean_deploy)",
+        "operator": "le",
+        "lhs": 0.339,
+        "rhs": 0.376,
+        "result": true,
+        "invalidating": false,
+        "provenance": "0.339 <= 0.376 => True"
+      },
+      {
+        "criterion": "committee error(c) <= 0.368 eV/Angstrom (teacher-vs-DFT baseline)",
+        "operator": "le",
+        "lhs": 0.337,
+        "rhs": 0.368,
+        "result": true,
+        "invalidating": false,
+        "provenance": "0.337 <= 0.368 => True"
+      },
+      {
+        "criterion": "committee F_RMSE <= original student F_RMSE",
+        "operator": "le",
+        "lhs": 0.285,
+        "rhs": 0.309,
+        "result": true,
+        "invalidating": false,
+        "provenance": "0.285 <= 0.309 => True"
+      }
+    ],
+    "deterministic_suggested_severity": "PASS",
+    "deterministic_note": "These criterion booleans were computed DETERMINISTICALLY from the evidence and are AUTHORITATIVE: set each criteria_checked.ok to the matching result in order, and NEVER recompute or reverse a numeric comparison. Decide the verdict from the severity policy (a failed invalidating result => FAIL; all results true => PASS; otherwise REVISE); your job is the scientific interpretation and rationale, not the arithmetic."
   }
 }

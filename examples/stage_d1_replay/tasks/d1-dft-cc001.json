@@ -14,6 +14,31 @@
   ],
   "context": {
     "review_lens": "scientific_validity",
-    "review_focus": "SCF may converge yet the structure be unphysical (atom-overlap carving artifact)."
+    "review_focus": "SCF may converge yet the structure be unphysical (atom-overlap carving artifact).",
+    "deterministic_criterion_results": [
+      {
+        "criterion": "E_per_atom_eV is physical (between -11 and -8 eV/atom)",
+        "operator": "in_range",
+        "lhs": 17.29,
+        "rhs": [
+          -11,
+          -8
+        ],
+        "result": false,
+        "invalidating": true,
+        "provenance": "-11 <= 17.29 <= -8 => False"
+      },
+      {
+        "criterion": "max_force_eV_A is physical (<= 50 eV/Angstrom; no atom-overlap force)",
+        "operator": "le",
+        "lhs": 6750.0,
+        "rhs": 50,
+        "result": false,
+        "invalidating": true,
+        "provenance": "6750.0 <= 50 => False"
+      }
+    ],
+    "deterministic_suggested_severity": "FAIL",
+    "deterministic_note": "These criterion booleans were computed DETERMINISTICALLY from the evidence and are AUTHORITATIVE: set each criteria_checked.ok to the matching result in order, and NEVER recompute or reverse a numeric comparison. Decide the verdict from the severity policy (a failed invalidating result => FAIL; all results true => PASS; otherwise REVISE); your job is the scientific interpretation and rationale, not the arithmetic."
   }
 }

@@ -1,0 +1,71 @@
+[
+  {
+    "operator": "in_range",
+    "lhs": {
+      "field": "density_g_cm3"
+    },
+    "rhs": {
+      "low": 2.2,
+      "high": 2.23
+    },
+    "criterion": "density is within 2.20-2.23 g/cm3"
+  },
+  {
+    "all": [
+      {
+        "operator": "approx",
+        "lhs": {
+          "field": "si_o_peak_A"
+        },
+        "rhs": {
+          "value": 1.61,
+          "tol": 0.05
+        }
+      },
+      {
+        "operator": "approx",
+        "lhs": {
+          "field": "cn_si"
+        },
+        "rhs": {
+          "value": 4,
+          "tol": 0.1
+        }
+      },
+      {
+        "operator": "approx",
+        "lhs": {
+          "field": "cn_o"
+        },
+        "rhs": {
+          "value": 2,
+          "tol": 0.1
+        }
+      }
+    ],
+    "criterion": "Si-O first-peak is ~1.61 Angstrom and CN_Si~4, CN_O~2"
+  },
+  {
+    "all": [
+      {
+        "operator": "lt",
+        "lhs": {
+          "field": "nve_drift_meV_atom_ns"
+        },
+        "rhs": {
+          "const": 0.05
+        }
+      },
+      {
+        "operator": "eq",
+        "lhs": {
+          "field": "msd_plateau"
+        },
+        "rhs": {
+          "const": true
+        }
+      }
+    ],
+    "criterion": "NVE drift is small (< 0.05 meV/atom/ns) and MSD shows a non-diffusive plateau"
+  }
+]

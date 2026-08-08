@@ -14,6 +14,31 @@
   ],
   "context": {
     "review_lens": "scientific_validity",
-    "review_focus": "A clustered AL cell's DFT single-point energy/force must be physical."
+    "review_focus": "A clustered AL cell's DFT single-point energy/force must be physical.",
+    "deterministic_criterion_results": [
+      {
+        "criterion": "E_per_atom_eV is physical (between -11 and -8 eV/atom)",
+        "operator": "in_range",
+        "lhs": -9.412514,
+        "rhs": [
+          -11,
+          -8
+        ],
+        "result": true,
+        "invalidating": true,
+        "provenance": "-11 <= -9.412514 <= -8 => True"
+      },
+      {
+        "criterion": "max_force_eV_A is physical (<= 50 eV/Angstrom; no atom-overlap force)",
+        "operator": "le",
+        "lhs": 3.2016,
+        "rhs": 50,
+        "result": true,
+        "invalidating": true,
+        "provenance": "3.2016 <= 50 => True"
+      }
+    ],
+    "deterministic_suggested_severity": "PASS",
+    "deterministic_note": "These criterion booleans were computed DETERMINISTICALLY from the evidence and are AUTHORITATIVE: set each criteria_checked.ok to the matching result in order, and NEVER recompute or reverse a numeric comparison. Decide the verdict from the severity policy (a failed invalidating result => FAIL; all results true => PASS; otherwise REVISE); your job is the scientific interpretation and rationale, not the arithmetic."
   }
 }

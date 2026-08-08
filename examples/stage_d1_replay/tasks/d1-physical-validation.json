@@ -15,6 +15,47 @@
   ],
   "context": {
     "review_lens": "scientific_validity",
-    "review_focus": "Student a-SiO2 structure/dynamics must meet the active validation profile."
+    "review_focus": "Student a-SiO2 structure/dynamics must meet the active validation profile.",
+    "deterministic_criterion_results": [
+      {
+        "criterion": "density is within 2.20-2.23 g/cm3",
+        "operator": "in_range",
+        "lhs": 2.2129,
+        "rhs": [
+          2.2,
+          2.23
+        ],
+        "result": true,
+        "invalidating": false,
+        "provenance": "2.2 <= 2.2129 <= 2.23 => True"
+      },
+      {
+        "criterion": "Si-O first-peak is ~1.61 Angstrom and CN_Si~4, CN_O~2",
+        "operator": "all",
+        "lhs": [
+          true,
+          true,
+          true
+        ],
+        "rhs": null,
+        "result": true,
+        "invalidating": false,
+        "provenance": "all(|1.61 - 1.61| <= 0.05 => True, |4.0016 - 4| <= 0.1 => True, |2.0008 - 2| <= 0.1 => True) => True"
+      },
+      {
+        "criterion": "NVE drift is small (< 0.05 meV/atom/ns) and MSD shows a non-diffusive plateau",
+        "operator": "all",
+        "lhs": [
+          true,
+          true
+        ],
+        "rhs": null,
+        "result": true,
+        "invalidating": false,
+        "provenance": "all(0.005 < 0.05 => True, True == True => True) => True"
+      }
+    ],
+    "deterministic_suggested_severity": "PASS",
+    "deterministic_note": "These criterion booleans were computed DETERMINISTICALLY from the evidence and are AUTHORITATIVE: set each criteria_checked.ok to the matching result in order, and NEVER recompute or reverse a numeric comparison. Decide the verdict from the severity policy (a failed invalidating result => FAIL; all results true => PASS; otherwise REVISE); your job is the scientific interpretation and rationale, not the arithmetic."
   }
 }
