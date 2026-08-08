@@ -128,21 +128,29 @@ class ReadOnlyToolset:
         self.invocations.append(ToolInvocationRecord(
             tool=tool, argument=str(argument), ok=ok, detail=detail))
 
-    def _guard_no_duplicate(self, tool: str, path: str) -> None:
-        """Fail-closed duplicate-read guard (general liveness/safety): if this exact (tool,
-        resolved-path) already succeeded in THIS agent run, refuse the repeat instead of
-        re-serving identical content. The refusal is recorded (provenance-visible) and nudges the
-        agent to consume the earlier result and produce its typed output. Call BEFORE the read so
-        the refusal is recorded exactly once. A read that never succeeded is never a duplicate."""
-        key = (tool, _real(path))
-        if key in self._succeeded_reads:
-            detail = (f"DUPLICATE_READ: '{tool}' already returned this artifact earlier in this "
-                      "run; use that result and produce your typed output — do not read it again.")
+    @staticmethod
+    def _fingerprint(tool: str, path: str, extra) -> tuple:
+        """A semantic call fingerprint: (tool, CANONICAL resolved path, normalized result-changing
+        arguments). Only ``read_csv_summary`` has a result-changing argument beyond the path
+        (``max_rows``); the other three read tools are path-only, so ``extra`` is empty for them.
+        Same path with semantically DIFFERENT arguments => different fingerprint => allowed."""
+        return (tool, _real(path), tuple(sorted(extra)))
+
+    def _guard_no_duplicate(self, tool: str, path: str, extra=()) -> None:
+        """Fail-closed duplicate-read guard (general liveness/safety): if this exact SEMANTIC call
+        (tool, resolved-path, result-changing args) already SUCCEEDED in THIS agent run, refuse the
+        repeat instead of re-serving identical content. The refusal is recorded (provenance-visible)
+        and nudges the agent to consume the earlier result and produce its typed output. Call BEFORE
+        the read so the refusal is recorded exactly once. A call that never succeeded (or that
+        differs semantically) is never a duplicate."""
+        if self._fingerprint(tool, path, extra) in self._succeeded_reads:
+            detail = (f"DUPLICATE_READ: '{tool}' already returned this exact request earlier in "
+                      "this run; use that result and produce your typed output — do not read it again.")
             self._record(tool, path, ok=False, detail=detail)
             raise ToolAccessError(detail)
 
-    def _mark_succeeded(self, tool: str, path: str) -> None:
-        self._succeeded_reads.add((tool, _real(path)))
+    def _mark_succeeded(self, tool: str, path: str, extra=()) -> None:
+        self._succeeded_reads.add(self._fingerprint(tool, path, extra))
 
     # -- tools -------------------------------------------------------------------
 
@@ -196,7 +204,10 @@ class ReadOnlyToolset:
         recorded; ``ok`` is True only when access + decode + parse all succeed."""
         import csv
         import io
-        self._guard_no_duplicate("read_csv_summary", path)
+        # max_rows is result-changing, so it is part of the semantic fingerprint (same path with a
+        # different max_rows is a different call and must be allowed).
+        csv_extra = (("max_rows", int(max_rows)),)
+        self._guard_no_duplicate("read_csv_summary", path, csv_extra)
         try:
             text = self._read_text_unrecorded(path)
             rows = list(csv.reader(io.StringIO(text)))
@@ -215,7 +226,7 @@ class ReadOnlyToolset:
         }
         self._record("read_csv_summary", path, ok=True,
                      detail=f"{len(data)} rows x {len(header)} cols")
-        self._mark_succeeded("read_csv_summary", path)
+        self._mark_succeeded("read_csv_summary", path, csv_extra)
         return summary
 
     def read_artifact_manifest(self, path: str):

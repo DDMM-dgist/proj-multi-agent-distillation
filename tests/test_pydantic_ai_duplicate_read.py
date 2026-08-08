@@ -46,6 +46,23 @@ class DuplicateReadGuardTests(unittest.TestCase):
             # a FRESH toolset (new agent run) may read the same path again
             self.assertEqual(self._toolset(d).read_json(str(d / "a.json"))["x"], 1)
 
+    def test_same_path_different_semantic_args_is_allowed(self):
+        # read_csv_summary's max_rows is result-changing: same path + different max_rows is a
+        # semantically DIFFERENT call and must NOT be blocked; the same (path, max_rows) twice is.
+        with tempfile.TemporaryDirectory() as tmp:
+            d = Path(tmp)
+            (d / "t.csv").write_text("a,b\n1,2\n3,4\n5,6\n")
+            ts = self._toolset(d)
+            s1 = ts.read_csv_summary(str(d / "t.csv"), max_rows=1)
+            s2 = ts.read_csv_summary(str(d / "t.csv"), max_rows=2)   # different max_rows -> allowed
+            self.assertEqual(len(s1["head"]), 1)
+            self.assertEqual(len(s2["head"]), 2)
+            self.assertTrue(all(t.ok for t in ts.invocations))       # both succeeded, no refusal
+            from runtimes.pydantic_ai.tool_registry import ToolAccessError
+            with self.assertRaises(ToolAccessError):                 # identical (path, max_rows) -> dup
+                ts.read_csv_summary(str(d / "t.csv"), max_rows=2)
+            self.assertIn("DUPLICATE_READ", ts.invocations[-1].detail)
+
     def test_failed_read_is_not_marked_as_duplicate(self):
         # a read that never succeeded (outside allow-list) must not poison the guard
         from runtimes.pydantic_ai.tool_registry import ToolAccessError
