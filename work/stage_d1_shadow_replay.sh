@@ -17,8 +17,12 @@ EXPECT_HEAD="${EXPECT_HEAD:-}"
 STAGE_D1_MODEL_PATH="${STAGE_D1_MODEL_PATH:-Qwen/Qwen2.5-7B-Instruct}"
 STAGE_D1_SERVED_MODEL_NAME="${STAGE_D1_SERVED_MODEL_NAME:-qwen2.5-7b-instruct}"
 STAGE_D1_CUDA_DEVICE="${STAGE_D1_CUDA_DEVICE:-1}"
-STAGE_D1_GPU_MEM_UTIL="${STAGE_D1_GPU_MEM_UTIL:-0.50}"      # 7B BF16 profile (~24GB of 48)
-MIN_FREE_MIB="${STAGE_D1_MIN_FREE_MIB:-26000}"             # require a mostly-idle GPU (no heavy VASP)
+# Reuse of the EMPIRICALLY-VALIDATED Stage C 7B BF16 co-scheduled profile (a resource-policy reuse,
+# NOT a scientific/runtime-semantic change): Stage C ran Qwen2.5-7B end-to-end on this RTX 6000 Ada
+# co-scheduled with VASP at util 0.36 / free 18683 MiB, completed all 12 tasks, vLLM shut down
+# cleanly, VASP process/memory intact. Fail closed below MIN_FREE; selected GPU only; no auto-switch.
+STAGE_D1_GPU_MEM_UTIL="${STAGE_D1_GPU_MEM_UTIL:-0.36}"      # ~17GB of 48; validated 7B co-scheduled
+MIN_FREE_MIB="${STAGE_D1_MIN_FREE_MIB:-18000}"             # validated co-scheduled floor
 DEV="$STAGE_D1_CUDA_DEVICE"
 
 PGID=""; STOPPED=0

@@ -37,7 +37,7 @@ Validator: network-free (validate_task, judge/judge_gate, portable, evidence res
 evidence is METRICS-ONLY with NO leaked verdict key, criteria==ordered_criteria, expectation schema,
 must_not_pass => PASS not acceptable). Runner: default Qwen2.5-7B (STAGE_D1_MODEL_PATH/SERVED
 overridable), judge-only (--read-allow evidence, no run-dir), ONE vLLM, 7 checkpoints sequential,
-retries=0, continue-on-failure, PGID-only cleanup, GPU gate 7B profile (MIN_FREE 26000, util 0.50),
+retries=0, continue-on-failure, PGID-only cleanup, GPU gate = validated Stage-C 7B co-scheduled profile (MIN_FREE 18000, util 0.36; fail-closed, selected GPU only, no auto-switch),
 frozen runtime (vLLM 0.26.0 / PydanticAI 0.8.1 / hermes / request_limit=6 / duplicate-read guard /
 max-model-len 8192 / max-num-seqs 1 / enforce-eager), shadow (0 mutation, 0 paid, no side effects).
 
