@@ -1,0 +1,36 @@
+{
+  "run_id": "prod-run1-v5-provenance-recovery-prep",
+  "stage": "production_run1",
+  "phase": "R1.P1R2",
+  "action": "v5_training_provenance_recovery_preparation",
+  "package_head": "abd4521b3ce3ceb03bc92da29a745c3bbd822366",
+  "parent_r1p1r_run": "prod-run1-v5-leakage-resolution",
+  "parent_r1p1r_head_at_start": "abd4521b3ce3ceb03bc92da29a745c3bbd822366",
+  "leakage_status_unchanged": "REVISE",
+  "original_vs_v5_unchanged": "UNRESOLVED",
+  "no_network": true,
+  "no_kisti_connection": true,
+  "no_scp_rsync": true,
+  "no_model_invocation": true,
+  "no_dft": true,
+  "no_md": true,
+  "no_training": true,
+  "no_scheduler": true,
+  "no_semantic_judge": true,
+  "no_invented_hashes_for_missing_files": true,
+  "automatic_downstream_action": false,
+  "deliverables": {
+    "recovery_manifest": {
+      "path": "work/production_run1_v5_provenance_recovery_manifest.json",
+      "sha256": "cff08cb0c6f3c452b83c079c8a49162bd1235080986d875f94c2fc4215196430"
+    },
+    "human_checklist": {
+      "path": "work/PRODUCTION_RUN1_V5_PROVENANCE_RECOVERY.md",
+      "sha256": "59ce45777938160081abdf55ed6c6b4cd36baf8eb8b37849860176f20d8ad72d"
+    },
+    "r1p1r3_contract": {
+      "path": "examples/production_run1/R1P1R3_CONTRACT.md",
+      "sha256": "b5832af53797745e3860253530f919dfa8c95ce1e03b4764737c64a4ad2878ad"
+    }
+  }
+}

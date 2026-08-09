@@ -1,0 +1,98 @@
+{
+  "_record": "R1.P1R2 — machine-readable recovery manifest of the EXACT KISTI-origin v5 provenance artifacts a human must copy to resolve Level-2 leakage. Read-only local forensics; NO network/KISTI connection was made; NO hashes are invented for missing remote files. Historical R1.P1R LEAKAGE = REVISE remains until these are recovered and checked by R1.P1R3.",
+  "parent_action": {"r1p1r_run": "prod-run1-v5-leakage-resolution", "r1p1_head": "abd4521b3ce3ceb03bc92da29a745c3bbd822366", "leakage_status": "REVISE"},
+  "historical_v5_training": {
+    "host": "KISTI HPC GPU cluster (specific node name UNRESOLVED)",
+    "workdir": "/home/hyunjin/2026/03/01_DISTILLATION/01_SIO2/05_DISTILLATION_DIRECT",
+    "workdir_confidence": "STRONGLY_SUPPORTED",
+    "workdir_evidence": "DISTILLATION_RECIPE.md:112,163 names it 'GPU: original distillation run dir' (sha16 649e115ea982db7f). The v5-specific defect-re-augment may live in a subdir/variant of this path (UNRESOLVED).",
+    "cpu_augment_notebooks_dir": "/home/hyunjin/workflow/SIO2_DISTILLATION_DATA/ (RECIPE:165); the SEED-selection notebook SiO2-x_Augment_SEED.ipynb is ALSO inside the LOCAL gpu_finetune_handoff.tar.gz (sha16 e4ca0fc8162221c9)",
+    "kisti_data_root": "/home/hyunjin/workflow/PCA_SOAP_workflow/ (PROVENANCE.md)",
+    "committee_seeds": {"seed01": 234, "seed02": 345, "seed03": 555, "seed04": 777},
+    "committee_shares_one_pool": true,
+    "committee_member_md5": {"seed01": "42a85cd0f510", "seed02": "52507ee62ca5", "seed03": "bab2e896c2ad", "seed04": "92f669b4b910"}
+  },
+  "artifacts": [
+    {
+      "logical_name": "v5_train_list",
+      "purpose": "the exact set of structures/features used to TRAIN the v5 committee",
+      "historical_expected_path": "/home/hyunjin/2026/03/01_DISTILLATION/01_SIO2/05_DISTILLATION_DIRECT/**/train_list",
+      "historical_host": "KISTI GPU",
+      "path_confidence": "STRONGLY_SUPPORTED",
+      "local_status": "MISSING",
+      "local_path": null,
+      "expected_filename": "train_list",
+      "minimum_required": true,
+      "needed_for": ["train_membership"],
+      "notes": "referenced (relative, absolute_path:False) by v5 input.yaml (sha16 f92171360a6ea0c5); generate_features:False + preprocess:False => it indexes pre-generated SIMPLE-NN feature files, NOT self-contained (see v5_augmented_structures)."
+    },
+    {
+      "logical_name": "v5_valid_list",
+      "purpose": "validation split (held-out-from-training within v5)",
+      "historical_expected_path": "/home/hyunjin/2026/03/01_DISTILLATION/01_SIO2/05_DISTILLATION_DIRECT/**/valid_list",
+      "historical_host": "KISTI GPU", "path_confidence": "STRONGLY_SUPPORTED",
+      "local_status": "MISSING", "local_path": null, "expected_filename": "valid_list",
+      "minimum_required": true, "needed_for": ["train_membership"],
+      "notes": "a held-out cell appearing in valid_list (not train) must be reported separately, not as training leakage."
+    },
+    {
+      "logical_name": "v5_test_list",
+      "purpose": "test split reference (v5 used test:False but the list is referenced)",
+      "historical_expected_path": "/home/hyunjin/2026/03/01_DISTILLATION/01_SIO2/05_DISTILLATION_DIRECT/**/test_list",
+      "historical_host": "KISTI GPU", "path_confidence": "STRONGLY_SUPPORTED",
+      "local_status": "MISSING", "local_path": null, "expected_filename": "test_list",
+      "minimum_required": false, "needed_for": ["train_membership"],
+      "notes": "optional: test:False in v5 input.yaml, but recover for completeness of the split partition."
+    },
+    {
+      "logical_name": "v5_augmented_structures",
+      "purpose": "the actual augmented structure database (Allegro-labeled ~10k + the v5 T1 defect re-augment) that train_list/valid_list index into",
+      "historical_expected_path": "/home/hyunjin/2026/03/01_DISTILLATION/01_SIO2/05_DISTILLATION_DIRECT/**/*.xyz (augmented training XYZ / SIMPLE-NN structure_list source)",
+      "historical_host": "KISTI GPU", "path_confidence": "SUPPORTED",
+      "local_status": "MISSING", "local_path": null,
+      "expected_filename": "augmented training XYZ (name unknown; e.g. augmented_*.xyz / distillation dataset)",
+      "minimum_required": true, "needed_for": ["train_membership", "augmentation_membership", "parent_frame_lineage"],
+      "notes": "PROVENANCE.md §3: 'NOT locally stored (generated on KISTI)'. Required because the lists reference feature files, not parent structures; the mapping feature->parent frame lives here."
+    },
+    {
+      "logical_name": "v5_defect_reaugment_seed_manifest",
+      "purpose": "the DECISIVE L2 artifact: the seed source of the v5-specific T1 defect re-augment (does any seed derive from a production_12288 dump, i.e. a held-out parent?)",
+      "historical_expected_path": "/home/hyunjin/2026/03/01_DISTILLATION/01_SIO2/05_DISTILLATION_DIRECT/**/(defect re-augment seed list or generator + input xyz)",
+      "historical_host": "KISTI GPU", "path_confidence": "UNRESOLVED",
+      "local_status": "MISSING", "local_path": null,
+      "expected_filename": "v5 defect-re-augment seed list / generator input (name unknown)",
+      "minimum_required": true, "needed_for": ["augmentation_membership", "parent_frame_lineage"],
+      "notes": "The base augment SEED notebook (SiO2-x_Augment_SEED.ipynb, in local gpu_finetune_handoff.tar.gz) selects seeds from the DFT corpus SiOx_filtered (M3GNet/PCA), NOT production_12288 dumps -> base augment seeds are DISJOINT from held-out parents. The residual risk is ONLY the v5 defect re-augment seed source, which is undocumented locally. This artifact resolves it."
+    },
+    {
+      "logical_name": "v5_training_log_and_checkpoints",
+      "purpose": "full reproducibility (NOT required for leakage)",
+      "historical_expected_path": "/home/hyunjin/2026/03/01_DISTILLATION/01_SIO2/05_DISTILLATION_DIRECT/**/(LOG, checkpoints, stdout)",
+      "historical_host": "KISTI GPU", "path_confidence": "SUPPORTED",
+      "local_status": "MISSING", "local_path": null, "expected_filename": "training logs / *.pth",
+      "minimum_required": false, "needed_for": [],
+      "notes": "OPTIONAL. Do NOT transfer large checkpoint files for leakage resolution; the deployed potential_saved_bestmodel is already local."
+    }
+  ],
+  "local_evidence_found": [
+    {"logical_name": "augment_seed_notebook", "local_path": "gpu_finetune_handoff.tar.gz::gpu_finetune_handoff/distillation/SiO2-x_Augment_SEED.ipynb", "sha16_archive": "e4ca0fc8162221c9", "note": "SEED-SELECTION generator (DFT-corpus seeds); confirms base-augment seed provenance, but is NOT the v5 defect-re-augment seed manifest or the train_list."},
+    {"logical_name": "augment_seeds_small", "local_path": "teacher/input_small.xyz", "sha16": "fc59714f07170626", "note": "50 DFT-corpus seed frames"},
+    {"logical_name": "augment_seeds_large", "local_path": "teacher/input_large.xyz", "sha16": "6fc890e8828b1dce", "note": "10 DFT-corpus seed frames"}
+  ],
+  "lists_alone_sufficient": false,
+  "lists_sufficiency_reasoning": "generate_features:False + preprocess:False => train_list/valid_list index pre-generated feature files (structure labels), not parent structures. Mapping an entry to a parent frame requires the augmented structure database + (for the v5 defect re-augment) its seed manifest. Therefore v5_augmented_structures AND v5_defect_reaugment_seed_manifest are also minimum-required.",
+  "held_out_parent_query_keys": [
+    {"cell": "cell_ho_02", "distribution": "random", "x_label": "x006", "source_dump": "production_12288/random_sweep/x006/prod.dump", "frame_idx": 20, "composition_O_Si": [45, 22], "local_x": -0.0227, "carved_input_data_sha256_16": "bd0edeb8b5fb3b4d"},
+    {"cell": "cell_ho_03", "distribution": "random", "x_label": "x015", "source_dump": "production_12288/random_sweep/x015/prod.dump", "frame_idx": 20, "composition_O_Si": [48, 25], "local_x": 0.04, "carved_input_data_sha256_16": "eb85cbebf45f1f63"},
+    {"cell": "cell_ho_04", "distribution": "clustered", "x_label": "sphere_T1000", "source_dump": "production_12288/anneal_calib_clustered/T1000/prod.dump", "frame_idx": 20, "composition_O_Si": [25, 24], "local_x": 0.4792, "carved_input_data_sha256_16": "2af12376ee66d31a"},
+    {"cell": "cell_ho_05", "distribution": "clustered", "x_label": "sphere_T1000", "source_dump": "production_12288/anneal_calib_clustered/T1000/prod.dump", "frame_idx": 30, "composition_O_Si": [22, 27], "local_x": 0.5926, "carved_input_data_sha256_16": "62fa7d527c0adff9"},
+    {"cell": "cell_ho_06", "distribution": "clustered", "x_label": "plane_T1000", "source_dump": "production_12288/anneal_calib_clustered/plane_T1000/prod.dump", "frame_idx": 20, "composition_O_Si": [35, 28], "local_x": 0.375, "carved_input_data_sha256_16": "946ab8395974e617"},
+    {"cell": "cell_ho_07", "distribution": "clustered", "x_label": "plane_T1000", "source_dump": "production_12288/anneal_calib_clustered/plane_T1000/prod.dump", "frame_idx": 30, "composition_O_Si": [28, 24], "local_x": 0.4167, "carved_input_data_sha256_16": "9fbcafab0452660a"}
+  ],
+  "leakage_resolution_rule": {
+    "PASS": "no recovered v5 training/augmentation frame derives from any held_out_parent source_dump/frame (or from the carved held-out structures)",
+    "FAIL": "at least one recovered v5 training/augmentation frame derives from a held-out parent source_dump/frame or matches a held-out carved structure at Level 0/1",
+    "REVISE": "the recovered lists reference a database still not transferable, or the v5 defect-re-augment seed source remains unrecoverable"
+  },
+  "constraints_obeyed": {"no_network": true, "no_kisti_connection": true, "no_scp_rsync": true, "no_model_run": true, "no_dft": true, "no_md": true, "no_training": true, "no_semantic_judge": true, "no_invented_hashes_for_missing_files": true, "historical_records_unchanged": true}
+}
