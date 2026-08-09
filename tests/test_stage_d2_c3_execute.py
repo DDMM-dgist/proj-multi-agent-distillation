@@ -70,10 +70,32 @@ class StageD2C3ExecuteTests(unittest.TestCase):
 
     def _run(self, d, approval=None, **over):
         ap = self._write_approval(d, approval if approval is not None else _approval())
+        # torch/nequip are absent in this test env, so inject a PASSING env_check by default; the
+        # env-failure path is tested explicitly below with a failing env_check.
         kw = dict(approval_path=str(ap), device="cpu", run_dir=f"{d}/run",
-                  adapter_factory=self.factory)
+                  adapter_factory=self.factory, env_check=lambda **k: (True, {"stub": "ok"}))
         kw.update(over)
         return W.execute(**kw)
+
+    def test_env_preflight_fails_closed_before_run_dir(self):
+        with tempfile.TemporaryDirectory() as d:
+            # simulate the launch-attempt-1 class: missing pydantic -> env preflight not ok
+            fail = lambda **k: (False, {"pydantic": "FAIL:ModuleNotFoundError"})  # noqa: E731
+            with self.assertRaisesRegex(W.ExecutionRefused, "PRE_EXECUTION_IMPORT"):
+                self._run(d, env_check=fail)
+            self.assertFalse(Path(f"{d}/run").exists())     # no run dir created
+            self.assertEqual(len(self.calls), 0)            # no forward call
+            self.assertFalse((Path(f"{d}/run") / "teacher_ef.json").exists())
+
+    def test_real_env_preflight_does_no_forward_and_fail_closes(self):
+        # the committed preflight is import/load-only and returns a boolean; it never runs a forward
+        import stage_d2_c3_env_preflight as P
+        ok, checks = P.check_env(device="cpu")
+        self.assertIn("pydantic", checks)
+        self.assertIsInstance(ok, bool)                     # torch/nequip may be absent here -> ok False
+        src = (ROOT / "work" / "stage_d2_c3_env_preflight.py").read_text()
+        self.assertNotIn("run_teacher_single_point(", src)  # preflight invokes no forward
+        self.assertNotIn("build_forward_fn(", src)
 
     def test_no_cli_forward_function_accepted(self):
         src = (ROOT / "work" / "stage_d2_c3_execute.py").read_text()
@@ -86,7 +108,8 @@ class StageD2C3ExecuteTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as d:
             ext = self._write_approval(d, _approval())
             ext_sha = hashlib.sha256(ext.read_bytes()).hexdigest()
-            rep = W.execute(approval_path=str(ext), device="cpu", run_dir=f"{d}/run", adapter_factory=self.factory)
+            rep = W.execute(approval_path=str(ext), device="cpu", run_dir=f"{d}/run",
+                            adapter_factory=self.factory, env_check=lambda **k: (True, {"stub": "ok"}))
             self.assertEqual(rep["authoritative_verdict"], "PASS")
             self.assertEqual(rep["n_atoms"], 216); self.assertEqual(rep["composition"], {"O": 144, "Si": 72})
             self.assertEqual(len(self.calls), 1)                       # exactly one forward

@@ -30,9 +30,9 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 sys.path.insert(0, str(ROOT / "work"))
-from runtimes.pydantic_ai import stage_d2_c3_teacher_executor as EX  # noqa: E402
-from runtimes.pydantic_ai.criterion_eval import (  # noqa: E402
-    derive_severity, evaluate_criteria, render_authoritative_block)
+# NOTE: criterion_eval / the executor are imported LAZILY inside execute() AFTER the env preflight, so a
+# missing dependency (e.g. pydantic — the launch-attempt-1 failure) is reported by the preflight and
+# fails closed BEFORE any run-dir creation, instead of crashing at wrapper import time.
 
 RUN_ID = "d2c3-teacher-sp-mini216"
 C3 = ROOT / "examples" / "stage_d2_c3"
@@ -101,16 +101,30 @@ def _write_failure(rd: Path, head: str, approval_ref: dict, state: str, reason: 
 
 def execute(*, approval_path, device: str = "cuda:0", expect_head: str = None,
             run_dir: str = None, repo_root: Path = ROOT, adapter_factory=None,
-            clock=None) -> dict:
+            clock=None, env_check=None) -> dict:
     """Perform the single approved teacher single-point via the EXTERNAL-approval flow:
-    verify HEAD -> read external approval read-only -> validate -> verify SHAs -> fresh run dir ->
-    snapshot approval into it -> ONE forward -> outputs -> Axis-A/B -> immutability + clean unload.
-    The forward comes ONLY from the trusted adapter constructed here. Returns a report dict."""
+    ENV PREFLIGHT (import/load contract) -> verify HEAD -> read external approval read-only -> validate
+    -> verify SHAs -> fresh run dir -> snapshot approval into it -> ONE forward -> outputs -> Axis-A/B ->
+    immutability + clean unload. The forward comes ONLY from the trusted adapter constructed here.
+    Returns a report dict."""
     clock = clock or time.monotonic
     repo_root = Path(repo_root)
     proposal = json.loads((C3 / "action_proposal.json").read_text())
     params = proposal["parameters"]
     src, model = params["source_structure"], params["teacher_model"]
+    # 0. EXECUTION-ENVIRONMENT preflight (import/load contract only; no forward). Fails CLOSED here,
+    #    BEFORE HEAD/approval/run-dir — this is the launch-attempt-1 (missing pydantic) failure class.
+    if env_check is None:
+        from stage_d2_c3_env_preflight import check_env
+        env_check = check_env
+    env_ok, env_report = env_check(device=device)
+    if not env_ok:
+        raise ExecutionRefused(f"execution-environment preflight FAILED (PRE_EXECUTION_IMPORT; no run "
+                               f"dir created; no forward): {env_report}")
+    # deps now confirmed present -> import the pydantic-dependent modules lazily
+    from runtimes.pydantic_ai import stage_d2_c3_teacher_executor as EX
+    from runtimes.pydantic_ai.criterion_eval import (
+        derive_severity, evaluate_criteria, render_authoritative_block)
     # 1. EXPECT_HEAD
     head = subprocess.check_output(["git", "-C", str(repo_root), "rev-parse", "HEAD"]).decode().strip()
     if expect_head and head != expect_head:
