@@ -133,3 +133,54 @@ region). `STUDENT_STAGE_AUTHORIZED = false`; `NEW_PIPELINE_CURRENT_STUDENT = NON
 ## S. Walltime
 
 Fresh exact-held-out inference: **53.1 min** (1142 frames, CPU, NequIPCalculator).
+
+---
+
+## Force-scale-normalized held-out fidelity (closes PC001)
+
+**Question:** is the amorphous 0.184 → dilute 0.231 → clustered 0.348 eV/Å absolute force-error rise a
+genuine relative-fidelity deterioration or an absolute-scale effect (clustered = larger DFT forces)?
+Computed from the **already-generated** exact-held-out per-frame error metrics + DFT force scale re-read
+from `dataset.xyz` (DATA, not a model forward). Artifact:
+`force_scale_normalized_domain_metrics.json`.
+
+| domain | N | DFT comp RMS | abs err comp RMSE | **normalized RMSE** | normalized MAE | normalized vec err |
+|---|---|---|---|---|---|---|
+| ambient crystal | 250 | 1.42 | 0.085 | **0.060** | — | — |
+| amorphous SiO₂ | 140 | 2.19 | 0.261 | **0.119** | 0.13 | ~0.13 |
+| **dilute vacancy** | 149 | 1.32 | 0.347 | **0.262** | ~0.28 | ~0.28 |
+| **clustered/void** | 84 | 3.49 | 0.541 | **0.155** | ~0.16 | ~0.16 |
+| surfaces | 82 | 2.91 | 0.354 | **0.122** | — | — |
+
+amorphous→dilute→clustered: absolute err RMSE ×2.07; DFT-scale ×1.59; **normalized RMSE 0.119→0.262→0.155**.
+
+**Interpretation — C_MIXED (real relative component):**
+- The **clustered** absolute-error peak is **largely an absolute-scale effect** — clustered DFT forces are
+  1.6× larger (RMS 3.49 vs 2.19); its normalized RMSE (0.155) is only ~1.3× amorphous.
+- The **dilute oxygen-deficient** domain shows the **worst *relative* fidelity** (normalized RMSE 0.262 =
+  **2.2× amorphous**), despite the smallest DFT force scale (1.32) — partly amplified by the small-force
+  error-floor, but 2.2× is substantial and genuine.
+- ⇒ the **core oxygen-deficient target domain** has real relative-fidelity degradation (dilute 2.2×,
+  clustered 1.3× vs amorphous), **not purely** an absolute-scale artifact.
+- *Cosine similarity / component-R² were not computed* — per-atom teacher force arrays were not persisted
+  by the exact-held-out run and re-forwarding is forbidden; the normalized-error + DFT-scale evidence
+  suffices for the A/B/C determination.
+
+## FINAL PC001 Teacher verdict — **`TEACHER_REVISE_BEFORE_DISTILLATION`**
+
+(Supersedes the interim ACCEPT in §P / `CORRECTED_reproduction_and_verdict.json`.) The teacher reproduces
+the pipeline held-out metrics exactly and generalizes with near-zero overfitting, and the clustered
+absolute-error peak is mostly scale-driven — **but** force-scale-normalized fidelity is **genuinely
+degraded in the oxygen-deficient target domain** (dilute normalized RMSE 2.2× amorphous; clustered 1.3×),
+not merely absolute-scale. Absence of a project threshold does **not** imply acceptance; judged on relative
+fidelity across the intended target domain (oxygen-deficient SiOx — the core distillation objective), the
+conservative verdict is **REVISE**: improve the teacher in the oxygen-deficient (dilute + clustered)
+domain via targeted DFT-anchored active learning **before** finalizing distillation, **or** establish a
+source-grounded deployment accuracy requirement showing the current oxygen-deficient fidelity is adequate.
+This is consistent with — and reinforces — PC002's own REVISE (the clustered/void label gap): the same
+oxygen-deficient region needs both teacher improvement and dataset coverage.
+
+**PC002 authorization: NO.** `STUDENT_STAGE_AUTHORIZED = false`; `NEW_PIPELINE_CURRENT_STUDENT = NONE`.
+Recommended next (later task; not executed here): one minimal DFT-anchored active-learning action targeting
+dilute + clustered oxygen-deficient vacancies to raise teacher relative fidelity in the core domain.
+PC001 is now closed permanently on this authoritative evidence.

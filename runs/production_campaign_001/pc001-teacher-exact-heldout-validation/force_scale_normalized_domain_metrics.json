@@ -1,0 +1,234 @@
+{
+  "note": "DFT force scale re-read from dataset.xyz (DATA); Teacher error metrics from committed exact-heldout per_frame_metrics.csv; NO model forward.",
+  "cosine_similarity_and_component_R2": "NOT_PERSISTED \u2014 teacher per-atom force arrays were not saved in the exact-heldout run; computing them would require a re-forward (forbidden). Normalized error + DFT scale below fully address the A/B/C question.",
+  "domain": {
+    "amorphous_SiO2": {
+      "n": 140,
+      "DFT_comp_RMS": 2.1885,
+      "DFT_comp_meanabs": 1.5241,
+      "DFT_permag_mean": 2.9309,
+      "DFT_permag_median": 2.5406,
+      "DFT_permag_p95": 6.2928,
+      "err_comp_MAE": 0.1797,
+      "err_comp_RMSE": 0.261,
+      "normalized_comp_RMSE": 0.1193,
+      "normalized_comp_MAE": 0.1179,
+      "normalized_vector_error": 0.125
+    },
+    "SiO2x_dilute_vacancy": {
+      "n": 149,
+      "DFT_comp_RMS": 1.3249,
+      "DFT_comp_meanabs": 0.8692,
+      "DFT_permag_mean": 1.735,
+      "DFT_permag_median": 1.3795,
+      "DFT_permag_p95": 4.3015,
+      "err_comp_MAE": 0.2258,
+      "err_comp_RMSE": 0.3468,
+      "normalized_comp_RMSE": 0.2618,
+      "normalized_comp_MAE": 0.2598,
+      "normalized_vector_error": 0.2665
+    },
+    "SiO2x_clustered_vacancy_voidsurface": {
+      "n": 84,
+      "DFT_comp_RMS": 3.4861,
+      "DFT_comp_meanabs": 2.3863,
+      "DFT_permag_mean": 4.8682,
+      "DFT_permag_median": 4.117,
+      "DFT_permag_p95": 10.6697,
+      "err_comp_MAE": 0.3528,
+      "err_comp_RMSE": 0.5406,
+      "normalized_comp_RMSE": 0.1551,
+      "normalized_comp_MAE": 0.1479,
+      "normalized_vector_error": 0.1438
+    },
+    "surfaces": {
+      "n": 82,
+      "DFT_comp_RMS": 2.9066,
+      "DFT_comp_meanabs": 1.5432,
+      "DFT_permag_mean": 3.0433,
+      "DFT_permag_median": 2.4991,
+      "DFT_permag_p95": 7.5423,
+      "err_comp_MAE": 0.2027,
+      "err_comp_RMSE": 0.3541,
+      "normalized_comp_RMSE": 0.1218,
+      "normalized_comp_MAE": 0.1314,
+      "normalized_vector_error": 0.1384
+    },
+    "ambient_crystalline_SiO2": {
+      "n": 250,
+      "DFT_comp_RMS": 1.4165,
+      "DFT_comp_meanabs": 0.9389,
+      "DFT_permag_mean": 1.7289,
+      "DFT_permag_median": 1.5351,
+      "DFT_permag_p95": 3.4988,
+      "err_comp_MAE": 0.044,
+      "err_comp_RMSE": 0.085,
+      "normalized_comp_RMSE": 0.06,
+      "normalized_comp_MAE": 0.0469,
+      "normalized_vector_error": 0.0458
+    }
+  },
+  "per_config_family": {
+    "quench_int_AL": {
+      "n": 33,
+      "DFT_comp_RMS": 1.6664,
+      "DFT_comp_meanabs": 0.8906,
+      "DFT_permag_mean": 1.7694,
+      "DFT_permag_median": 1.0267,
+      "DFT_permag_p95": 5.9552,
+      "err_comp_MAE": 0.2388,
+      "err_comp_RMSE": 0.3517,
+      "normalized_comp_RMSE": 0.211,
+      "normalized_comp_MAE": 0.2681,
+      "normalized_vector_error": 0.2681
+    },
+    "liquid": {
+      "n": 34,
+      "DFT_comp_RMS": 2.9351,
+      "DFT_comp_meanabs": 2.263,
+      "DFT_permag_mean": 4.4916,
+      "DFT_permag_median": 4.0689,
+      "DFT_permag_p95": 8.9448,
+      "err_comp_MAE": 0.2164,
+      "err_comp_RMSE": 0.2901,
+      "normalized_comp_RMSE": 0.0988,
+      "normalized_comp_MAE": 0.0956,
+      "normalized_vector_error": 0.0961
+    },
+    "quench": {
+      "n": 43,
+      "DFT_comp_RMS": 2.3166,
+      "DFT_comp_meanabs": 1.8004,
+      "DFT_permag_mean": 3.5673,
+      "DFT_permag_median": 3.2882,
+      "DFT_permag_p95": 6.8485,
+      "err_comp_MAE": 0.1691,
+      "err_comp_RMSE": 0.2337,
+      "normalized_comp_RMSE": 0.1009,
+      "normalized_comp_MAE": 0.0939,
+      "normalized_vector_error": 0.0943
+    },
+    "bulk_amo": {
+      "n": 30,
+      "DFT_comp_RMS": 1.0685,
+      "DFT_comp_meanabs": 0.7678,
+      "DFT_permag_mean": 1.5273,
+      "DFT_permag_median": 1.4022,
+      "DFT_permag_p95": 2.8621,
+      "err_comp_MAE": 0.1086,
+      "err_comp_RMSE": 0.1658,
+      "normalized_comp_RMSE": 0.1552,
+      "normalized_comp_MAE": 0.1414,
+      "normalized_vector_error": 0.1416
+    },
+    "vacancy": {
+      "n": 30,
+      "DFT_comp_RMS": 1.2555,
+      "DFT_comp_meanabs": 0.9322,
+      "DFT_permag_mean": 1.8784,
+      "DFT_permag_median": 1.6593,
+      "DFT_permag_p95": 3.9313,
+      "err_comp_MAE": 0.1012,
+      "err_comp_RMSE": 0.1526,
+      "normalized_comp_RMSE": 0.1215,
+      "normalized_comp_MAE": 0.1085,
+      "normalized_vector_error": 0.1104
+    },
+    "vacancy_int_AL": {
+      "n": 77,
+      "DFT_comp_RMS": 1.1224,
+      "DFT_comp_meanabs": 0.8031,
+      "DFT_permag_mean": 1.6329,
+      "DFT_permag_median": 1.4051,
+      "DFT_permag_p95": 3.5841,
+      "err_comp_MAE": 0.2252,
+      "err_comp_RMSE": 0.3278,
+      "normalized_comp_RMSE": 0.292,
+      "normalized_comp_MAE": 0.2805,
+      "normalized_vector_error": 0.2767
+    },
+    "SiOx_int_AL": {
+      "n": 42,
+      "DFT_comp_RMS": 1.6574,
+      "DFT_comp_meanabs": 0.9259,
+      "DFT_permag_mean": 1.8196,
+      "DFT_permag_median": 1.1329,
+      "DFT_permag_p95": 5.8812,
+      "err_comp_MAE": 0.3351,
+      "err_comp_RMSE": 0.4757,
+      "normalized_comp_RMSE": 0.287,
+      "normalized_comp_MAE": 0.3619,
+      "normalized_vector_error": 0.3647
+    },
+    "SiOx_max_AL": {
+      "n": 39,
+      "DFT_comp_RMS": 3.1628,
+      "DFT_comp_meanabs": 2.063,
+      "DFT_permag_mean": 4.0439,
+      "DFT_permag_median": 3.3378,
+      "DFT_permag_p95": 9.4235,
+      "err_comp_MAE": 0.3587,
+      "err_comp_RMSE": 0.4802,
+      "normalized_comp_RMSE": 0.1518,
+      "normalized_comp_MAE": 0.1739,
+      "normalized_vector_error": 0.1818
+    },
+    "quench_max_AL": {
+      "n": 41,
+      "DFT_comp_RMS": 3.9958,
+      "DFT_comp_meanabs": 2.9244,
+      "DFT_permag_mean": 5.8225,
+      "DFT_permag_median": 4.9955,
+      "DFT_permag_p95": 12.2266,
+      "err_comp_MAE": 0.3485,
+      "err_comp_RMSE": 0.6127,
+      "normalized_comp_RMSE": 0.1533,
+      "normalized_comp_MAE": 0.1192,
+      "normalized_vector_error": 0.1151
+    },
+    "surfaces_max_AL": {
+      "n": 4,
+      "DFT_comp_RMS": 2.0426,
+      "DFT_comp_meanabs": 1.4591,
+      "DFT_permag_mean": 3.123,
+      "DFT_permag_median": 2.7102,
+      "DFT_permag_p95": 6.862,
+      "err_comp_MAE": 0.3284,
+      "err_comp_RMSE": 0.5163,
+      "normalized_comp_RMSE": 0.2527,
+      "normalized_comp_MAE": 0.2251,
+      "normalized_vector_error": 0.2124
+    }
+  },
+  "amorphous_dilute_clustered": {
+    "err_comp_RMSE": [
+      0.261,
+      0.3468,
+      0.5406
+    ],
+    "DFT_comp_RMS": [
+      2.1885,
+      1.3249,
+      3.4861
+    ],
+    "normalized_comp_RMSE": [
+      0.1193,
+      0.2618,
+      0.1551
+    ],
+    "normalized_comp_MAE": [
+      0.1179,
+      0.2598,
+      0.1479
+    ],
+    "normalized_vector_error": [
+      0.125,
+      0.2665,
+      0.1438
+    ],
+    "abs_err_rise_clu_over_amo": 2.071,
+    "DFT_scale_rise_clu_over_amo": 1.593,
+    "normalized_err_rise_clu_over_amo": 1.3
+  },
+  "classification": "C_MIXED"
+}

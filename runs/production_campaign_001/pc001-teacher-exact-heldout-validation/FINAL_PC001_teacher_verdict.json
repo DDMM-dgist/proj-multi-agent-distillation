@@ -1,0 +1,38 @@
+{
+  "_status": "FINAL AUTHORITATIVE PC001 verdict \u2014 supersedes the interim ACCEPT in CORRECTED_reproduction_and_verdict.json, decided by the force-scale-normalized analysis.",
+  "analysis": "force-scale-normalized held-out fidelity (force_scale_normalized_domain_metrics.json)",
+  "central_question": "Is the amorphous 0.184 -> dilute 0.231 -> clustered 0.348 absolute force-error rise a genuine relative-fidelity deterioration or an absolute-scale effect?",
+  "normalized_comp_RMSE_by_domain": {
+    "ambient_crystal": 0.06,
+    "amorphous": 0.119,
+    "dilute_vacancy": 0.262,
+    "clustered_void": 0.155,
+    "surfaces": 0.122
+  },
+  "DFT_comp_RMS_by_domain": {
+    "ambient_crystal": 1.42,
+    "amorphous": 2.19,
+    "dilute_vacancy": 1.32,
+    "clustered_void": 3.49,
+    "surfaces": 2.91
+  },
+  "finding": {
+    "clustered_rise_is": "LARGELY ABSOLUTE-SCALE \u2014 clustered DFT force RMS is 1.6x amorphous; normalized clustered RMSE 0.155 is only ~1.3x amorphous 0.119",
+    "dilute_is": "TRUE RELATIVE-FIDELITY DEGRADATION \u2014 normalized RMSE 0.262 = ~2.2x amorphous, the worst relative fidelity of any domain (partly amplified by dilute's small DFT force scale / error-floor, but 2.2x is substantial)",
+    "core_target_domain_oxygen_deficient": "relative fidelity is genuinely degraded (dilute 2.2x, clustered 1.3x vs amorphous) \u2014 NOT purely an absolute-scale artifact",
+    "classification": "C_MIXED (relative degradation present in the core oxygen-deficient target domain; the specific clustered peak is mostly scale-driven while dilute is the true relative weak point)"
+  },
+  "cosine_R2_note": "component-R2 and force-vector cosine were NOT computed \u2014 the exact-heldout run did not persist per-atom teacher force arrays, and re-forwarding is forbidden; the normalized-error + DFT-scale evidence is sufficient to resolve A/B/C.",
+  "FINAL_TEACHER_VERDICT": "TEACHER_REVISE_BEFORE_DISTILLATION",
+  "verdict_type": "DERIVED (fresh exact-held-out test + force-scale-normalized analysis; no invented threshold)",
+  "verdict_reasoning": "The teacher reproduces the training-pipeline held-out metrics EXACTLY and generalizes with near-zero overfitting; the clustered absolute-error peak is largely an absolute-scale effect. HOWEVER, force-scale-normalized fidelity shows a GENUINE relative-fidelity degradation in the oxygen-deficient target domain \u2014 worst at dilute vacancy (normalized RMSE 0.262, ~2.2x amorphous), with clustered also elevated (0.155, ~1.3x). Per the task's explicit guidance, absence of a project threshold does NOT imply acceptance; the teacher must be judged on relative fidelity in the intended target domain. Oxygen-deficient SiOx (dilute+clustered vacancies) is the CORE distillation objective, and its relative fidelity is genuinely weaker (not merely scale). Conservatively => TEACHER_REVISE_BEFORE_DISTILLATION: improve the teacher in the oxygen-deficient domain (DFT-anchored / active-learning targeting dilute+clustered vacancies) BEFORE finalizing distillation, OR establish a source-grounded deployment accuracy requirement demonstrating the current oxygen-deficient fidelity is adequate. This supersedes the interim ACCEPT (which had leaned on generalization + no-threshold reasoning).",
+  "supersedes": "CORRECTED_reproduction_and_verdict.json FINAL_TEACHER_VERDICT=ACCEPT (interim; before the force-scale-normalized analysis)",
+  "PC002_authorized": false,
+  "PC002_reason": "distillation-dataset/student stages remain gated: the teacher requires oxygen-deficient-domain improvement (or a source-grounded adequacy justification) first. Note this is consistent with PC002's own REVISE (clustered/void label gap): the same oxygen-deficient region needs BOTH teacher improvement AND dataset coverage.",
+  "STUDENT_STAGE_AUTHORIZED": false,
+  "NEW_PIPELINE_CURRENT_STUDENT": "NONE",
+  "recommended_next": "targeted DFT-anchored active learning in the dilute+clustered oxygen-deficient domain to improve teacher relative fidelity (single minimal action to be prepared in a later task; NOT executed here)",
+  "student_data_used": false,
+  "no_rerun_of_allegro": true,
+  "no_dft": true
+}
