@@ -211,14 +211,48 @@ file; **no inference**). Artifacts: `train_defect_coverage.json`, `root_cause_de
   noisier/less-converged (flag for reference review; `surfaces_max_AL` is the only thin corner, 20 train
   frames). Unconfirmable without DFT re-checks.
 
-**DETERMINATION: `TEACHER_MODEL_TRAINING_LIMITATION`** — the teacher has an intrinsic force-error floor
-(~0.15–0.35 eV/Å) on defect structures, most visible in the low-force dilute domain where that floor
-dominates the normalized error. It is **not** a training-data coverage or diversity problem.
+**[SUPERSEDED — this count-based determination was correctly downgraded to
+`ROOT_CAUSE_PENDING_TRAIN_VS_TEST_DOMAIN_ERROR` and is now decided by the train-vs-test discriminator
+below. Count/composition/force-scale coverage facts stand; "irreducible floor"/"more data won't help"
+were withdrawn until the discriminator ran.]**
 
-**Refines the REVISE remedy (correcting the earlier suggestion):** because coverage + diversity are
-already sufficient, **DFT-anchored active learning / dataset augmentation is unlikely to lower the floor**.
-The indicated fix is **teacher model/training improvement** (increased capacity, low-force/defect-weighted
-force loss, training-length/hyperparameter changes) **and/or a DFT-label quality review** of the defect
-families — not more defect data. The FINAL PC001 verdict stays `TEACHER_REVISE_BEFORE_DISTILLATION`; the
-cause of the required revision is now identified as **model/training-level**, and **PC002 remains
-unauthorized**.
+## Root cause CLOSED — Teacher error TRAIN vs held-out TEST on the same domains
+
+Decisive discriminator: fresh Teacher inference on the **2966 central-domain TRAIN frames** (approved;
+153 min CPU) vs the held-out TEST, **identical NequIPCalculator path + metric definitions**. Artifacts:
+`train_vs_test_domain_fidelity.csv`, `train_vs_test_root_cause.json`, `FINAL_root_cause_CLOSED.json`;
+script `work/pc001_train_vs_test_domain_fidelity.py`.
+
+| domain | split | N | DFT RMS | err comp MAE | norm RMSE | **test/train** |
+|---|---|---|---|---|---|---|
+| amorphous | TRAIN | 1067 | 2.13 | 0.184 | 0.125 | — |
+| amorphous | TEST | 140 | 2.19 | 0.180 | 0.119 | **0.98** |
+| dilute vacancy | TRAIN | 1192 | 1.37 | 0.222 | 0.245 | — |
+| dilute vacancy | TEST | 149 | 1.32 | 0.226 | 0.262 | **1.02** |
+| clustered/void | TRAIN | 707 | 3.78 | 0.335 | 0.119 | — |
+| clustered/void | TEST | 84 | 3.49 | 0.353 | 0.155 | **1.05** |
+
+**Per config family** (train vs test err MAE ratio): quench 0.99, liquid 0.99, bulk_amo 0.92,
+quench_int_AL 1.02, vacancy 1.00, SiOx_int_AL 1.02, vacancy_int_AL 1.04, surfaces_max_AL 1.12,
+SiOx_max_AL 1.03, quench_max_AL 1.11 — **every family train ≈ test; none shows B (train ≪ test).** (Detail:
+within "dilute", simple `vacancy` is easy at 0.10 while the AL-selected `SiOx_int_AL` is the hard driver
+at 0.33; the AL-selected oxygen-deficient defect motifs are the underfit ones — equally in train and test.)
+
+**Classification: `A_MODEL_TRAINING_UNDERFIT`** in all central domains and all config families — the teacher
+does **not** fit its own training defect structures any better than the held-out ones. **Coverage /
+diversity / generalization / extrapolation are RULED OUT** by this discriminator (not merely by counts).
+
+**Training convergence (no retrain):** final epoch 158; LR decayed to 9.8e-6 ≈ min_lr (`ReduceLROnPlateau`
+plateaued); early-stopping on val weighted_sum; train forces_mae 0.149 ≈ val 0.163 (gap 0.013) → converged,
+**not** gross optimization undertraining — the underfit is **at convergence**.
+
+**H. Likely remedy — MIXED (model/training-level):** **model capacity** primary (the model plateaued and
+cannot fit even training defect forces below ~0.22 dilute / 0.33 clustered eV/Å → increase l_max/layers/
+features/cutoff) + **optimization/loss-weighting** secondary (defect / low-force-weighted force loss, esp.
+for the low-force dilute normalized error); **DFT-label noise** a possible irreducible-floor contributor
+(reference review). **NOT coverage/diversity and NOT more data.** Distinguishing capacity vs loss vs
+label-noise needs further experiments beyond this read-only analysis.
+
+**FINAL PC001 verdict: `TEACHER_REVISE_BEFORE_DISTILLATION`** (unchanged) — root cause now **CLOSED** as a
+**model/training underfit** (not a data problem). **PC002 remains unauthorized**;
+`NEW_PIPELINE_CURRENT_STUDENT = NONE`.
