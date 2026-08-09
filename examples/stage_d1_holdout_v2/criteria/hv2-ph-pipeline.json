@@ -1,0 +1,52 @@
+[
+  {
+    "all": [
+      {
+        "operator": "exists",
+        "lhs": {
+          "field": "r_o_A"
+        }
+      },
+      {
+        "operator": "exists",
+        "lhs": {
+          "field": "r_si_A"
+        }
+      }
+    ],
+    "criterion": "weighted-alpha atomic radii are set (rO and rSi present)"
+  },
+  {
+    "operator": "eq",
+    "lhs": {
+      "field": "n_pd_dims"
+    },
+    "rhs": {
+      "const": 3
+    },
+    "criterion": "persistence diagrams are computed for dimensions 0, 1 and 2 (3 dims)"
+  },
+  {
+    "all": [
+      {
+        "operator": "eq",
+        "lhs": {
+          "field": "calibrated"
+        },
+        "rhs": {
+          "const": true
+        }
+      },
+      {
+        "operator": "eq",
+        "lhs": {
+          "field": "periodic"
+        },
+        "rhs": {
+          "const": true
+        }
+      }
+    ],
+    "criterion": "the pipeline is calibrated and periodic"
+  }
+]

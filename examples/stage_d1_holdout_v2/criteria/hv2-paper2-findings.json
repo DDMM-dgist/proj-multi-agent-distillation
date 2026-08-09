@@ -1,0 +1,23 @@
+[
+  {
+    "operator": "eq",
+    "lhs": {
+      "field": "spearman_sign_matches_artifact"
+    },
+    "rhs": {
+      "const": true
+    },
+    "criterion": "the reported Spearman correlation sign matches the artifact"
+  },
+  {
+    "operator": "approx",
+    "lhs": {
+      "field": "reported_spearman_rho"
+    },
+    "rhs": {
+      "value": 0.505,
+      "tol": 0.1
+    },
+    "criterion": "the reported Spearman magnitude matches the artifact (within 0.1)"
+  }
+]

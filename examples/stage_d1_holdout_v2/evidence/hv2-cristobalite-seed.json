@@ -1,0 +1,10 @@
+{
+  "gate": "cristobalite-build",
+  "n_si": 4096,
+  "n_o": 8192,
+  "si_o_ratio": 2.0,
+  "box_len_A": 57.04,
+  "density_atoms_A3": 0.0662,
+  "min_interatomic_distance_A": 1.54,
+  "reproducible": true
+}

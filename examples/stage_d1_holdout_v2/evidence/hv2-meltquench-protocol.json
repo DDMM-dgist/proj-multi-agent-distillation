@@ -1,0 +1,11 @@
+{
+  "gate": "meltquench-protocol",
+  "cooling_rate_K_per_ps": 1.007,
+  "melt_temp_K": 4000,
+  "hold_ps": 500,
+  "dt_fs": 1.0,
+  "n_atoms": 12288,
+  "density_g_cm3": 2.18,
+  "in_run_msd_at_melt_present": false,
+  "note": "protocol standard on 5/6; only gap = no in-run MSD at 4000K melt"
+}

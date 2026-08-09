@@ -1,0 +1,33 @@
+[
+  {
+    "operator": "approx",
+    "lhs": {
+      "field": "si_o_ratio"
+    },
+    "rhs": {
+      "value": 2.0,
+      "tol": 0.001
+    },
+    "criterion": "Si:O stoichiometry is 1:2 (O/Si ratio == 2)"
+  },
+  {
+    "operator": "ge",
+    "lhs": {
+      "field": "min_interatomic_distance_A"
+    },
+    "rhs": {
+      "const": 1.5
+    },
+    "criterion": "minimum interatomic distance is physical (>= 1.5 Angstrom)"
+  },
+  {
+    "operator": "eq",
+    "lhs": {
+      "field": "reproducible"
+    },
+    "rhs": {
+      "const": true
+    },
+    "criterion": "the seed build is reproducible"
+  }
+]

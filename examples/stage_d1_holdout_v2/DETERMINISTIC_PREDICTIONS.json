@@ -1,0 +1,30 @@
+{
+  "hv2-cristobalite-seed": {
+    "deterministic_suggested_severity": "PASS",
+    "historical_verdict": "PASS"
+  },
+  "hv2-dft-cell_009": {
+    "deterministic_suggested_severity": "PASS",
+    "historical_verdict": "PASS"
+  },
+  "hv2-dft-clustered_cell_003": {
+    "deterministic_suggested_severity": "PASS",
+    "historical_verdict": "PASS"
+  },
+  "hv2-er-finetune": {
+    "deterministic_suggested_severity": "REVISE",
+    "historical_verdict": "REVISE"
+  },
+  "hv2-meltquench-protocol": {
+    "deterministic_suggested_severity": "REVISE",
+    "historical_verdict": "REVISE"
+  },
+  "hv2-paper2-findings": {
+    "deterministic_suggested_severity": "REVISE",
+    "historical_verdict": "REVISE"
+  },
+  "hv2-ph-pipeline": {
+    "deterministic_suggested_severity": "PASS",
+    "historical_verdict": "PASS"
+  }
+}

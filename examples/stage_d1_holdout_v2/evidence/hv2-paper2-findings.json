@@ -1,0 +1,9 @@
+{
+  "gate": "production-science",
+  "reported_spearman_rho": -0.14,
+  "artifact_spearman_rho": 0.505,
+  "spearman_sign_matches_artifact": false,
+  "defsi_ratio_random_vs_sphere": 2.77,
+  "largest_void_area_A2": 34.9,
+  "note": "ODC-survival + random>sphere defSi + sphere largest void confirmed; Spearman sign wrong (+0.505 not -0.14)"
+}

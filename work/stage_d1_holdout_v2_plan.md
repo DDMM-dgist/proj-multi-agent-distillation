@@ -51,6 +51,34 @@ as such rather than manufactured.
 7. Only then build metrics-only evidence + generic criterion specs (frozen operators only), validate
    network-free, record deterministic predictions before inference, and run once.
 
+## EXECUTED (2026-08-09) — selection frozen, package built, NOT run
+
+Architecture v2 freeze HEAD = `99b9e87eacab5762c7f4c04ac8838445e57b2399` (freeze guard green).
+`work/stage_d1_holdout_v2_select.py` was run; the 7-case selection is frozen in
+`examples/stage_d1_holdout_v2/SELECTION_MANIFEST.json` (selection = `sha256("gate|target")` rank +
+declared family quotas dft2/production2/committee1/science2; **no verdict/difficulty input**):
+
+| target | gate family | rank | sha256[:16] | historical (post-freeze) | det. prediction |
+|---|---|---|---|---|---|
+| clustered_cell_003 | dft-physical | 0 | 1d1680674dd06f49 | PASS | PASS |
+| cell_009 | dft-physical | 1 | 4ec6181a4ebb4983 | PASS | PASS |
+| production_12288-meltquench-protocol | production-protocol | 0 | 6ff30384f3541664 | REVISE | REVISE |
+| cristobalite-12288-seed | production-protocol | 1 | 7915e89b271f5d77 | PASS | PASS |
+| teacher-ER-finetune-AB | committee-model-selection | 0 | 03ae2a5ae4e31057 | REVISE | REVISE |
+| persistent-homology-pipeline | science-analysis | 0 | 5f8cf20914c74fef | PASS | PASS |
+| paper2-production-findings | science-analysis | 1 | b9d9376e7704a61f | REVISE | REVISE |
+
+- `HOLDOUT_V2_UNSEEN_FAIL_CASE_COVERAGE = 0` (no FAIL remains in the pool; not manufactured). Holdout V2
+  contains PASS + REVISE families only. Physical-invalidity FAIL detection remains supported by dev cc001
+  + consumed-holdout-v1 history; V2 does not independently validate unseen FAIL detection.
+- `HOLDOUT_V2_REQUIRES_ARCHITECTURE_CHANGE = false` — every criterion uses only the frozen operators
+  (`in_range`/`le`/`ge`/`eq`/`approx`/`exists`/`all`), the frozen severity policy, the unchanged Judge
+  prompt, and no runtime change (freeze guard green). The evaluator gained an interpretation-layer
+  (axis B) `criterion_contradictions` hard gate — an evaluator packaging rule for the new architecture,
+  not a change to scientific decision semantics.
+- Deterministic predictions (`DETERMINISTIC_PREDICTIONS.json`) recorded BEFORE inference; they match
+  historical (descriptive only, not tuned).
+
 ## Guardrails
 
 - Do **not** inspect/select cases by whether they are easy to pass — the sha256 rule decides.
