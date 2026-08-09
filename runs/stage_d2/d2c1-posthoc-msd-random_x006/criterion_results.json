@@ -1,0 +1,160 @@
+{
+  "deterministic_authoritative": true,
+  "authoritative_verdict": "PASS",
+  "criterion_results": [
+    {
+      "criterion": "input trajectory exists",
+      "operator": "eq",
+      "lhs": true,
+      "rhs": true,
+      "result": true,
+      "invalidating": true,
+      "provenance": "True == True => True"
+    },
+    {
+      "criterion": "input SHA256 matches the proposal",
+      "operator": "eq",
+      "lhs": true,
+      "rhs": true,
+      "result": true,
+      "invalidating": true,
+      "provenance": "True == True => True"
+    },
+    {
+      "criterion": "trajectory parsed successfully",
+      "operator": "eq",
+      "lhs": true,
+      "rhs": true,
+      "result": true,
+      "invalidating": true,
+      "provenance": "True == True => True"
+    },
+    {
+      "criterion": "PBC continuity precondition holds (max min-image step < 0.25*L)",
+      "operator": "eq",
+      "lhs": true,
+      "rhs": true,
+      "result": true,
+      "invalidating": true,
+      "provenance": "True == True => True"
+    },
+    {
+      "criterion": "atom count constant across selected frames",
+      "operator": "eq",
+      "lhs": true,
+      "rhs": true,
+      "result": true,
+      "invalidating": true,
+      "provenance": "True == True => True"
+    },
+    {
+      "criterion": "timesteps strictly increasing",
+      "operator": "eq",
+      "lhs": true,
+      "rhs": true,
+      "result": true,
+      "invalidating": true,
+      "provenance": "True == True => True"
+    },
+    {
+      "criterion": "MSD values finite",
+      "operator": "eq",
+      "lhs": true,
+      "rhs": true,
+      "result": true,
+      "invalidating": true,
+      "provenance": "True == True => True"
+    },
+    {
+      "criterion": "MSD values non-negative",
+      "operator": "eq",
+      "lhs": true,
+      "rhs": true,
+      "result": true,
+      "invalidating": true,
+      "provenance": "True == True => True"
+    },
+    {
+      "criterion": "initial MSD approximately zero",
+      "operator": "le",
+      "lhs": 0.0,
+      "rhs": 1e-06,
+      "result": true,
+      "invalidating": true,
+      "provenance": "0.0 <= 1e-06 => True"
+    },
+    {
+      "criterion": "source trajectory byte-identical after run",
+      "operator": "eq",
+      "lhs": true,
+      "rhs": true,
+      "result": true,
+      "invalidating": true,
+      "provenance": "True == True => True"
+    },
+    {
+      "criterion": "writes occur only under the fresh run directory",
+      "operator": "eq",
+      "lhs": true,
+      "rhs": true,
+      "result": true,
+      "invalidating": true,
+      "provenance": "True == True => True"
+    },
+    {
+      "criterion": "selected frame count <= 200",
+      "operator": "le",
+      "lhs": 151,
+      "rhs": 200,
+      "result": true,
+      "invalidating": false,
+      "provenance": "151 <= 200 => True"
+    },
+    {
+      "criterion": "selected frame count >= predeclared minimum",
+      "operator": "ge",
+      "lhs": 151,
+      "rhs": 10,
+      "result": true,
+      "invalidating": false,
+      "provenance": "151 >= 10 => True"
+    },
+    {
+      "criterion": "output row count matches selected-frame count",
+      "operator": "eq",
+      "lhs": true,
+      "rhs": true,
+      "result": true,
+      "invalidating": false,
+      "provenance": "True == True => True"
+    },
+    {
+      "criterion": "all required summary fields exist",
+      "operator": "eq",
+      "lhs": true,
+      "rhs": true,
+      "result": true,
+      "invalidating": false,
+      "provenance": "True == True => True"
+    },
+    {
+      "criterion": "output SHA256 recorded",
+      "operator": "eq",
+      "lhs": true,
+      "rhs": true,
+      "result": true,
+      "invalidating": false,
+      "provenance": "True == True => True"
+    },
+    {
+      "criterion": "runtime within the 5-minute ceiling",
+      "operator": "eq",
+      "lhs": true,
+      "rhs": true,
+      "result": true,
+      "invalidating": false,
+      "provenance": "True == True => True"
+    }
+  ],
+  "provenance_block": "DETERMINISTIC_CRITERION_RESULTS (authoritative; do NOT recompute or reverse):\n- [PASS] input trajectory exists :: True == True => True (invalidating)\n- [PASS] input SHA256 matches the proposal :: True == True => True (invalidating)\n- [PASS] trajectory parsed successfully :: True == True => True (invalidating)\n- [PASS] PBC continuity precondition holds (max min-image step < 0.25*L) :: True == True => True (invalidating)\n- [PASS] atom count constant across selected frames :: True == True => True (invalidating)\n- [PASS] timesteps strictly increasing :: True == True => True (invalidating)\n- [PASS] MSD values finite :: True == True => True (invalidating)\n- [PASS] MSD values non-negative :: True == True => True (invalidating)\n- [PASS] initial MSD approximately zero :: 0.0 <= 1e-06 => True (invalidating)\n- [PASS] source trajectory byte-identical after run :: True == True => True (invalidating)\n- [PASS] writes occur only under the fresh run directory :: True == True => True (invalidating)\n- [PASS] selected frame count <= 200 :: 151 <= 200 => True\n- [PASS] selected frame count >= predeclared minimum :: 151 >= 10 => True\n- [PASS] output row count matches selected-frame count :: True == True => True\n- [PASS] all required summary fields exist :: True == True => True\n- [PASS] output SHA256 recorded :: True == True => True\n- [PASS] runtime within the 5-minute ceiling :: True == True => True\nsuggested_severity = PASS"
+}
