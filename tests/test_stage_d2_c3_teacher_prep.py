@@ -141,13 +141,24 @@ class StageD2C3TeacherPrepTests(unittest.TestCase):
         self.assertEqual(im["n_atoms"], 216)
         self.assertEqual(im["composition"], {"O": 144, "Si": 72})
 
-    def test_no_successful_run_and_judge_advisory(self):
-        # no SUCCESSFUL scientific run exists: no teacher_ef.json anywhere; attempt-3 dir absent. (The
-        # immutable failed attempt-1 (API mismatch) and attempt-2 (device mismatch) runs may exist as
-        # evidence but carry no teacher_ef.json.)
-        self.assertFalse((ROOT / "runs" / "stage_d2_c3" / "d2c3-teacher-sp-mini216-attempt3").exists())
-        for ef in (ROOT / "runs" / "stage_d2_c3").rglob("teacher_ef.json"):
-            self.fail(f"unexpected teacher_ef.json (no successful teacher forward should exist): {ef}")
+    def test_c3_completed_attempt3_rejected_and_judge_advisory(self):
+        # C3 is COMPLETE. The ONLY completed scientific run is the approved attempt-3, and the deterministic
+        # gate REJECTED it (authoritative FAIL / accepted=false) rather than rubber-stamping the successful
+        # forward. The immutable failed attempt-1 (API mismatch) and attempt-2 (device mismatch) runs carry
+        # no teacher_ef.json. teacher_ef.json therefore exists ONLY under attempt-3.
+        base = ROOT / "runs" / "stage_d2_c3"
+        efs = sorted(p.parent.name for p in base.rglob("teacher_ef.json"))
+        self.assertEqual(efs, ["d2c3-teacher-sp-mini216-attempt3"])          # only the completed run
+        a3 = base / "d2c3-teacher-sp-mini216-attempt3"
+        rm = json.loads((a3 / "run_manifest.json").read_text())
+        self.assertEqual(rm["status"], "OK")                                 # forward completed
+        self.assertEqual(rm["authoritative_verdict"], "FAIL")                # deterministic gate rejected it
+        self.assertIs(rm["accepted"], False)                                 # NOT silently accepted
+        prov = json.loads((a3 / "provenance.json").read_text())
+        self.assertIs(prov["valid_prediction_generated"], True)             # a real E/F artifact exists
+        # attempts 1 and 2 carry no completed prediction
+        for name in ("d2c3-teacher-sp-mini216", "d2c3-teacher-sp-mini216-attempt2"):
+            self.assertFalse((base / name / "teacher_ef.json").exists())
         t = json.loads((BASE / "judge_interpretation_task.json").read_text())
         self.assertIs(t["context"]["deterministic_authoritative"], False)   # advisory only
         self.assertIn("runs/stage_d2_c3/", t["instruction"])                # full repo-relative path
