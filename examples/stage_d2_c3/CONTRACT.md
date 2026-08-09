@@ -88,11 +88,37 @@ run dir; on any failure the run dir is removed and no partial artifact is accept
 - **STOP/FAIL** if: any invalidating A/B criterion fails (non-finite, wrong shape, unphysical E/F, SHA
   mismatch); run dir exists; source/model mutated; approval absent; write attempted outside the run dir.
 
+## Approval flow (EXTERNAL approval; resolves the run-dir contradiction)
+
+```
+EXTERNAL APPROVAL (examples/stage_d2_c3/approvals/d2c3-teacher-sp-mini216.approval.json, approved=true)
+  -> validate (action/subtype/structure-SHA/teacher-SHA/limits/authorizes_subsequent=false)
+  -> verify target run dir does NOT exist
+  -> atomically create the fresh run dir
+  -> snapshot the validated approval into runs/stage_d2_c3/<run_id>/approval.json (immutable)
+  -> record the source approval path + SHA256 in provenance
+  -> ONE Allegro forward pass
+```
+The external approval is read-only and never modified; `approved=false` is never treated as active.
+The wrapper `work/stage_d2_c3_execute.py` owns the fresh-run/no-overwrite guard (not weakened); the
+executor runs with `run_dir_precreated=True` and refuses only if its own outputs already exist.
+
+**Failure atomicity (no auto retry):** if execution fails BEFORE the forward, a failure/provenance
+state is recorded (`EXECUTION_FAILED_BEFORE_FORWARD`, no scientific verdict). If it fails AFTER the
+forward, the attempt is preserved append-only (`EXECUTION_FAILED_AFTER_FORWARD`) and is not rerun under
+the same run identity (the existing run dir refuses re-execution). No automatic retry.
+
 ## Exact action after explicit approval
 
-Write `runs/stage_d2_c3/d2c3-teacher-sp-mini216/approval.json`, then run `run_teacher_single_point`
-once on one selected GPU: verify approval + fresh run dir + source/model SHA → parse mini216 (216
-atoms) → **one Allegro forward pass** (injected `forward_fn` wrapping the compiled teacher) → write
-`teacher_ef.json` + `forces.csv` → record A+B validity → evaluate the authoritative validity gate
-(frozen `criterion_eval`, bound verdict) → optionally the advisory Judge → write `criterion_results.json`,
-`provenance.json`, `run_manifest.json`. No scheduler, no MD/DFT/training, no automatic follow-up labeling.
+The single committed command (writes no Python after approval):
+```
+conda run -n allegro python work/stage_d2_c3_execute.py \
+    --device cuda:1 --expect-head <HEAD> \
+    --approval examples/stage_d2_c3/approvals/d2c3-teacher-sp-mini216.approval.json
+```
+It runs `run_teacher_single_point` once on one selected GPU: verify HEAD + approval + SHAs → fresh run
+dir + approval snapshot → parse mini216 (216 atoms) → **one Allegro forward pass** (trusted adapter's
+`build_forward_fn`) → write `teacher_ef.json` + `forces.csv` → record A+B validity → evaluate the
+authoritative validity gate (frozen `criterion_eval`, bound verdict) → write `criterion_results.json`,
+`provenance.json`, `run_manifest.json`. **No semantic Judge** here (separate later approval). No
+scheduler, no MD/DFT/training, no automatic follow-up labeling.

@@ -94,16 +94,27 @@ def _finite(x) -> bool:
 
 
 def run_teacher_single_point(*, proposal: dict, run_dir: str, approval: Optional[dict],
-                             forward_fn: Callable = None, clock: Callable[[], float]) -> TeacherSinglePointResult:
+                             forward_fn: Callable = None, clock: Callable[[], float],
+                             run_dir_precreated: bool = False) -> TeacherSinglePointResult:
     """Trusted executor. Guards -> parse structure -> ONE injected teacher forward pass -> E/F artifact
     + validity. ``forward_fn(positions, types, box_L, type_symbol_map) -> (energy_eV, forces_eV_A[N][3])``
     is injected ONLY at approved execution (the real Allegro/nequip model). Prep/tests never run the
-    real model. Never mutates the source/model or anything outside run_dir."""
+    real model. Never mutates the source/model or anything outside run_dir.
+
+    ``run_dir_precreated``: when False (default) the executor OWNS the fresh-run-dir guard (refuse if it
+    exists) + creation. When True the trusted wrapper already validated approval, enforced the no-pre-
+    exist guard, created the dir, and snapshotted the approval into it (external-approval flow); the
+    executor then refuses only if its OWN output artifacts already exist (no output overwrite)."""
     require_approval(approval)
     if forward_fn is None:
         raise ExecutorGuardError("no forward_fn injected — real teacher inference is a separate approved step")
     rd = Path(run_dir)
-    if rd.exists():
+    if run_dir_precreated:
+        if not rd.is_dir():
+            raise ExecutorGuardError(f"precreated run dir missing: {rd}")
+        if (rd / "teacher_ef.json").exists() or (rd / "forces.csv").exists():
+            raise ExecutorGuardError(f"scientific outputs already exist (no overwrite): {rd}")
+    elif rd.exists():
         raise ExecutorGuardError(f"run directory already exists (no overwrite / idempotency): {rd}")
     params = proposal.get("parameters", {})
     src = params["source_structure"]
@@ -141,7 +152,8 @@ def run_teacher_single_point(*, proposal: dict, run_dir: str, approval: Optional
     max_force = max((math.sqrt(sum(c * c for c in f)) for f in forces), default=float("nan")) if forces_finite else float("nan")
     max_force_finite = _finite(max_force)
 
-    rd.mkdir(parents=True, exist_ok=False)
+    if not run_dir_precreated:
+        rd.mkdir(parents=True, exist_ok=False)
     import json
     forces_path = rd / "forces.csv"
     forces_path.write_text("id,fx,fy,fz\n" +
