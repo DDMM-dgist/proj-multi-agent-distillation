@@ -1,0 +1,62 @@
+{
+  "schema_version": 1,
+  "requested_by_role": "ml-trainer",
+  "action_type": "evaluate_heldout_fidelity",
+  "run_id": "prod-run1-v5-heldout-generalization",
+  "stage": "production_run1",
+  "requested_at": "2026-08-09T00:00:00Z",
+  "rationale": "The v5 SIMPLE-NN committee was ADOPTED (coordination_log.csv, 2026-07-16) as the first re-distillation to beat the original student, but with the explicit caveat that the 11 AL cells may overlap v5 training (error(c) partly in-distribution) and that clustered cells remain hardest with u_max>0.30 at x>=0.12. Held-out DFT evidence (heldout_baseline_errord.csv) further indicates the residual error at clustered defect cores is teacher-limited (teacher error(a)_core ~0.38 ~= v5 error(c)_core ~0.39 eV/A). This action deterministically aggregates the EXISTING held-out v5+teacher-vs-DFT per-cell errors into a leakage-checked, domain-tagged generalization verdict with teacher-vs-distillation attribution, to decide whether v5 is the production student and whether iteration-2 should fine-tune the teacher or re-distill. Read-only; no new compute.",
+  "active_config_refs": [
+    "gpu_return_v5_committee/v5_committee_bundle/seed01/input.yaml"
+  ],
+  "active_config_hashes": {},
+  "input_artifacts": [
+    {"role": "ml-trainer", "path": "research-sio2-allegro-simplenn-distillation/al_iter3/heldout_dft_batch/analysis/heldout_baseline_errord.csv", "integrity": {"note": "6 of 8 held-out cells scored (cell_ho_02..07); ho_01/ho_08 absent", "sha256": "COMPUTED_AT_EXECUTION"}},
+    {"role": "ml-trainer", "path": "research-sio2-allegro-simplenn-distillation/al_iter3/heldout_dft_batch/analysis/per_cell/", "integrity": {"files": ["cell_ho_02_baseline.csv", "cell_ho_03_baseline.csv", "cell_ho_04_baseline.csv", "cell_ho_05_baseline.csv", "cell_ho_06_baseline.csv", "cell_ho_07_baseline.csv"], "sha256": "PER_FILE_COMPUTED_AT_EXECUTION"}},
+    {"role": "data-curator", "path": "research-sio2-allegro-simplenn-distillation/al_iter3/heldout_dft_batch/manifest_heldout.csv", "integrity": {"note": "held-out cell provenance: distribution/x_label/center_cn/n_atoms/local_x", "sha256": "COMPUTED_AT_EXECUTION"}},
+    {"role": "data-curator", "path": "research-sio2-allegro-simplenn-distillation/al_iter3/HANDOFF_v6.md", "integrity": {"note": "train/val seed manifests for leakage disjointness check", "sha256": "COMPUTED_AT_EXECUTION"}},
+    {"role": "data-curator", "path": "research-sio2-allegro-simplenn-distillation/coordination_log.csv", "integrity": {"note": "DFT judge-gate PASS records + v5 adoption + clustered DFT E/atom (-9.41..-9.80)", "sha256": "COMPUTED_AT_EXECUTION"}},
+    {"role": "analyst", "path": "research-sio2-allegro-simplenn-distillation/teacher_diag/error_a_allegro_vs_dft.csv", "integrity": {"note": "teacher reference scale: error(a) 0.190 eV/A global", "sha256": "COMPUTED_AT_EXECUTION"}},
+    {"role": "ml-trainer", "path": "materials-ml-kit/teacher/model.nequip.pth", "integrity": {"sha256": "b56e20ffc31da601feed8411c92675bdae9eb886db153ff67dd37dea161b1c57", "note": "deployed base teacher identity (read-only reference; NOT invoked)"}}
+  ],
+  "input_artifact_hashes": {
+    "materials-ml-kit/teacher/model.nequip.pth": "b56e20ffc31da601feed8411c92675bdae9eb886db153ff67dd37dea161b1c57"
+  },
+  "parameters": {
+    "subtype": "leakage_clean_heldout_generalization_verdict",
+    "read_only": true,
+    "no_model_invocation": true,
+    "no_dft": true,
+    "no_md": true,
+    "no_training": true,
+    "no_scheduler": true,
+    "no_paid_api": true,
+    "no_external_network": true,
+    "no_overwrite": true,
+    "evaluated_model": "v5_committee (gpu_return_v5_committee/v5_committee_bundle, 4 seeds)",
+    "reference_model": "base teacher b56e20ff (error(a) reference only; not invoked)",
+    "held_out_cells": ["cell_ho_02", "cell_ho_03", "cell_ho_04", "cell_ho_05", "cell_ho_06", "cell_ho_07"],
+    "coverage_caveat": "cell_ho_01 and cell_ho_08 are not scored in analysis/ (6 of 8 held-out cells)",
+    "domain_tags_required": ["distribution", "x_label", "center_cn", "local_x", "n_atoms", "in_training_domain"],
+    "acceptance_axes": {
+      "artifact_validity": "per-cell CSVs parse; atom counts match manifest_heldout.csv; all E/F finite; DFT OUTCARs already judge-gate-PASSED; v5 = 4 md5-distinct models; teacher SHA == b56e20ff",
+      "leakage": "each held-out cell's source config/frame disjoint from v5 training/augmentation sources; REVISE if the v5 frame list is unavailable offline",
+      "model_accuracy": "v5 error(c)_core vs (a) original-committee held-out error(c) and (b) teacher error(a)_core same family; attribution teacher-limited iff error(c)_core ~= error(a)_core (small error(b))",
+      "physical_validity_defect_band_eV_per_atom": {"low": -10.0, "high": -9.0, "provenance": "relaxed O-deficient SiO2-x DFT cells, coordination_log.csv -9.41..-9.80; NOT the equilibrium [-11,-8] band"}
+    }
+  },
+  "expected_outputs": [
+    "runs/production_run1/prod-run1-v5-heldout-generalization/leakage_certificate.json",
+    "runs/production_run1/prod-run1-v5-heldout-generalization/per_family_error_table.csv",
+    "runs/production_run1/prod-run1-v5-heldout-generalization/heldout_generalization_verdict.json",
+    "runs/production_run1/prod-run1-v5-heldout-generalization/criterion_results.json",
+    "runs/production_run1/prod-run1-v5-heldout-generalization/provenance.json"
+  ],
+  "estimated_cost": "negligible (CPU, read-only aggregation of existing CSV/JSON; no GPU, no scheduler, no network)",
+  "estimated_runtime": "< 10 s",
+  "approval_boundary": null,
+  "idempotency_key": "prod-run1-v5-heldout-generalization-v1",
+  "dry_run": true,
+  "required_validator": "deterministic_criterion_eval (four-axis; artifact_validity + leakage + model_accuracy + physical_validity_defect_band)",
+  "rollback_or_cleanup_policy": "no side effects; writes only under runs/production_run1/<run_id>/; on any guard failure remove the run dir; no research artifact mutated; no automatic downstream action"
+}
