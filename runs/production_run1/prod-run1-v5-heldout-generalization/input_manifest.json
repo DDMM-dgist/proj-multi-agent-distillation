@@ -1,0 +1,36 @@
+{
+  "run_id": "prod-run1-v5-heldout-generalization",
+  "read_only": true,
+  "no_model_invocation": true,
+  "no_dft": true,
+  "no_md": true,
+  "no_training": true,
+  "no_scheduler": true,
+  "no_network": true,
+  "no_judge": true,
+  "inputs": {
+    "heldout_baseline_errord.csv": {
+      "path": "/home/hyunjin/CLADE/SiO2-x_distillatio/materials-ml-kit/research-sio2-allegro-simplenn-distillation/al_iter3/heldout_dft_batch/analysis/heldout_baseline_errord.csv",
+      "sha256": "c3cc9b93daec7aaef0d961c279f0474d9f458379248f88b09ef8fd1d04d8579b",
+      "rows": 6
+    },
+    "manifest_heldout.csv": {
+      "path": "/home/hyunjin/CLADE/SiO2-x_distillatio/materials-ml-kit/research-sio2-allegro-simplenn-distillation/al_iter3/heldout_dft_batch/manifest_heldout.csv",
+      "sha256": "7ba7f2b9672e263ed8c388982da4a54274ec6804c3d44073814dbf6b46a41592",
+      "rows": 8
+    },
+    "teacher_model.nequip.pth": {
+      "path": "/home/hyunjin/CLADE/SiO2-x_distillatio/materials-ml-kit/teacher/model.nequip.pth",
+      "sha256": "b56e20ffc31da601feed8411c92675bdae9eb886db153ff67dd37dea161b1c57",
+      "expected_sha256": "b56e20ffc31da601feed8411c92675bdae9eb886db153ff67dd37dea161b1c57",
+      "invoked": false
+    }
+  },
+  "v5_committee_members": {
+    "seed01": "42a85cd0f510561c527069e1fb1ab8bf",
+    "seed02": "52507ee62ca5a2b16bb12af0643c38ea",
+    "seed03": "bab2e896c2ade58b15dec5b71ab7eddf",
+    "seed04": "92f669b4b91090ea6acaf457006f6367"
+  },
+  "note": "error primitives are the committed run_heldout_baseline.py outputs (raw LAMMPS v5 + NequIP teacher + SCAN OUTCAR); this action recomputes only derived quantities + parses OUTCAR.scan E/atom."
+}

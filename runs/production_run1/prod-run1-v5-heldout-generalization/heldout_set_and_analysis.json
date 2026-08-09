@@ -1,0 +1,105 @@
+{
+  "expected_heldout": [
+    "cell_ho_01",
+    "cell_ho_02",
+    "cell_ho_03",
+    "cell_ho_04",
+    "cell_ho_05",
+    "cell_ho_06",
+    "cell_ho_07",
+    "cell_ho_08"
+  ],
+  "available_scored": [
+    "cell_ho_02",
+    "cell_ho_03",
+    "cell_ho_04",
+    "cell_ho_05",
+    "cell_ho_06",
+    "cell_ho_07"
+  ],
+  "missing": [
+    "cell_ho_01",
+    "cell_ho_08"
+  ],
+  "evaluated_count": 6,
+  "excluded_count": 2,
+  "excluded_reason": {
+    "cell_ho_01": "no prediction row in analysis/ (unscored); source random x003",
+    "cell_ho_08": "no prediction row in analysis/ (unscored); source random x009"
+  },
+  "generalization": {
+    "original_vs_v5_heldout": "MISSING",
+    "reason": "no original-student held-out predictions exist (run_heldout_baseline_orig.py also targets the v5 bundle; no original output). Computing them requires running the ORIGINAL student = forbidden here.",
+    "delta_errc_v5_minus_original": null,
+    "note": "Per Run-1 contract, the prior deployment-distribution adoption verdict is NOT reused as proof. Held-out original-vs-v5 generalization is therefore UNRESOLVED offline."
+  },
+  "teacher_attribution": {
+    "rule": "TEACHER_LIMITED if erra>=errb and errd<=1.10*erra; DISTILLATION_LIMITED if errb>erra and errd>1.10*erra; else MIXED",
+    "per_cell": {
+      "cell_ho_02": "MIXED",
+      "cell_ho_03": "TEACHER_LIMITED",
+      "cell_ho_04": "TEACHER_LIMITED",
+      "cell_ho_05": "TEACHER_LIMITED",
+      "cell_ho_06": "MIXED",
+      "cell_ho_07": "TEACHER_LIMITED"
+    },
+    "counts": {
+      "MIXED": 2,
+      "TEACHER_LIMITED": 4
+    },
+    "errb_core_lt_erra_core_all_cells": true,
+    "clustered_core_summary": {
+      "erra_core_mean": 0.3811,
+      "errd_core_mean": 0.3893,
+      "errb_core_mean": 0.2326
+    },
+    "interpretation": "Across ALL 6 scored held-out cells errb_core < erra_core (distillation gap smaller than the teacher's own DFT error). No cell is DISTILLATION_LIMITED; 4 TEACHER_LIMITED, 2 MIXED. At clustered defect cores teacher and student errors are comparable (~0.35-0.44 eV/A) and the teacher's error is the larger single factor => the clustered-core ceiling is TEACHER-dominant, not distillation-limited."
+  },
+  "domain": {
+    "clustered": {
+      "n_cells": 4,
+      "erra_core_mean": 0.3811,
+      "errd_core_mean": 0.3893,
+      "errb_core_mean": 0.2326,
+      "u_alpha_center_mean": 0.1737,
+      "dft_E_per_atom_range": [
+        -9.6452,
+        -9.5988
+      ],
+      "attributions": [
+        "MIXED",
+        "TEACHER_LIMITED"
+      ]
+    },
+    "random": {
+      "n_cells": 2,
+      "erra_core_mean": 0.2968,
+      "errd_core_mean": 0.3452,
+      "errb_core_mean": 0.1822,
+      "u_alpha_center_mean": 0.3011,
+      "dft_E_per_atom_range": [
+        -9.9375,
+        -9.823
+      ],
+      "attributions": [
+        "MIXED",
+        "TEACHER_LIMITED"
+      ]
+    },
+    "all": {
+      "n_cells": 6,
+      "erra_core_mean": 0.353,
+      "errd_core_mean": 0.3746,
+      "errb_core_mean": 0.2158,
+      "u_alpha_center_mean": 0.2161,
+      "dft_E_per_atom_range": [
+        -9.9375,
+        -9.5988
+      ],
+      "attributions": [
+        "MIXED",
+        "TEACHER_LIMITED"
+      ]
+    }
+  }
+}

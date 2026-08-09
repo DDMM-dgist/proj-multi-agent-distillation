@@ -1,0 +1,35 @@
+{
+  "run_id": "prod-run1-v5-heldout-generalization",
+  "stage": "production_run1",
+  "phase": "R1.P1",
+  "action_type": "evaluate_heldout_fidelity",
+  "package_head": "28448bbe5a7aa29d25a32ed587e38adfda9a0bc9",
+  "proposal": "examples/production_run1/action_proposal.json",
+  "proposal_sha256": "2a3fb550a1f47009849e0885aff151fc2414ba3e8a4ea9ddb2c13158a952242b",
+  "analysis_code": "work/production_run1_r1p1_eval.py",
+  "analysis_code_sha256": "1dd29199abccbf83011840c6e664035a7b9234f2de266f2baf3a37c822c38970",
+  "no_gpu": true,
+  "no_model_invocation": true,
+  "no_dft": true,
+  "no_md": true,
+  "no_training": true,
+  "no_scheduler": true,
+  "no_network": true,
+  "no_semantic_judge": true,
+  "no_automatic_downstream_action": true,
+  "input_shas": {
+    "heldout_baseline_errord.csv": "c3cc9b93daec7aaef0d961c279f0474d9f458379248f88b09ef8fd1d04d8579b",
+    "manifest_heldout.csv": "7ba7f2b9672e263ed8c388982da4a54274ec6804c3d44073814dbf6b46a41592",
+    "teacher_model.nequip.pth": "b56e20ffc31da601feed8411c92675bdae9eb886db153ff67dd37dea161b1c57"
+  },
+  "output_shas": {
+    "committee_summary.json": "396e9b65414fb7e81777aa3d757899c8935fddba6fa079299e182184eb90a5e5",
+    "criterion_results.json": "e5228d65c8edcdc291eec6c02ec247f7a14b399b9f2cfbe4b2cc195607648b6e",
+    "domain_metrics.csv": "47b87d1a984a2514c1d89d708b4a457bad9759a6704f9bd2ab6f3270d6aedfd5",
+    "heldout_fidelity_summary.json": "bc8236d8a8ce7ee50266eb8176a05fe121bcd37444352c00d52cd371c8069c04",
+    "heldout_set_and_analysis.json": "f70e92acad4633a429a565370804e28bbaab0da8516b300279be4e53615869c0",
+    "input_manifest.json": "a89c2d93e2b69ba1df62009f716077cf6b16148335fd1ad32583b2c9842ed802",
+    "leakage_audit.json": "9712e519dfdfd0d79b66dfd815c48bd76f1689cfc39db33b7fb0e8f1be170d49",
+    "per_cell_metrics.csv": "2c241faca287be827b768e3f01e75456cb5eba5a238297baa6bbd05e882e4218"
+  }
+}

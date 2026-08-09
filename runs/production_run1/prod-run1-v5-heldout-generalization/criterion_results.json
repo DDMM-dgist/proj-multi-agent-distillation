@@ -1,0 +1,39 @@
+{
+  "deterministic_authoritative": true,
+  "axes": {
+    "artifact_validity": {
+      "verdict": "PASS",
+      "checks": {
+        "all_rows_parse": true,
+        "all_core_primitives_finite": true,
+        "atom_counts_match_manifest": true,
+        "v5_members_distinct_4": true,
+        "teacher_sha_matches": true,
+        "dft_energy_available_all": true
+      }
+    },
+    "leakage": {
+      "verdict": "REVISE",
+      "reason": "v5 training/augmentation frame list ('train_list') is NOT present in the committed v5 bundle (staged elsewhere/KISTI); exact disjointness of the held-out cells from v5 training cannot be PROVEN offline."
+    },
+    "model_accuracy_attribution": {
+      "verdict": "COMPUTED",
+      "counts": {
+        "MIXED": 2,
+        "TEACHER_LIMITED": 4
+      },
+      "errb_lt_erra_all": true,
+      "original_vs_v5": "MISSING"
+    },
+    "physical_validity_defect_band": {
+      "verdict": "PASS",
+      "band": [
+        -10.0,
+        -9.0
+      ],
+      "all_in_band": true
+    }
+  },
+  "overall_transition": "REVISE",
+  "overall_transition_reason": "artifact_validity+physical_validity PASS and attribution COMPUTED, but leakage=REVISE and original-vs-v5 generalization MISSING => cannot emit a leakage-clean best-student verdict; REVISE with explicit coverage/leakage caveats."
+}
