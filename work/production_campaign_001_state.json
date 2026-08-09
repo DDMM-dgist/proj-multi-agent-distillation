@@ -20,9 +20,28 @@
     "note": "a fine-tuned teacher_finetuned_v2 (b3be4d2a) exists but is NOT deployed and its gain did not survive distillation; not selected on independent evidence."
   },
   "current_student": {
-    "candidates": ["original/deployed committee (SIMPLE_NN_DISTILLATION_CE, 4 seeds)", "v5 committee (gpu_return_v5_committee, 4 seeds, md5 42a85cd0/52507ee6/bab2e896/92f669b4)"],
-    "status": "UNRESOLVED",
-    "reason": "no common DFT evaluation set exists for both: original has error_c on the 1155-frame test_set; v5 has DFT numbers only on 6 held-out cells (R1). A fair ranking is not possible offline."
+    "NEW_PIPELINE_CURRENT_STUDENT": "NONE",
+    "reason": "the new PydanticAI pipeline has not yet designed the distillation dataset or trained a student; historical students are benchmark assets, not the new-workflow state.",
+    "EXISTING_HISTORICAL_STUDENT_ASSETS": ["original_deployed_committee", "v5_committee"]
+  },
+
+  "teacher_validation_FINAL": {
+    "authoritative": true,
+    "supersedes": "teacher_validation (preliminary, ACCEPT_CONDITIONAL)",
+    "run_dir": "runs/production_campaign_001/pc001-teacher-validation-final/",
+    "evaluated_teacher_sha256": "b56e20ffc31da601feed8411c92675bdae9eb886db153ff67dd37dea161b1c57",
+    "student_metrics_used": false,
+    "invented_thresholds_used": false,
+    "threshold_provenance": "NONE FOUND (only a STUDENT distillation-gap target exists; excluded)",
+    "axes": {"A": "PASS", "B": "PASS", "C": "PASS", "D": "PASS", "E": "PASS", "F": "PASS", "G": "PASS"},
+    "in_scope_force_component_mae_eV_A": 0.152,
+    "in_scope_energy_mae_meV_atom_shift": 18.76,
+    "clustered_defect_caveat": "clustered-vacancy/void-surface force ~0.32-0.35 eV/A (COVERED, 79 DFT frames; hard-physics, nonblocking -> PC002 coverage + later AL)",
+    "FINAL_TEACHER_VERDICT": "TEACHER_ACCEPTED_FOR_DISTILLATION",
+    "DISTILLATION_DATASET_STAGE_AUTHORIZED": true,
+    "STUDENT_STAGE_AUTHORIZED": false,
+    "next_campaign": "PC002_DISTILLATION_DATASET_DESIGN",
+    "original_vs_v5_is_next_action": false
   },
 
   "raw_asset_summary": {
@@ -57,6 +76,7 @@
   "pipeline_order": "scope/DFT-reference -> TEACHER_VALIDATION -> gate(teacher ACCEPTED?) -> distillation/labeling -> student_training -> student_validation -> physical/MD -> coverage/active_learning",
 
   "teacher_validation": {
+    "STATUS": "PRELIMINARY / PROVISIONAL — superseded by teacher_validation_FINAL (ACCEPT_CONDITIONAL was not authoritative; used student metrics + unprovenanced thresholds)",
     "phase_position": "PC001 = TEACHER VALIDATION (the gate before any distillation/student work)",
     "executed": true,
     "method": "read-only from error_a (teacher-vs-DFT; teacher forward already run) + EOS; NO new teacher inference",

@@ -1,0 +1,23 @@
+{
+  "run_id": "pc001-teacher-validation-final",
+  "stage": "production_campaign_001",
+  "phase": "TEACHER_VALIDATION_FINAL",
+  "package_head": "a1f15572239e4639183ba472710cd252c23dcc4f",
+  "supersedes_preliminary_run": "pc001-teacher-validation",
+  "analysis_code_sha256": "df470d472401aa85fd149a69121d9169623a65f6af956836c842ad519cf0b200",
+  "inputs_sha256": {
+    "error_a_allegro_vs_dft.csv": "5b1c86bbd33166d20e817c54ca73ecb0fffd849a76c786574df440d50dc1304c",
+    "eos_teacher_bm_summary.csv": "1540fd495c6154d46dd0a3f800398c2249d7270960116e90cd223fd04781966b"
+  },
+  "teacher_sha256": "b56e20ffc31da601feed8411c92675bdae9eb886db153ff67dd37dea161b1c57",
+  "teacher_invoked": false,
+  "student_data_read": false,
+  "no_model_invocation": true,
+  "no_dft": true,
+  "no_md": true,
+  "no_training": true,
+  "no_network": true,
+  "no_semantic_judge": true,
+  "invented_threshold": false,
+  "historical_decisions_used": false
+}

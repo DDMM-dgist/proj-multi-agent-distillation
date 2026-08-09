@@ -1,0 +1,6 @@
+target_domain,n,force_mae_mean,force_p95,force_max,energy_mae_shift,coverage
+amorphous_SiO2,152,0.1855,0.2782,0.3643,15.7507,COVERED
+SiO2x_dilute_vacancy,132,0.2312,0.3887,0.5238,19.446,COVERED
+SiO2x_clustered_vacancy_voidsurface,79,0.3211,0.411,0.4565,16.4308,COVERED
+surfaces,68,0.2157,0.4255,0.8896,18.5838,COVERED
+ambient_crystalline_SiO2_reference,296,0.0395,0.0991,0.2473,20.6652,COVERED

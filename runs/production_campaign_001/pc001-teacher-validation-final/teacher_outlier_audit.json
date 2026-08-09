@@ -1,0 +1,28 @@
+{
+  "verdict": "PASS",
+  "outliers": [
+    {
+      "idx": "244",
+      "natoms": 5,
+      "config_type": "cluster",
+      "Fmae": 2.48,
+      "dE_per_atom_shift_meV": 426.1,
+      "in_scope": false,
+      "classification": "DATA_ARTIFACT_or_DEGENERATE (tiny isolated cluster; extreme dE)",
+      "included_in_in_scope_stat": false,
+      "reason": "out-of-scope isolated cluster, natoms<=5, near-degenerate reference (dE ~ -3424 meV/atom); excluded from in-scope acceptance stats by DOMAIN, not cherry-picking"
+    },
+    {
+      "idx": "277",
+      "natoms": 2,
+      "config_type": "cluster",
+      "Fmae": 56.65,
+      "dE_per_atom_shift_meV": -3424.6,
+      "in_scope": false,
+      "classification": "DATA_ARTIFACT_or_DEGENERATE (tiny isolated cluster; extreme dE)",
+      "included_in_in_scope_stat": false,
+      "reason": "out-of-scope isolated cluster, natoms<=5, near-degenerate reference (dE ~ -3424 meV/atom); excluded from in-scope acceptance stats by DOMAIN, not cherry-picking"
+    }
+  ],
+  "note": "Largest teacher errors are on out-of-scope tiny isolated clusters (2-5 atoms), classified DATA_ARTIFACT/degenerate + OOD; no in-domain structure is mislabeled an artifact. Both with/without-outlier in-scope stats reported (out-of-scope excluded by domain)."
+}

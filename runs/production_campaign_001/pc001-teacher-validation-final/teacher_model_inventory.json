@@ -1,0 +1,15 @@
+{
+  "candidates": {
+    "base_allegro": {
+      "sha256": "b56e20ffc31da601feed8411c92675bdae9eb886db153ff67dd37dea161b1c57",
+      "deployed": true,
+      "dft_eval_coverage": "broad (error_a 1155)"
+    },
+    "finetuned_v2": {
+      "sha256": "b3be4d2a...",
+      "deployed": false,
+      "dft_eval_coverage": "INSUFFICIENT_COMMON_EVIDENCE (no common DFT eval vs base)"
+    }
+  },
+  "evaluated_teacher": "base_allegro b56e20ff (only teacher with broad DFT evaluation)"
+}

@@ -1,0 +1,32 @@
+{
+  "verdict": "PASS",
+  "eos": [
+    {
+      "phase": "alpha-quartz",
+      "B0_GPa": "201.89",
+      "smoothness": "SMOOTH"
+    },
+    {
+      "phase": "Coesite",
+      "B0_GPa": "228.12",
+      "smoothness": "SMOOTH"
+    },
+    {
+      "phase": "Stishovite",
+      "B0_GPa": "344.21",
+      "smoothness": "SMOOTH"
+    },
+    {
+      "phase": "PbO2-type",
+      "B0_GPa": "355.34",
+      "smoothness": "SMOOTH"
+    },
+    {
+      "phase": "Pyrite-type",
+      "B0_GPa": "351.73",
+      "smoothness": "SMOOTH"
+    }
+  ],
+  "eos_ambient_smooth": true,
+  "note": "Teacher-specific EOS: ambient SiO2 phases SMOOTH, physical B0 (alpha-quartz ~202, coesite ~228 GPa). No student physical validation used."
+}

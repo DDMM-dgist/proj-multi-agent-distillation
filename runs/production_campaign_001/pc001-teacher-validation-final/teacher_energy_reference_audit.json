@@ -1,0 +1,71 @@
+{
+  "verdict": "PASS",
+  "in_scope_raw_meV_atom": {
+    "n": 727,
+    "mean": 9.6033,
+    "median": 5.457,
+    "p90": 23.5515,
+    "p95": 34.1599,
+    "p99": 55.9825,
+    "max": 102.9643
+  },
+  "in_scope_shift_corrected_meV_atom": {
+    "n": 727,
+    "mean": 18.7615,
+    "median": 18.7256,
+    "p90": 28.6793,
+    "p95": 34.3841,
+    "p99": 53.2363,
+    "max": 119.0099
+  },
+  "global_shift_meV_atom": -16.046,
+  "domain_resolved_shift": {
+    "amorphous_SiO2": {
+      "n": 152,
+      "mean": 15.7507,
+      "median": 17.2597,
+      "p90": 22.4198,
+      "p95": 24.0845,
+      "p99": 30.3629,
+      "max": 45.5265
+    },
+    "SiO2x_dilute_vacancy": {
+      "n": 132,
+      "mean": 19.446,
+      "median": 17.6779,
+      "p90": 37.3791,
+      "p95": 40.3138,
+      "p99": 50.8551,
+      "max": 53.2363
+    },
+    "SiO2x_clustered_vacancy_voidsurface": {
+      "n": 79,
+      "mean": 16.4308,
+      "median": 14.6847,
+      "p90": 33.5807,
+      "p95": 38.2188,
+      "p99": 72.2794,
+      "max": 72.2794
+    },
+    "surfaces": {
+      "n": 68,
+      "mean": 18.5838,
+      "median": 9.3766,
+      "p90": 48.5361,
+      "p95": 80.3917,
+      "p99": 119.0099,
+      "max": 119.0099
+    },
+    "ambient_crystalline_SiO2_reference": {
+      "n": 296,
+      "mean": 20.6652,
+      "median": 20.7975,
+      "p90": 26.4529,
+      "p95": 29.3556,
+      "p99": 32.2079,
+      "max": 69.4652
+    }
+  },
+  "convention": "error_a energy via NequIPCalculator.get_potential_energy() (VALID path; matches DFT to ~16 meV/atom raw bias = the per_type_energy_shift offset). This is NOT the raw deployed-torch total_energy path (C3). Absolute comparison valid for this path.",
+  "caveat": "Absolute-energy validity is specific to the NequIPCalculator/error_a path; the raw torch total_energy convention (C3) must NOT be assumed equal \u2014 a caveat for any future direct-torch labeling."
+}

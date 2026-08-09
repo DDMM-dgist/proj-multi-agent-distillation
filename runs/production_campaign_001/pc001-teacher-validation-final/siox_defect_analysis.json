@@ -1,0 +1,91 @@
+{
+  "per_config": {
+    "SiOx_crystal_amorphous_interfaces": {
+      "n": 13,
+      "mean": 0.1982,
+      "median": 0.1979,
+      "p90": 0.2446,
+      "p95": 0.2473,
+      "p99": 0.2473,
+      "max": 0.2473
+    },
+    "SiOx_int_AL": {
+      "n": 39,
+      "mean": 0.3355,
+      "median": 0.3193,
+      "p90": 0.4136,
+      "p95": 0.5032,
+      "p99": 0.5238,
+      "max": 0.5238
+    },
+    "SiOx_max_AL": {
+      "n": 44,
+      "mean": 0.3506,
+      "median": 0.3586,
+      "p90": 0.4101,
+      "p95": 0.4335,
+      "p99": 0.4565,
+      "max": 0.4565
+    },
+    "highpressure_max_AL": {
+      "n": 18,
+      "mean": 0.219,
+      "median": 0.1968,
+      "p90": 0.2988,
+      "p95": 0.3122,
+      "p99": 0.3122,
+      "max": 0.3122
+    },
+    "quench_max_AL": {
+      "n": 34,
+      "mean": 0.2852,
+      "median": 0.3012,
+      "p90": 0.3931,
+      "p95": 0.3973,
+      "p99": 0.411,
+      "max": 0.411
+    },
+    "surfaces_max_AL": {
+      "n": 1,
+      "mean": 0.2408,
+      "median": 0.2408,
+      "p90": 0.2408,
+      "p95": 0.2408,
+      "p99": 0.2408,
+      "max": 0.2408
+    },
+    "vacancy": {
+      "n": 25,
+      "mean": 0.0973,
+      "median": 0.1075,
+      "p90": 0.1241,
+      "p95": 0.1241,
+      "p99": 0.1294,
+      "max": 0.1294
+    },
+    "vacancy_int_AL": {
+      "n": 68,
+      "mean": 0.2206,
+      "median": 0.2095,
+      "p90": 0.2827,
+      "p95": 0.3025,
+      "p99": 0.3687,
+      "max": 0.3687
+    }
+  },
+  "dilute_vs_clustered": {
+    "dilute_int_AL_families": {
+      "SiOx_int_AL": 0.3355,
+      "vacancy_int_AL": 0.2206
+    },
+    "clustered_max_AL_families": {
+      "SiOx_max_AL": 0.3506,
+      "quench_max_AL": 0.2852,
+      "surfaces_max_AL": 0.2408
+    }
+  },
+  "interpretation": "The elevated force error concentrates on *_max_AL (active-learning-selected MAXIMALLY-UNCERTAIN) clustered frames (~0.33-0.35 eV/A component MAE) vs dilute/int_AL (~0.19-0.34). These are the hardest, sparsely-covered, deliberately-selected configs \u2014 expected to be the teacher's ceiling. It is a coverage+hard-physics limitation at the clustered-defect target sub-region, not a uniform teacher collapse.",
+  "is_target_domain": true,
+  "blocking_now": false,
+  "blocking_reasoning": "No source-grounded threshold is violated; the region is force-elevated but the teacher remains physically consistent and is the sole DFT-trained reference. The correct remediation is DATASET coverage (PC002) + later validation/AL, not teacher rejection. Recorded as a NONBLOCKING caveat + a PC002 requirement."
+}

@@ -1,0 +1,10 @@
+{
+  "inputs": {
+    "error_a_allegro_vs_dft.csv": "5b1c86bbd33166d20e817c54ca73ecb0fffd849a76c786574df440d50dc1304c",
+    "eos_teacher_bm_summary.csv": "1540fd495c6154d46dd0a3f800398c2249d7270960116e90cd223fd04781966b",
+    "run_task_a.py": "6aa18e48a576d1b859df18a49a950986f77d7ce782f101e8aad66c27a5ca96c3"
+  },
+  "teacher_sha256": "b56e20ffc31da601feed8411c92675bdae9eb886db153ff67dd37dea161b1c57",
+  "teacher_invoked": false,
+  "student_data_read": false
+}

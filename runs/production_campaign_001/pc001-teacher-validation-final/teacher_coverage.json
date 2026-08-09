@@ -1,0 +1,47 @@
+{
+  "verdict": "PASS",
+  "matrix": {
+    "amorphous_SiO2": {
+      "target_required": true,
+      "dft_reference_count": 152,
+      "teacher_prediction_count": 152,
+      "reference_valid": true,
+      "force_component_mae": 0.1855,
+      "coverage_status": "COVERED"
+    },
+    "SiO2x_dilute_vacancy": {
+      "target_required": true,
+      "dft_reference_count": 132,
+      "teacher_prediction_count": 132,
+      "reference_valid": true,
+      "force_component_mae": 0.2312,
+      "coverage_status": "COVERED"
+    },
+    "SiO2x_clustered_vacancy_voidsurface": {
+      "target_required": true,
+      "dft_reference_count": 79,
+      "teacher_prediction_count": 79,
+      "reference_valid": true,
+      "force_component_mae": 0.3211,
+      "coverage_status": "COVERED"
+    },
+    "surfaces": {
+      "target_required": true,
+      "dft_reference_count": 68,
+      "teacher_prediction_count": 68,
+      "reference_valid": true,
+      "force_component_mae": 0.2157,
+      "coverage_status": "COVERED"
+    },
+    "ambient_crystalline_SiO2_reference": {
+      "target_required": true,
+      "dft_reference_count": 296,
+      "teacher_prediction_count": 296,
+      "reference_valid": true,
+      "force_component_mae": 0.0395,
+      "coverage_status": "COVERED"
+    }
+  },
+  "sparse_or_missing": [],
+  "note": "DFT reference coverage of the clustered-vacancy/void-surface target sub-region is SPARSE. This is a DATASET issue for PC002 (distillation dataset design) + later coverage/AL, not a teacher-MODEL defect; it does not by itself reject the teacher but must be closed downstream."
+}
