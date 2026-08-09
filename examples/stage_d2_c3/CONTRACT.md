@@ -103,24 +103,33 @@ The external approval is read-only and never modified; `approved=false` is never
 The wrapper `work/stage_d2_c3_execute.py` owns the fresh-run/no-overwrite guard (not weakened); the
 executor runs with `run_dir_precreated=True` and refuses only if its own outputs already exist.
 
-**Failure atomicity (no auto retry):** if execution fails BEFORE the forward, a failure/provenance
-state is recorded (`EXECUTION_FAILED_BEFORE_FORWARD`, no scientific verdict). If it fails AFTER the
-forward, the attempt is preserved append-only (`EXECUTION_FAILED_AFTER_FORWARD`) and is not rerun under
-the same run identity (the existing run dir refuses re-execution). No automatic retry.
+**Failure atomicity (no auto retry).** The execution state machine distinguishes four phases —
+`PRE_FORWARD` (model not yet invoked) → `FORWARD_STARTED` (`self._model(data)` entered) →
+`FORWARD_COMPLETED` (E/F returned) → `ARTIFACT_COMMITTED` — and records durable counters
+`model_forward_invoked` / `model_forward_completed` / `valid_prediction_generated`. A failure maps to:
+`EXECUTION_FAILED_BEFORE_FORWARD` (never invoked), `EXECUTION_FAILED_DURING_FORWARD` (invoked but did
+not complete — a model-invocation failure, NOT a completed prediction), or
+`EXECUTION_FAILED_AFTER_FORWARD` (returned E/F, later step failed; preserved append-only). The
+classification is derived from the adapter's forward-phase flags, not from the mere existence of
+`teacher_ef.json`. No automatic retry; the existing run dir refuses re-execution.
 
 ## Exact action after explicit approval
 
-The single committed command (writes no Python after approval). Attempt 1 failed pre-forward on a
-nequip API mismatch (fixed; adapter now uses `compute_neighborlist_`), so scientific execution is
-**attempt 2** with a fresh run identity `d2c3-teacher-sp-mini216-attempt2` and a fresh external approval:
+The single committed command (writes no Python after approval). Attempt 1 failed **pre-forward** on a
+nequip API mismatch (fixed; adapter uses `compute_neighborlist_`). Attempt 2 invoked the model and failed
+**during forward** on a device mismatch — model buffers on cuda:1, input tensors on CPU (fixed;
+`build_model_input` now moves every input tensor onto the model's actual device, and a device-consistency
+preflight fails closed on any CPU/CUDA mix). So scientific execution is **attempt 3** with a fresh run
+identity `d2c3-teacher-sp-mini216-attempt3` and a fresh external approval:
 ```
 conda run -n allegro python work/stage_d2_c3_execute.py \
-    --device cuda:1 --expect-head <HEAD> --attempt 2 \
-    --approval examples/stage_d2_c3/approvals/d2c3-teacher-sp-mini216-attempt2.approval.json
+    --device cuda:1 --expect-head <HEAD> --attempt 3 \
+    --approval examples/stage_d2_c3/approvals/d2c3-teacher-sp-mini216-attempt3.approval.json
 ```
-Preflight order (run each first, no forward): `stage_d2_c3_env_preflight.py` → `stage_d2_c3_model_load_preflight.py`
-→ `stage_d2_c3_input_build_preflight.py`. The wrapper refuses attempt 1 (immutable failed run) and any
-existing run dir.
+Preflight order (run each first, no forward): `stage_d2_c3_env_preflight.py` →
+`stage_d2_c3_model_load_preflight.py` → `stage_d2_c3_input_build_preflight.py` →
+`stage_d2_c3_device_consistency_preflight.py` (run the last on the SAME `--device cuda:1` so it inspects
+real cuda placement). The wrapper refuses attempts 1 and 2 (immutable failed runs) and any existing run dir.
 It runs `run_teacher_single_point` once on one selected GPU: verify HEAD + approval + SHAs → fresh run
 dir + approval snapshot → parse mini216 (216 atoms) → **one Allegro forward pass** (trusted adapter's
 `build_forward_fn`) → write `teacher_ef.json` + `forces.csv` → record A+B validity → evaluate the

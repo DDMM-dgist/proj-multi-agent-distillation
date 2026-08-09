@@ -142,9 +142,10 @@ class StageD2C3TeacherPrepTests(unittest.TestCase):
         self.assertEqual(im["composition"], {"O": 144, "Si": 72})
 
     def test_no_successful_run_and_judge_advisory(self):
-        # no SUCCESSFUL scientific run exists: no teacher_ef.json anywhere; attempt-2 dir absent. (The
-        # immutable failed attempt-1 run may exist as evidence but carries no teacher_ef.json.)
-        self.assertFalse((ROOT / "runs" / "stage_d2_c3" / "d2c3-teacher-sp-mini216-attempt2").exists())
+        # no SUCCESSFUL scientific run exists: no teacher_ef.json anywhere; attempt-3 dir absent. (The
+        # immutable failed attempt-1 (API mismatch) and attempt-2 (device mismatch) runs may exist as
+        # evidence but carry no teacher_ef.json.)
+        self.assertFalse((ROOT / "runs" / "stage_d2_c3" / "d2c3-teacher-sp-mini216-attempt3").exists())
         for ef in (ROOT / "runs" / "stage_d2_c3").rglob("teacher_ef.json"):
             self.fail(f"unexpected teacher_ef.json (no successful teacher forward should exist): {ef}")
         t = json.loads((BASE / "judge_interpretation_task.json").read_text())

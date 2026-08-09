@@ -34,19 +34,36 @@ _HAS_STRUCT = Path(MINI216).is_file()
 
 
 class _FakeAdapter:
-    def __init__(self, calls, raise_in_forward=False):
+    """Mirrors the real adapter's forward-phase contract: build_forward_fn resets forward_invoked/
+    forward_completed; forward_fn sets forward_invoked=True immediately BEFORE the (synthetic) model call
+    and forward_completed=True after a successful return. ``raise_before_model`` fails in the PRE_FORWARD
+    input-build stage (invoked stays False); ``raise_in_model`` fails AFTER invocation begins (invoked
+    True, completed False) — the attempt-2 DURING_FORWARD device-mismatch class."""
+
+    def __init__(self, calls, raise_before_model=False, raise_in_model=False):
         self.type_names = ["O", "Si"]; self.r_max = 5.0; self.model_dtype = "float32"; self._model = object()
-        self._calls = calls; self._raise = raise_in_forward
+        self._calls = calls
+        self._raise_before = raise_before_model
+        self._raise_in = raise_in_model
+        self.forward_invoked = False
+        self.forward_completed = False
 
     def load(self, device="cpu"):
         return {"python": "3.10", "torch": "x", "nequip": "y", "allegro": "?",
                 "type_names": self.type_names, "r_max": self.r_max, "model_dtype": self.model_dtype}
 
     def build_forward_fn(self):
+        self.forward_invoked = False
+        self.forward_completed = False
+
         def fwd(positions, lammps_types, box_L, tmap):
-            if self._raise:
-                raise RuntimeError("synthetic forward failure")
+            if self._raise_before:                      # PRE_FORWARD (input build) failure
+                raise RuntimeError("synthetic input-build failure")
+            self.forward_invoked = True                 # FORWARD_STARTED
+            if self._raise_in:                          # DURING_FORWARD (in-model device mismatch)
+                raise RuntimeError("synthetic in-model device mismatch (cuda:1 vs cpu)")
             self._calls.append(len(positions))
+            self.forward_completed = True               # FORWARD_COMPLETED
             return -9.7 * len(positions), [[0.3, -0.2, 0.1] for _ in positions]
         return fwd
 
@@ -176,24 +193,57 @@ class StageD2C3ExecuteTests(unittest.TestCase):
         self.assertEqual(hashlib.sha256(Path(MINI216).read_bytes()).hexdigest(), before)
 
     def test_failure_before_forward_distinguishable(self):
+        # PRE_FORWARD: the model was never invoked (input-build stage fails) -> BEFORE_FORWARD.
         with tempfile.TemporaryDirectory() as d:
-            self.factory = lambda mp, sha, allow: _FakeAdapter(self.calls, raise_in_forward=True)
+            self.factory = lambda mp, sha, allow: _FakeAdapter(self.calls, raise_before_model=True)
             with self.assertRaises(W.ExecutionRefused):
                 self._run(d, run_dir=f"{d}/run")
             rm = json.loads((Path(f"{d}/run") / "run_manifest.json").read_text())
             self.assertEqual(rm["status"], "EXECUTION_FAILED_BEFORE_FORWARD")
-            self.assertFalse(rm["forward_pass_completed"])
+            self.assertFalse(rm["model_forward_invoked"]); self.assertFalse(rm["model_forward_completed"])
+            self.assertFalse(rm["valid_prediction_generated"])
             self.assertIsNone(rm["scientific_verdict"]); self.assertFalse(rm["automatic_retry"])
             self.assertFalse((Path(f"{d}/run") / "teacher_ef.json").exists())
 
+    def test_failure_during_forward_classified(self):
+        # DURING_FORWARD (attempt-2's class): the model forward was INVOKED but did not complete; no
+        # teacher_ef.json is written, yet it must NOT be mislabeled BEFORE_FORWARD.
+        with tempfile.TemporaryDirectory() as d:
+            self.factory = lambda mp, sha, allow: _FakeAdapter(self.calls, raise_in_model=True)
+            with self.assertRaisesRegex(W.ExecutionRefused, "during forward"):
+                self._run(d, run_dir=f"{d}/run")
+            rm = json.loads((Path(f"{d}/run") / "run_manifest.json").read_text())
+            self.assertEqual(rm["status"], "EXECUTION_FAILED_DURING_FORWARD")
+            self.assertTrue(rm["model_forward_invoked"])          # forward WAS invoked
+            self.assertFalse(rm["model_forward_completed"])       # but did not complete
+            self.assertFalse(rm["valid_prediction_generated"])    # no valid prediction
+            self.assertFalse(rm["forward_pass_completed"])
+            self.assertIsNone(rm["scientific_verdict"]); self.assertFalse(rm["automatic_retry"])
+            self.assertFalse((Path(f"{d}/run") / "teacher_ef.json").exists())
+            self.assertEqual(len(self.calls), 0)                  # no successful forward recorded
+
+    def test_classify_failure_state_machine(self):
+        # pure state-machine mapping
+        self.assertEqual(W.classify_failure(forward_invoked=False, forward_completed=False, artifact_exists=False),
+                         "EXECUTION_FAILED_BEFORE_FORWARD")
+        self.assertEqual(W.classify_failure(forward_invoked=True, forward_completed=False, artifact_exists=False),
+                         "EXECUTION_FAILED_DURING_FORWARD")
+        self.assertEqual(W.classify_failure(forward_invoked=True, forward_completed=True, artifact_exists=False),
+                         "EXECUTION_FAILED_AFTER_FORWARD")
+        self.assertEqual(W.classify_failure(forward_invoked=True, forward_completed=False, artifact_exists=True),
+                         "EXECUTION_FAILED_AFTER_FORWARD")
+
     def test_failure_after_forward_marker(self):
-        # unit: the failure recorder classifies AFTER when teacher_ef.json already exists
+        # unit: the failure recorder records the explicit completed counter for AFTER-forward failures
         with tempfile.TemporaryDirectory() as d:
             rd = Path(d) / "run"; rd.mkdir(); (rd / "teacher_ef.json").write_text("{}")
             W._write_failure(rd, "HEAD", {"external_approval_path": "x", "external_approval_sha256": "y"},
-                             "EXECUTION_FAILED_AFTER_FORWARD", "post-forward error")
+                             "EXECUTION_FAILED_AFTER_FORWARD", "post-forward error",
+                             model_forward_invoked=True, model_forward_completed=True,
+                             valid_prediction_generated=False)
             rm = json.loads((rd / "run_manifest.json").read_text())
             self.assertEqual(rm["status"], "EXECUTION_FAILED_AFTER_FORWARD")
+            self.assertTrue(rm["model_forward_invoked"]); self.assertTrue(rm["model_forward_completed"])
             self.assertTrue(rm["forward_pass_completed"]); self.assertFalse(rm["automatic_retry"])
 
     def test_no_side_job_paths(self):
@@ -201,33 +251,67 @@ class StageD2C3ExecuteTests(unittest.TestCase):
         for banned in ("sbatch", "qsub", "srun", "nequip-train", "lammps", "run_md", "run_dft"):
             self.assertNotIn(banned, src)
 
-    def test_attempt_identity_and_immutable_attempt1(self):
+    def test_attempt_identity_and_immutable_attempts_1_2(self):
         # deterministic attempt identity
         self.assertEqual(W.run_id_for(1), "d2c3-teacher-sp-mini216")
         self.assertEqual(W.run_id_for(2), "d2c3-teacher-sp-mini216-attempt2")
+        self.assertEqual(W.run_id_for(3), "d2c3-teacher-sp-mini216-attempt3")
         with tempfile.TemporaryDirectory() as d:
-            # attempt 1 (the immutable failed identity) is refused for scientific execution
-            with self.assertRaisesRegex(W.ExecutionRefused, "attempt 1 is the immutable"):
-                self._run(d, attempt=1, run_dir=f"{d}/run")
-            # targeting the base attempt-1 run directory is refused
-            with self.assertRaisesRegex(W.ExecutionRefused, "immutable attempt-1"):
-                self._run(d, run_dir=str(ROOT / "runs" / "stage_d2_c3" / "d2c3-teacher-sp-mini216"))
-        # the committed failed attempt-1 run is immutable evidence: BEFORE_FORWARD, no teacher_ef.json
+            # attempts 1 and 2 (the immutable failed identities) are refused for scientific execution
+            for att in (1, 2):
+                with self.assertRaisesRegex(W.ExecutionRefused, "immutable failed run"):
+                    self._run(d, attempt=att, run_dir=f"{d}/run")
+            # targeting either immutable run directory is refused
+            for name in ("d2c3-teacher-sp-mini216", "d2c3-teacher-sp-mini216-attempt2"):
+                with self.assertRaisesRegex(W.ExecutionRefused, "immutable failed attempt"):
+                    self._run(d, run_dir=str(ROOT / "runs" / "stage_d2_c3" / name))
+        # committed failed attempt-1 run: immutable evidence, BEFORE_FORWARD, no teacher_ef.json
         a1 = ROOT / "runs" / "stage_d2_c3" / "d2c3-teacher-sp-mini216"
         if a1.is_dir():
             self.assertEqual(json.loads((a1 / "run_manifest.json").read_text())["status"],
                              "EXECUTION_FAILED_BEFORE_FORWARD")
             self.assertFalse((a1 / "teacher_ef.json").exists())
-            self.assertFalse((a1 / "criterion_results.json").exists())
 
-    def test_attempt2_external_approval_prepared_not_active(self):
-        ap = json.loads((ROOT / "examples/stage_d2_c3/approvals/d2c3-teacher-sp-mini216-attempt2.approval.json").read_text())
+    def test_attempt2_immutable_raw_and_additive_correction(self):
+        a2 = ROOT / "runs" / "stage_d2_c3" / "d2c3-teacher-sp-mini216-attempt2"
+        if not a2.is_dir():
+            self.skipTest("attempt-2 run not present")
+        # raw provenance preserved byte-identically with the ORIGINAL coarse classification
+        raw = json.loads((a2 / "run_manifest.json").read_text())
+        self.assertEqual(raw["status"], "EXECUTION_FAILED_BEFORE_FORWARD")   # the coarse original, untouched
+        self.assertIn("cuda:1 and cpu", raw["reason"])                       # model WAS entered (device mismatch)
+        self.assertFalse((a2 / "teacher_ef.json").exists())
+        self.assertFalse((a2 / "criterion_results.json").exists())
+        # the correction is ADDITIVE (separate file), not a rewrite of the raw record
+        corr = json.loads((a2 / "CORRECTED_INTERPRETATION.json").read_text())["CORRECTED_CLASSIFICATION"]
+        self.assertEqual(corr["failure_class"], "EXECUTION_FAILED_DURING_FORWARD")
+        self.assertEqual(corr["ROOT_CAUSE"], "MODEL_INPUT_OR_BUFFER_DEVICE_MISMATCH_CPU_VS_CUDA1")
+        self.assertEqual(corr["model_forward_invocation_count"], 1)
+        self.assertEqual(corr["valid_teacher_prediction_count"], 0)
+        self.assertIs(corr["model_forward_completed"], False)
+
+    def _assert_prepared_approval(self, path, attempt):
+        ap = json.loads(Path(path).read_text())
         self.assertIs(ap["approved"], False)               # prepared, not active
-        self.assertEqual(ap["attempt"], 2)
+        self.assertEqual(ap["attempt"], attempt)
         self.assertEqual(ap["action"], "label_with_teacher")
         self.assertEqual(ap["subtype"], "teacher_single_point")
-        self.assertIn("d2c3-teacher-sp-mini216", ap["supersedes"]["attempt1_run"])
         self.assertIs(ap["authorizes_subsequent_actions"], False)
+        return ap
+
+    def test_attempt2_external_approval_prepared_not_active(self):
+        ap = self._assert_prepared_approval(
+            ROOT / "examples/stage_d2_c3/approvals/d2c3-teacher-sp-mini216-attempt2.approval.json", 2)
+        self.assertIn("d2c3-teacher-sp-mini216", ap["supersedes"]["attempt1_run"])
+
+    def test_attempt3_external_approval_prepared_and_references_1_2(self):
+        ap = self._assert_prepared_approval(
+            ROOT / "examples/stage_d2_c3/approvals/d2c3-teacher-sp-mini216-attempt3.approval.json", 3)
+        sup = ap["supersedes"]
+        self.assertIn("NEQUIP_0_16_1_ATOMICDATADICT_API_MISMATCH", sup["attempt1_root_cause"])
+        self.assertIn("MODEL_INPUT_OR_BUFFER_DEVICE_MISMATCH_CPU_VS_CUDA1", sup["attempt2_root_cause"])
+        self.assertEqual(sup["attempt2_model_forward_invocation_count"], 1)
+        self.assertEqual(sup["attempt2_valid_teacher_prediction_count"], 0)
 
 
 if __name__ == "__main__":  # pragma: no cover

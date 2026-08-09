@@ -15,7 +15,8 @@ Python expression. ``adapter_factory`` is a CODE-LEVEL test seam (default = the 
 inject a synthetic-output adapter. The real path uses only the committed TrustedAllegroAdapter.
 
   conda run -n allegro python work/stage_d2_c3_execute.py \
-      --device cuda:1 --expect-head <sha> --approval runs/stage_d2_c3/d2c3-teacher-sp-mini216/approval.json
+      --device cuda:1 --expect-head <sha> --attempt 3 \
+      --approval examples/stage_d2_c3/approvals/d2c3-teacher-sp-mini216-attempt3.approval.json
 """
 from __future__ import annotations
 
@@ -91,23 +92,55 @@ def _validate_approval(approval: dict, params: dict) -> None:
             raise ExecutionRefused(f"approval limit {k} must be true")
 
 
-def _write_failure(rd: Path, head: str, approval_ref: dict, state: str, reason: str) -> None:
+# Execution state machine (failure atomicity): the lifecycle a scientific execution passes through, and
+# the failure class for an exception raised in each. Attempt 2 (self._model(data) invoked, RuntimeError
+# device mismatch INSIDE the model, no E/F returned) maps to DURING_FORWARD — NOT the coarse
+# BEFORE_FORWARD the old "teacher_ef.json exists?" heuristic produced.
+_STATES = ("PRE_FORWARD", "FORWARD_STARTED", "FORWARD_COMPLETED", "ARTIFACT_COMMITTED")
+_FAILURE_NOTE = {
+    "EXECUTION_FAILED_BEFORE_FORWARD":
+        "failure BEFORE the model was invoked (PRE_FORWARD) — no forward, no scientific prediction",
+    "EXECUTION_FAILED_DURING_FORWARD":
+        "the deployed model forward was INVOKED (FORWARD_STARTED) but did not complete — no valid E/F "
+        "was returned; this is a model-invocation failure, NOT a completed scientific prediction; no "
+        "automatic retry",
+    "EXECUTION_FAILED_AFTER_FORWARD":
+        "the model forward returned E/F (FORWARD_COMPLETED) but a later step failed — attempt preserved "
+        "append-only; do not rerun under this run identity; no automatic retry",
+}
+
+
+def classify_failure(*, forward_invoked: bool, forward_completed: bool, artifact_exists: bool) -> str:
+    """Map the observed execution phase to a failure class. A model invocation that did not successfully
+    return (forward_invoked and not forward_completed) is DURING_FORWARD (attempt-2's class)."""
+    if forward_completed or artifact_exists:
+        return "EXECUTION_FAILED_AFTER_FORWARD"
+    if forward_invoked:
+        return "EXECUTION_FAILED_DURING_FORWARD"
+    return "EXECUTION_FAILED_BEFORE_FORWARD"
+
+
+def _write_failure(rd: Path, head: str, approval_ref: dict, state: str, reason: str, *,
+                   model_forward_invoked: bool = False, model_forward_completed: bool = False,
+                   valid_prediction_generated: bool = False) -> None:
     """Failure atomicity: preserve the actual execution attempt (append-only) without pretending a
-    scientific prediction occurred, and with no automatic retry."""
-    forward_happened = (rd / "teacher_ef.json").exists()
+    scientific prediction occurred, and with no automatic retry. Records durable, separate counters —
+    model_forward_invoked vs model_forward_completed vs valid_prediction_generated — so a DURING-forward
+    model failure is never conflated with a completed prediction."""
     rec = {"status": state, "reason": reason, "package_head": head, "source_approval": approval_ref,
-           "forward_pass_completed": forward_happened, "scientific_verdict": None,
-           "automatic_retry": False,
-           "note": ("failure AFTER the model forward — attempt preserved append-only; do not rerun under "
-                    "this run identity" if forward_happened else
-                    "failure BEFORE the model forward — no scientific prediction occurred")}
+           "model_forward_invoked": model_forward_invoked,
+           "model_forward_completed": model_forward_completed,
+           "valid_prediction_generated": valid_prediction_generated,
+           "forward_pass_completed": model_forward_completed,   # retained key (== model_forward_completed)
+           "scientific_verdict": None, "automatic_retry": False,
+           "note": _FAILURE_NOTE.get(state, "")}
     (rd / "run_manifest.json").write_text(json.dumps(rec, indent=2) + "\n")
     (rd / "provenance.json").write_text(json.dumps({**rec, "run_id": Path(rd).name, "stage": "stage_d2_c3"}, indent=2) + "\n")
 
 
 def execute(*, approval_path, device: str = "cuda:0", expect_head: str = None,
             run_dir: str = None, repo_root: Path = ROOT, adapter_factory=None,
-            clock=None, env_check=None, attempt: int = 2) -> dict:
+            clock=None, env_check=None, attempt: int = 3) -> dict:
     """Perform the single approved teacher single-point via the EXTERNAL-approval flow:
     ENV PREFLIGHT (import/load contract) -> verify HEAD -> read external approval read-only -> validate
     -> verify SHAs -> fresh run dir -> snapshot approval into it -> ONE forward -> outputs -> Axis-A/B ->
@@ -147,13 +180,16 @@ def execute(*, approval_path, device: str = "cuda:0", expect_head: str = None,
         raise ExecutionRefused("structure sha256 mismatch")
     if model_before != params["model_sha256"]:
         raise ExecutionRefused("teacher model sha256 mismatch")
-    # attempt identity: refuse reusing the immutable failed attempt-1 id; scientific execution is attempt>=2
-    if attempt < 2:
-        raise ExecutionRefused("attempt 1 is the immutable failed run; scientific execution uses attempt>=2")
+    # attempt identity: refuse reusing the immutable failed attempt-1 (nequip API mismatch) or attempt-2
+    # (device mismatch) ids; scientific execution is attempt>=3
+    if attempt < 3:
+        raise ExecutionRefused("attempts 1 and 2 are immutable failed runs; scientific execution uses attempt>=3")
     run_id = run_id_for(attempt)
     rd = Path(run_dir) if run_dir else (repo_root / "runs" / "stage_d2_c3" / run_id)
-    if rd.name == BASE_RUN_ID or rd.resolve() == (repo_root / "runs" / "stage_d2_c3" / BASE_RUN_ID).resolve():
-        raise ExecutionRefused("refusing to target the immutable attempt-1 run directory")
+    _immutable_dirs = {(repo_root / "runs" / "stage_d2_c3" / BASE_RUN_ID).resolve(),
+                       (repo_root / "runs" / "stage_d2_c3" / f"{BASE_RUN_ID}-attempt2").resolve()}
+    if rd.name in (BASE_RUN_ID, f"{BASE_RUN_ID}-attempt2") or rd.resolve() in _immutable_dirs:
+        raise ExecutionRefused("refusing to target an immutable failed attempt (attempt-1 / attempt-2) run directory")
     # 10. target run dir must NOT exist (fresh-run guard owned by the wrapper; not weakened)
     if rd.exists():
         raise ExecutionRefused(f"run dir exists (no overwrite): {rd}")
@@ -163,26 +199,37 @@ def execute(*, approval_path, device: str = "cuda:0", expect_head: str = None,
     (rd / "approval.json").write_text(json.dumps(approval, indent=2) + "\n")
     approval_ref = {"external_approval_path": str(approval_path), "external_approval_sha256": approval_sha}
     # from here a run dir EXISTS -> use failure-atomic recording; NO automatic retry
+    adapter = None                                   # bound before the try so the except can read phase flags
     try:
         # 14. construct trusted adapter INTERNALLY (no CLI/agent forward_fn); load exact teacher
         factory = adapter_factory or _real_adapter_factory
         adapter = factory(model, params["model_sha256"], params["read_allow_prefixes"])
         load_prov = adapter.load(device=device)
-        forward_fn = adapter.build_forward_fn()      # trusted callable
+        forward_fn = adapter.build_forward_fn()      # trusted callable (resets forward phase flags)
         # 15/16. exactly ONE forward -> executor writes teacher_ef.json + forces.csv into the fresh dir
         result = EX.run_teacher_single_point(proposal=proposal, run_dir=str(rd), approval=approval,
                                              forward_fn=forward_fn, clock=clock, run_dir_precreated=True)
         if result.status != "OK":
-            _write_failure(rd, head, approval_ref, f"EXECUTION_FAILED_{result.status}", result.reason)
+            _write_failure(rd, head, approval_ref, f"EXECUTION_FAILED_{result.status}", result.reason,
+                           model_forward_invoked=bool(getattr(adapter, "forward_invoked", False)),
+                           model_forward_completed=bool(getattr(adapter, "forward_completed", False)))
             raise ExecutionRefused(f"executor STOP: {result.status} {result.reason}")
     except ExecutionRefused:
         raise
     except Exception as exc:  # noqa: BLE001
-        after = (rd / "teacher_ef.json").exists()
-        _write_failure(rd, head, approval_ref,
-                       "EXECUTION_FAILED_AFTER_FORWARD" if after else "EXECUTION_FAILED_BEFORE_FORWARD",
-                       f"{type(exc).__name__}: {exc}")
-        raise ExecutionRefused(f"execution failed ({'after' if after else 'before'} forward): {exc}") from exc
+        # classify BEFORE / DURING / AFTER from the adapter's forward-phase flags (not from the mere
+        # existence of teacher_ef.json): attempt-2's in-model device mismatch is DURING_FORWARD.
+        invoked = bool(getattr(adapter, "forward_invoked", False))
+        completed = bool(getattr(adapter, "forward_completed", False))
+        artifact_exists = (rd / "teacher_ef.json").exists()
+        state = classify_failure(forward_invoked=invoked, forward_completed=completed,
+                                 artifact_exists=artifact_exists)
+        _write_failure(rd, head, approval_ref, state, f"{type(exc).__name__}: {exc}",
+                       model_forward_invoked=invoked, model_forward_completed=completed,
+                       valid_prediction_generated=False)
+        phase = {"EXECUTION_FAILED_BEFORE_FORWARD": "before", "EXECUTION_FAILED_DURING_FORWARD": "during",
+                 "EXECUTION_FAILED_AFTER_FORWARD": "after"}[state]
+        raise ExecutionRefused(f"execution failed ({phase} forward): {exc}") from exc
     # provenance augmentation of teacher_ef.json (14): model dtype/device/type_names/cutoff/versions/shape
     ef = json.loads((rd / "teacher_ef.json").read_text())
     ef["force_array_shape"] = [result.artifact["n_atoms"], 3]
@@ -219,7 +266,11 @@ def execute(*, approval_path, device: str = "cuda:0", expect_head: str = None,
         pass
     provenance = {"run_id": run_id, "attempt": attempt,
                   "supersedes": {"attempt1_run": BASE_RUN_ID,
-                                 "attempt1_status": "EXECUTION_FAILED_BEFORE_FORWARD (immutable)"},
+                                 "attempt1_status": "EXECUTION_FAILED_BEFORE_FORWARD (immutable; NEQUIP_0_16_1_ATOMICDATADICT_API_MISMATCH)",
+                                 "attempt2_run": f"{BASE_RUN_ID}-attempt2",
+                                 "attempt2_status": "EXECUTION_FAILED_DURING_FORWARD (immutable; MODEL_INPUT_OR_BUFFER_DEVICE_MISMATCH_CPU_VS_CUDA1)"},
+                  "model_forward_invoked": True, "model_forward_completed": True,
+                  "valid_prediction_generated": True,
                   "stage": "stage_d2_c3", "action": "label_with_teacher",
                   "subtype": "teacher_single_point", "package_head": head,
                   "adapter": "TrustedAllegroAdapter (committed; no arbitrary forward_fn)",
@@ -250,7 +301,7 @@ def main():
     ap.add_argument("--device", default="cuda:0")
     ap.add_argument("--expect-head", default=None)
     ap.add_argument("--approval", required=True, help="path to the EXTERNAL approval json (read-only)")
-    ap.add_argument("--attempt", type=int, default=2, help="scientific run attempt (>=2; 1 is immutable failed)")
+    ap.add_argument("--attempt", type=int, default=3, help="scientific run attempt (>=3; attempts 1 and 2 are immutable failed)")
     a = ap.parse_args()                       # NOTE: no --forward / no python expression is accepted
     print(json.dumps(execute(approval_path=a.approval, device=a.device, expect_head=a.expect_head,
                              attempt=a.attempt), indent=2))

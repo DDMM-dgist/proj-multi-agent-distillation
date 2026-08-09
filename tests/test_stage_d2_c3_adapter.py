@@ -20,7 +20,8 @@ MODEL_SHA = "b56e20ffc31da601feed8411c92675bdae9eb886db153ff67dd37dea161b1c57"
 ALLOW = [f"{RES}/gpu_finetune_handoff/models/"]
 
 try:
-    from runtimes.pydantic_ai.stage_d2_c3_teacher_adapter import AdapterGuardError, TrustedAllegroAdapter
+    from runtimes.pydantic_ai.stage_d2_c3_teacher_adapter import (
+        AdapterGuardError, TrustedAllegroAdapter, device_consistency_report)
     _HAS = True
 except ImportError:  # pragma: no cover
     _HAS = False
@@ -116,6 +117,38 @@ class StageD2C3AdapterTests(unittest.TestCase):
         self.assertEqual(data[A.EDGE_INDEX_KEY].shape[0], 2)
         self.assertEqual(conv["composition"], {"O": 2, "Si": 1})
         self.assertEqual(conv["atom_type_index"], [0, 0, 1])
+
+    def test_forward_phase_flags_reset_by_build_forward_fn(self):
+        a = self._adapter()                                 # _loaded True, _model None
+        a.forward_invoked = True; a.forward_completed = True   # stale state
+        a.build_forward_fn()                                 # must reset the phase flags
+        self.assertFalse(a.forward_invoked)
+        self.assertFalse(a.forward_completed)
+
+    def test_device_consistency_report_detects_cpu_cuda_mix(self):
+        # attempt-2's exact class: model on cuda:1, an input tensor on cpu -> NOT ok, input offender cpu
+        r = device_consistency_report(model_devices=["cuda:1"], input_devices=["cuda:1", "cpu"],
+                                      target_device="cuda:1")
+        self.assertFalse(r["ok"]); self.assertTrue(r["mixed"])
+        self.assertEqual(r["input_offenders"], ["cpu"]); self.assertEqual(r["model_offenders"], [])
+        # inverse: a required model buffer left on cpu while inputs are on cuda:1 -> model offender cpu
+        r2 = device_consistency_report(model_devices=["cuda:1", "cpu"], input_devices=["cuda:1"],
+                                       target_device="cuda:1")
+        self.assertFalse(r2["ok"]); self.assertEqual(r2["model_offenders"], ["cpu"])
+        # fully consistent placement -> ok
+        ok = device_consistency_report(model_devices=["cuda:1"], input_devices=["cuda:1"],
+                                       target_device="cuda:1")
+        self.assertTrue(ok["ok"]); self.assertFalse(ok["mixed"])
+        self.assertEqual(ok["model_offenders"], []); self.assertEqual(ok["input_offenders"], [])
+        # all-cpu consistent (the local no-GPU preflight case)
+        self.assertTrue(device_consistency_report(["cpu"], ["cpu"], "cpu")["ok"])
+
+    def test_target_device_falls_back_to_cpu_without_model(self):
+        import importlib.util
+        if importlib.util.find_spec("torch") is None:
+            self.skipTest("torch absent")
+        a = self._adapter()                                 # _model None
+        self.assertEqual(str(a._target_device()), "cpu")
 
     @unittest.skipUnless(_HAS_MODEL, "teacher model not present")
     def test_real_load_metadata_if_torch_present(self):
