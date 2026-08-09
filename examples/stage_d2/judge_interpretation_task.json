@@ -1,0 +1,22 @@
+{
+  "schema_version": 1,
+  "task_id": "d2c1-posthoc-msd-random_x006-interpretation",
+  "agent": "judge",
+  "created_at": "2026-08-09T00:00:00Z",
+  "instruction": "Read msd.csv + msd_summary.json for this run. Interpret ONLY from the generated artifact + declared diagnostics; do NOT fabricate a plateau/diffusion threshold.",
+  "inputs": [],
+  "criteria": [
+    "Is the computed MSD behavior consistent with a bounded amorphous-solid trajectory over the observed window?",
+    "Is there evidence of sustained diffusion over the observed window?",
+    "Is the trajectory/window sufficient to support the interpretation, or is longer analysis required?"
+  ],
+  "constraints": [
+    "read-only; ground the interpretation only in the generated artifact + diagnostics"
+  ],
+  "context": {
+    "review_lens": "scientific_validity",
+    "review_focus": "Semantic (advisory) interpretation of post-hoc MSD dynamics.",
+    "deterministic_authoritative": false,
+    "note": "ADVISORY gate: no source-grounded numeric plateau/diffusion threshold exists, so the physical interpretation is a genuine semantic Judge verdict. The artifact-validity gate is separate and authoritative."
+  }
+}
