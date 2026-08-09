@@ -1,0 +1,18 @@
+{
+  "run_id": "pc001-teacher-exact-heldout-validation",
+  "stage": "production_campaign_001",
+  "package_head": "0f03c9957c1024b17c9c2c8a9a5ffab1005f7fe8",
+  "teacher_sha256": "b56e20ffc31da601feed8411c92675bdae9eb886db153ff67dd37dea161b1c57",
+  "test_split": "seed-123 random_split test (splits[2])",
+  "n_test": 1142,
+  "analysis_code_sha256": "5f3c55c916044476eb2872b611768b1ef172a2450a8213bd0edc6639f4316051",
+  "fresh_teacher_inference": true,
+  "calculator": "NequIPCalculator (cpu)",
+  "walltime_s": 3184.2,
+  "student_data_used": false,
+  "no_dft": true,
+  "no_md": true,
+  "no_training": true,
+  "no_network": true,
+  "no_semantic_judge": true
+}

@@ -1,0 +1,31 @@
+{
+  "reconstruction": "torch.utils.data.random_split(range(11424),[0.8,0.1,0.1],Generator.manual_seed(123)); subset order [train,val,test]; return splits[2]",
+  "N_total": 11424,
+  "N_train": 9140,
+  "N_val": 1142,
+  "N_test": 1142,
+  "test_indices_first20": [
+    18,
+    37,
+    38,
+    42,
+    44,
+    55,
+    62,
+    65,
+    67,
+    72,
+    95,
+    105,
+    111,
+    136,
+    141,
+    148,
+    154,
+    156,
+    165,
+    173
+  ],
+  "test_indices_count": 1142,
+  "validation_note": "confirm by reproducing the NequIP test-log forces_mae 0.1561 with fresh inference on these indices"
+}

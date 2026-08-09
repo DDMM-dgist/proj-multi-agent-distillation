@@ -1,0 +1,9 @@
+{
+  "FINAL_TEACHER_VERDICT": "TEACHER_STATUS_UNRESOLVED",
+  "verdict_type": "DERIVED (fresh exact-held-out test; no invented threshold)",
+  "held_out_force_component_MAE": 0.15612667361453716,
+  "held_out_energy_MAE_meV_atom": 8.890147116279245,
+  "reproduction": "MISMATCH",
+  "vacancy_monotonic": true,
+  "student_data_used": false
+}

@@ -1,0 +1,16 @@
+{
+  "PRIORITY_1_true_held_out_test": "seed-123 10% test split of dataset.xyz (~1143 frames) \u2014 SELECTED as authoritative held-out; metrics from the NequIP test phase (forces_mae 0.156, energy 15.7 meV/atom)",
+  "authoritative_basis": "NequIP test-phase GLOBAL metrics (source-grounded, exact model + exact held-out split)",
+  "fresh_confirmation": "independent NequIPCalculator inference on a deterministic stratified per-config sample of dataset.xyz (this run) \u2014 confirms the calculator path + gives per-domain",
+  "PCA_SOAP_1155_test_set_role": "SECONDARY historical benchmark ONLY; NOT the authoritative held-out test",
+  "training_performance": {
+    "forces_mae": 0.1494
+  },
+  "validation_performance": {
+    "forces_mae": 0.1627
+  },
+  "held_out_test_performance": {
+    "forces_mae": 0.1561,
+    "per_atom_energy_mae_meV": 15.73
+  }
+}
