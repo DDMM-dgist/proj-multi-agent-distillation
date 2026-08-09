@@ -23,19 +23,51 @@ MODEL_SHA = "b56e20ffc31da601feed8411c92675bdae9eb886db153ff67dd37dea161b1c57"
 ALLOW = [f"{RES}/gpu_finetune_handoff/models/"]
 
 
+def _gpu_free_mib(device):
+    try:
+        import torch
+        if device.startswith("cuda") and torch.cuda.is_available():
+            idx = int(device.split(":")[1]) if ":" in device else 0
+            free, total = torch.cuda.mem_get_info(idx)
+            return {"free_MiB": free // (1 << 20), "total_MiB": total // (1 << 20)}
+    except Exception as e:  # noqa: BLE001
+        return {"error": repr(e)[:120]}
+    return None
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--device", default="cpu")
     a = ap.parse_args()
+    gpu_before = _gpu_free_mib(a.device)
     adapter = TrustedAllegroAdapter(MODEL, expected_sha256=MODEL_SHA, allow_prefixes=ALLOW)  # sha+allow guards
-    info = adapter.load(device=a.device)   # LOAD ONLY — no forward
+    info = adapter.load(device=a.device)   # LOAD ONLY — no forward, NO structure
+    gpu_after = _gpu_free_mib(a.device)
+    load_mib = None
+    if gpu_before and gpu_after and "free_MiB" in gpu_before and "free_MiB" in gpu_after:
+        load_mib = gpu_before["free_MiB"] - gpu_after["free_MiB"]
     # confirm the species mapping the C3 conversion will use (LAMMPS 1->O, 2->Si), NO structure fed
     mapping_ok = (adapter.type_names == ["O", "Si"]
                   and adapter.species_index("O") == 0 and adapter.species_index("Si") == 1)
-    print(json.dumps({"model_load": "SUCCESS_no_forward", "model_path": MODEL, "info": info,
+    # clean unload
+    unloaded = False
+    try:
+        import torch
+        adapter._model = None
+        if a.device.startswith("cuda"):
+            torch.cuda.empty_cache()
+        unloaded = True
+    except Exception:  # noqa: BLE001
+        pass
+    gpu_final = _gpu_free_mib(a.device)
+    print(json.dumps({"model_load": "SUCCESS_no_forward", "device": a.device, "model_path": MODEL,
+                      "info": info, "gpu_free_before": gpu_before, "gpu_free_after_load": gpu_after,
+                      "model_load_MiB": load_mib, "gpu_free_after_unload": gpu_final,
+                      "clean_unload": unloaded,
                       "lammps_type_1->O->index": adapter.species_index("O"),
                       "lammps_type_2->Si->index": adapter.species_index("Si"),
-                      "species_mapping_ok": mapping_ok}, indent=2))
+                      "species_mapping_ok": mapping_ok,
+                      "note": "MODEL LOAD ONLY — no structure, no forward pass, no E/F"}, indent=2))
     return 0 if mapping_ok else 1
 
 
