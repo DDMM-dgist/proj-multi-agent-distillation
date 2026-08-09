@@ -110,12 +110,17 @@ the same run identity (the existing run dir refuses re-execution). No automatic 
 
 ## Exact action after explicit approval
 
-The single committed command (writes no Python after approval):
+The single committed command (writes no Python after approval). Attempt 1 failed pre-forward on a
+nequip API mismatch (fixed; adapter now uses `compute_neighborlist_`), so scientific execution is
+**attempt 2** with a fresh run identity `d2c3-teacher-sp-mini216-attempt2` and a fresh external approval:
 ```
 conda run -n allegro python work/stage_d2_c3_execute.py \
-    --device cuda:1 --expect-head <HEAD> \
-    --approval examples/stage_d2_c3/approvals/d2c3-teacher-sp-mini216.approval.json
+    --device cuda:1 --expect-head <HEAD> --attempt 2 \
+    --approval examples/stage_d2_c3/approvals/d2c3-teacher-sp-mini216-attempt2.approval.json
 ```
+Preflight order (run each first, no forward): `stage_d2_c3_env_preflight.py` → `stage_d2_c3_model_load_preflight.py`
+→ `stage_d2_c3_input_build_preflight.py`. The wrapper refuses attempt 1 (immutable failed run) and any
+existing run dir.
 It runs `run_teacher_single_point` once on one selected GPU: verify HEAD + approval + SHAs → fresh run
 dir + approval snapshot → parse mini216 (216 atoms) → **one Allegro forward pass** (trusted adapter's
 `build_forward_fn`) → write `teacher_ef.json` + `forces.csv` → record A+B validity → evaluate the

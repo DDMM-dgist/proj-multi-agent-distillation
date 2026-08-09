@@ -100,7 +100,8 @@ class StageD2C3ExecuteTests(unittest.TestCase):
     def test_no_cli_forward_function_accepted(self):
         src = (ROOT / "work" / "stage_d2_c3_execute.py").read_text()
         added = {ln.split('add_argument("')[1].split('"')[0] for ln in src.splitlines() if 'add_argument("' in ln}
-        self.assertEqual(added, {"--device", "--expect-head", "--approval"})
+        self.assertEqual(added, {"--device", "--expect-head", "--approval", "--attempt"})
+        self.assertNotIn("--forward", added)
         self.assertNotIn("eval(", src); self.assertNotIn("exec(", src)
         self.assertIn("adapter_factory", src)
 
@@ -199,6 +200,34 @@ class StageD2C3ExecuteTests(unittest.TestCase):
         src = (ROOT / "work" / "stage_d2_c3_execute.py").read_text().lower()
         for banned in ("sbatch", "qsub", "srun", "nequip-train", "lammps", "run_md", "run_dft"):
             self.assertNotIn(banned, src)
+
+    def test_attempt_identity_and_immutable_attempt1(self):
+        # deterministic attempt identity
+        self.assertEqual(W.run_id_for(1), "d2c3-teacher-sp-mini216")
+        self.assertEqual(W.run_id_for(2), "d2c3-teacher-sp-mini216-attempt2")
+        with tempfile.TemporaryDirectory() as d:
+            # attempt 1 (the immutable failed identity) is refused for scientific execution
+            with self.assertRaisesRegex(W.ExecutionRefused, "attempt 1 is the immutable"):
+                self._run(d, attempt=1, run_dir=f"{d}/run")
+            # targeting the base attempt-1 run directory is refused
+            with self.assertRaisesRegex(W.ExecutionRefused, "immutable attempt-1"):
+                self._run(d, run_dir=str(ROOT / "runs" / "stage_d2_c3" / "d2c3-teacher-sp-mini216"))
+        # the committed failed attempt-1 run is immutable evidence: BEFORE_FORWARD, no teacher_ef.json
+        a1 = ROOT / "runs" / "stage_d2_c3" / "d2c3-teacher-sp-mini216"
+        if a1.is_dir():
+            self.assertEqual(json.loads((a1 / "run_manifest.json").read_text())["status"],
+                             "EXECUTION_FAILED_BEFORE_FORWARD")
+            self.assertFalse((a1 / "teacher_ef.json").exists())
+            self.assertFalse((a1 / "criterion_results.json").exists())
+
+    def test_attempt2_external_approval_prepared_not_active(self):
+        ap = json.loads((ROOT / "examples/stage_d2_c3/approvals/d2c3-teacher-sp-mini216-attempt2.approval.json").read_text())
+        self.assertIs(ap["approved"], False)               # prepared, not active
+        self.assertEqual(ap["attempt"], 2)
+        self.assertEqual(ap["action"], "label_with_teacher")
+        self.assertEqual(ap["subtype"], "teacher_single_point")
+        self.assertIn("d2c3-teacher-sp-mini216", ap["supersedes"]["attempt1_run"])
+        self.assertIs(ap["authorizes_subsequent_actions"], False)
 
 
 if __name__ == "__main__":  # pragma: no cover

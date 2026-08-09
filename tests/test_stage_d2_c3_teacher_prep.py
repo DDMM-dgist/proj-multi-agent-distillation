@@ -141,8 +141,12 @@ class StageD2C3TeacherPrepTests(unittest.TestCase):
         self.assertEqual(im["n_atoms"], 216)
         self.assertEqual(im["composition"], {"O": 144, "Si": 72})
 
-    def test_no_run_dir_in_prep_and_judge_advisory(self):
-        self.assertFalse((ROOT / "runs" / "stage_d2_c3").exists())   # prep created no execution dir
+    def test_no_successful_run_and_judge_advisory(self):
+        # no SUCCESSFUL scientific run exists: no teacher_ef.json anywhere; attempt-2 dir absent. (The
+        # immutable failed attempt-1 run may exist as evidence but carries no teacher_ef.json.)
+        self.assertFalse((ROOT / "runs" / "stage_d2_c3" / "d2c3-teacher-sp-mini216-attempt2").exists())
+        for ef in (ROOT / "runs" / "stage_d2_c3").rglob("teacher_ef.json"):
+            self.fail(f"unexpected teacher_ef.json (no successful teacher forward should exist): {ef}")
         t = json.loads((BASE / "judge_interpretation_task.json").read_text())
         self.assertIs(t["context"]["deterministic_authoritative"], False)   # advisory only
         self.assertIn("runs/stage_d2_c3/", t["instruction"])                # full repo-relative path

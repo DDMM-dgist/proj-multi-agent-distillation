@@ -86,6 +86,37 @@ class StageD2C3AdapterTests(unittest.TestCase):
         for k in ("no_scheduler", "no_training", "no_md", "no_dft", "no_paid_api", "no_overwrite"):
             self.assertIs(prop[k], True)
 
+    def test_input_construction_uses_nequip_0161_api(self):
+        # the attempt-1 failure was AtomicDataDict.with_edge_vectors (absent in nequip 0.16.1);
+        # the fix must use the real installed API (compute_neighborlist_) via build_model_input.
+        src = (ROOT / "runtimes/pydantic_ai/stage_d2_c3_teacher_adapter.py").read_text()
+        self.assertNotIn("with_edge_vectors(", src)      # no CALL to the deprecated helper (prose ref ok)
+        self.assertIn("compute_neighborlist_(", src)     # the real nequip 0.16.1 API is called
+        self.assertIn("def build_model_input", src)
+        self.assertIn("def build_model_input", src)
+        self.assertIn("def build_forward_fn", src)
+
+    def test_build_model_input_requires_load(self):
+        a = TrustedAllegroAdapter.__new__(TrustedAllegroAdapter); a._loaded = False
+        with self.assertRaisesRegex(AdapterGuardError, "call load"):
+            a.build_model_input([(0.0, 0.0, 0.0)], [1], 10.0, {"1": "O", "2": "Si"})
+
+    def test_build_model_input_edge_index_if_torch_present(self):
+        try:
+            import torch  # noqa: F401
+            import nequip  # noqa: F401
+        except ImportError:
+            self.skipTest("torch/nequip absent (real input-build verified in the allegro env)")
+        from nequip.data import AtomicDataDict as A
+        a = self._adapter()   # type_names [O,Si], r_max 5.0, _loaded True
+        pos = [(1.0, 1.0, 1.0), (2.0, 1.0, 1.0), (5.0, 5.0, 5.0)]
+        data, conv = a.build_model_input(pos, [1, 1, 2], 10.0, {"1": "O", "2": "Si"})
+        self.assertIn(A.EDGE_INDEX_KEY, data)
+        self.assertEqual(list(data[A.POSITIONS_KEY].shape), [3, 3])
+        self.assertEqual(data[A.EDGE_INDEX_KEY].shape[0], 2)
+        self.assertEqual(conv["composition"], {"O": 2, "Si": 1})
+        self.assertEqual(conv["atom_type_index"], [0, 0, 1])
+
     @unittest.skipUnless(_HAS_MODEL, "teacher model not present")
     def test_real_load_metadata_if_torch_present(self):
         try:

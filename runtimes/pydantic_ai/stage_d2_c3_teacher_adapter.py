@@ -113,32 +113,38 @@ class TrustedAllegroAdapter:
                 "units": {"length": "Angstrom", "energy": "eV", "force": "eV/Angstrom"},
                 "atom_ordering": "by LAMMPS id (ascending)", "relaxation": "none"}
 
+    # ---- model INPUT construction (nequip 0.16.1 API; NO model call — used by the input-build preflight) ----
+    def build_model_input(self, positions, lammps_types, box_L, type_symbol_map):
+        """Build the exact nequip 0.16.1 model input (AtomicDataDict) + neighbor list for one structure,
+        WITHOUT calling the model. Returns (data, conv). Uses the real installed API
+        ``nequip.data.compute_neighborlist_`` (the deprecated ``AtomicDataDict.with_edge_vectors`` from
+        the attempt-1 failure does NOT exist in 0.16.1). Requires load() (for r_max) + torch/nequip."""
+        if not self._loaded:
+            raise AdapterGuardError("call load() before build_model_input()")
+        import torch  # lazy
+        from nequip.data import AtomicDataDict as A, compute_neighborlist_  # lazy; nequip 0.16.1 API
+        conv = self.structure_conversion_contract(positions, lammps_types, box_L, type_symbol_map)
+        data = {A.POSITIONS_KEY: torch.tensor(positions, dtype=torch.float32),
+                A.CELL_KEY: torch.tensor(conv["cell"], dtype=torch.float32).unsqueeze(0),
+                A.PBC_KEY: torch.tensor([[True, True, True]]),
+                A.ATOM_TYPE_KEY: torch.tensor(conv["atom_type_index"], dtype=torch.long)}
+        data = compute_neighborlist_(data, r_max=self.r_max)   # adds edge_index + edge_cell_shift
+        return data, conv
+
     # ---- the ONE trusted forward (invoked ONLY at approved execution, via the C3 executor) ----
     def build_forward_fn(self):
         """Return the trusted forward callable used by the generic C3 executor:
         forward_fn(positions, types, box_L, type_symbol_map) -> (energy_eV, forces_eV_A[N][3]).
-        Constructs the neighbor list at r_max and runs exactly ONE model forward. Requires load()."""
+        Builds the input (build_model_input) and runs exactly ONE model forward. Requires load()."""
         if not self._loaded:
             raise AdapterGuardError("call load() before build_forward_fn()")
 
         def forward_fn(positions, lammps_types, box_L, type_symbol_map):
-            import torch  # lazy
-            conv = self.structure_conversion_contract(positions, lammps_types, box_L, type_symbol_map)
-            # NOTE: neighbor-list + AtomicDataDict assembly + model(input) run at approved execution in
-            # the matching nequip/allegro env; kept behind this trusted callable. The output contract is
-            # (total_energy_eV: float, forces_eV_A: list[[fx,fy,fz]] length N).
-            from nequip.data import AtomicDataDict  # lazy; execution-time
-            pos = torch.tensor(positions, dtype=torch.float32)
-            cell = torch.tensor(conv["cell"], dtype=torch.float32)
-            data = {AtomicDataDict.POSITIONS_KEY: pos,
-                    AtomicDataDict.CELL_KEY: cell.unsqueeze(0),
-                    AtomicDataDict.PBC_KEY: torch.tensor([[True, True, True]]),
-                    AtomicDataDict.ATOM_TYPE_KEY: torch.tensor(conv["atom_type_index"], dtype=torch.long)}
-            data = AtomicDataDict.with_edge_vectors(  # neighbor list at r_max
-                AtomicDataDict.compute_neighborlist(data, r_max=self.r_max))
+            from nequip.data import AtomicDataDict as A  # lazy
+            data, _conv = self.build_model_input(positions, lammps_types, box_L, type_symbol_map)
             out = self._model(data)                                        # the ONE forward pass
-            energy = float(out[AtomicDataDict.TOTAL_ENERGY_KEY].reshape(-1)[0].item())
-            forces = out[AtomicDataDict.FORCE_KEY].detach().cpu().tolist()
+            energy = float(out[A.TOTAL_ENERGY_KEY].reshape(-1)[0].item())
+            forces = out[A.FORCE_KEY].detach().cpu().tolist()
             return energy, forces
 
         return forward_fn

@@ -34,8 +34,14 @@ sys.path.insert(0, str(ROOT / "work"))
 # missing dependency (e.g. pydantic — the launch-attempt-1 failure) is reported by the preflight and
 # fails closed BEFORE any run-dir creation, instead of crashing at wrapper import time.
 
-RUN_ID = "d2c3-teacher-sp-mini216"
+BASE_RUN_ID = "d2c3-teacher-sp-mini216"     # attempt-1 (this exact id) is the IMMUTABLE failed run
 C3 = ROOT / "examples" / "stage_d2_c3"
+
+
+def run_id_for(attempt: int) -> str:
+    """Deterministic run identity. Attempt 1 == the immutable failed run (base id); scientific
+    execution uses attempt>=2 with an explicit -attemptN suffix."""
+    return BASE_RUN_ID if attempt == 1 else f"{BASE_RUN_ID}-attempt{attempt}"
 
 
 def _sha(p):
@@ -96,12 +102,12 @@ def _write_failure(rd: Path, head: str, approval_ref: dict, state: str, reason: 
                     "this run identity" if forward_happened else
                     "failure BEFORE the model forward — no scientific prediction occurred")}
     (rd / "run_manifest.json").write_text(json.dumps(rec, indent=2) + "\n")
-    (rd / "provenance.json").write_text(json.dumps({**rec, "run_id": RUN_ID, "stage": "stage_d2_c3"}, indent=2) + "\n")
+    (rd / "provenance.json").write_text(json.dumps({**rec, "run_id": Path(rd).name, "stage": "stage_d2_c3"}, indent=2) + "\n")
 
 
 def execute(*, approval_path, device: str = "cuda:0", expect_head: str = None,
             run_dir: str = None, repo_root: Path = ROOT, adapter_factory=None,
-            clock=None, env_check=None) -> dict:
+            clock=None, env_check=None, attempt: int = 2) -> dict:
     """Perform the single approved teacher single-point via the EXTERNAL-approval flow:
     ENV PREFLIGHT (import/load contract) -> verify HEAD -> read external approval read-only -> validate
     -> verify SHAs -> fresh run dir -> snapshot approval into it -> ONE forward -> outputs -> Axis-A/B ->
@@ -141,7 +147,13 @@ def execute(*, approval_path, device: str = "cuda:0", expect_head: str = None,
         raise ExecutionRefused("structure sha256 mismatch")
     if model_before != params["model_sha256"]:
         raise ExecutionRefused("teacher model sha256 mismatch")
-    rd = Path(run_dir) if run_dir else (repo_root / "runs" / "stage_d2_c3" / RUN_ID)
+    # attempt identity: refuse reusing the immutable failed attempt-1 id; scientific execution is attempt>=2
+    if attempt < 2:
+        raise ExecutionRefused("attempt 1 is the immutable failed run; scientific execution uses attempt>=2")
+    run_id = run_id_for(attempt)
+    rd = Path(run_dir) if run_dir else (repo_root / "runs" / "stage_d2_c3" / run_id)
+    if rd.name == BASE_RUN_ID or rd.resolve() == (repo_root / "runs" / "stage_d2_c3" / BASE_RUN_ID).resolve():
+        raise ExecutionRefused("refusing to target the immutable attempt-1 run directory")
     # 10. target run dir must NOT exist (fresh-run guard owned by the wrapper; not weakened)
     if rd.exists():
         raise ExecutionRefused(f"run dir exists (no overwrite): {rd}")
@@ -205,7 +217,10 @@ def execute(*, approval_path, device: str = "cuda:0", expect_head: str = None,
         unloaded = True
     except Exception:  # noqa: BLE001
         pass
-    provenance = {"run_id": RUN_ID, "stage": "stage_d2_c3", "action": "label_with_teacher",
+    provenance = {"run_id": run_id, "attempt": attempt,
+                  "supersedes": {"attempt1_run": BASE_RUN_ID,
+                                 "attempt1_status": "EXECUTION_FAILED_BEFORE_FORWARD (immutable)"},
+                  "stage": "stage_d2_c3", "action": "label_with_teacher",
                   "subtype": "teacher_single_point", "package_head": head,
                   "adapter": "TrustedAllegroAdapter (committed; no arbitrary forward_fn)",
                   "model_identity": "base/pre-fine-tune KISTI Allegro, compiled TorchScript deploy-only",
@@ -222,7 +237,8 @@ def execute(*, approval_path, device: str = "cuda:0", expect_head: str = None,
         {"status": "OK", "authoritative_verdict": verdict, "accepted": verdict == "PASS",
          "source_model_unchanged": source_unchanged, "clean_unload": unloaded,
          "semantic_judge": "deferred (separate approval)"}, indent=2) + "\n")
-    return {"authoritative_verdict": verdict, "E_per_atom_eV": result.validity.get("E_per_atom_eV"),
+    return {"run_id": run_id, "attempt": attempt,
+            "authoritative_verdict": verdict, "E_per_atom_eV": result.validity.get("E_per_atom_eV"),
             "max_force_eV_A": result.validity.get("max_force_eV_A"),
             "n_atoms": result.artifact["n_atoms"], "composition": result.artifact["composition"],
             "source_model_unchanged": source_unchanged, "clean_unload": unloaded,
@@ -234,8 +250,10 @@ def main():
     ap.add_argument("--device", default="cuda:0")
     ap.add_argument("--expect-head", default=None)
     ap.add_argument("--approval", required=True, help="path to the EXTERNAL approval json (read-only)")
+    ap.add_argument("--attempt", type=int, default=2, help="scientific run attempt (>=2; 1 is immutable failed)")
     a = ap.parse_args()                       # NOTE: no --forward / no python expression is accepted
-    print(json.dumps(execute(approval_path=a.approval, device=a.device, expect_head=a.expect_head), indent=2))
+    print(json.dumps(execute(approval_path=a.approval, device=a.device, expect_head=a.expect_head,
+                             attempt=a.attempt), indent=2))
 
 
 if __name__ == "__main__":
