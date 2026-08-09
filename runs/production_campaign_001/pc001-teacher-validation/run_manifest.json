@@ -1,0 +1,13 @@
+{
+  "status": "OK",
+  "phase": "TEACHER_VALIDATION",
+  "TEACHER_VERDICT": "ACCEPT_CONDITIONAL",
+  "in_scope_force_mae": 0.152,
+  "in_scope_energy_mae": 18.76,
+  "conditional_flagged": [
+    "SiOx_defect_dilute",
+    "SiOx_defect_clustered"
+  ],
+  "gate": "teacher ACCEPTED -> distillation/student stages unlocked (downstream)",
+  "no_scientific_compute_performed": true
+}

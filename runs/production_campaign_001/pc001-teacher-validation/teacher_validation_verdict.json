@@ -1,0 +1,97 @@
+{
+  "phase": "TEACHER_VALIDATION",
+  "pipeline_position": "scope/DFT-reference -> [TEACHER VALIDATION] -> gate(teacher ACCEPTED?) -> distillation -> student training -> student validation -> physical/MD -> coverage/AL",
+  "teacher": {
+    "identity": "base KISTI Allegro (deployed)",
+    "sha256": "b56e20ffc31da601feed8411c92675bdae9eb886db153ff67dd37dea161b1c57"
+  },
+  "dft_reference": "SCAN (2-stage PBE->SCAN); teacher-vs-DFT from error_a_allegro_vs_dft.csv (teacher forward already run)",
+  "scope": {
+    "in_scope": [
+      "SiOx_crystal_amorphous_interfaces",
+      "SiOx_int_AL",
+      "SiOx_max_AL",
+      "bulk_amo",
+      "bulk_cryst",
+      "liquid",
+      "quench",
+      "quench_int_AL",
+      "quench_max_AL",
+      "surfaces",
+      "surfaces_int_AL",
+      "surfaces_max_AL",
+      "vacancy",
+      "vacancy_int_AL"
+    ],
+    "out_of_scope_not_gating": [
+      "bulk_cryst_hp",
+      "cluster",
+      "highpressure_int_AL",
+      "highpressure_max_AL",
+      "silicon_bulk_amo",
+      "silicon_crystalline_main",
+      "silicon_defects",
+      "silicon_liquid",
+      "silicon_others",
+      "silicon_surfaces"
+    ],
+    "data_artifact_excluded": "cluster cc001 (atom-overlap, Fmae 56.65)"
+  },
+  "criteria_declared_before": {
+    "A1_force_le": 0.2,
+    "A1_energy_le": 50.0,
+    "A2": "EOS in-scope SMOOTH",
+    "A3_relative": "teacher in-scope force MAE < deployed student in-domain 0.23",
+    "conditional_flag": "sub-region force MAE > 1.5x in-scope mean"
+  },
+  "metrics": {
+    "in_scope_frames": 727,
+    "in_scope_force_mae_eV_A": 0.152,
+    "in_scope_energy_mae_meV_atom": 18.76,
+    "out_of_scope_force_mae_eV_A": 0.122,
+    "eos_ambient_smooth": true,
+    "eos_B0": {
+      "alpha-quartz": "201.89",
+      "Coesite": "228.12"
+    }
+  },
+  "in_scope_subregions": {
+    "bulk_amorphous_quench": {
+      "force_mae": 0.202,
+      "n": 152
+    },
+    "SiOx_defect_dilute": {
+      "force_mae": 0.228,
+      "n": 145
+    },
+    "SiOx_defect_clustered": {
+      "force_mae": 0.351,
+      "n": 44
+    },
+    "surfaces": {
+      "force_mae": 0.216,
+      "n": 69
+    },
+    "liquid": {
+      "force_mae": 0.211,
+      "n": 34
+    },
+    "bulk_crystal_ambient": {
+      "force_mae": 0.032,
+      "n": 283
+    }
+  },
+  "checks": {
+    "A1_absolute": true,
+    "A2_eos": true,
+    "A3_relative_not_dominant_limiter": true
+  },
+  "conditional_flagged_subregions": [
+    "SiOx_defect_dilute",
+    "SiOx_defect_clustered"
+  ],
+  "TEACHER_VERDICT": "ACCEPT_CONDITIONAL",
+  "verdict_reason": "Teacher accepted as the distillation teacher for the in-scope domain: in-scope force MAE 0.152 eV/A (<= 0.2), energy MAE 18.76 meV/atom (<= 50.0), EOS ambient SMOOTH, and teacher error < deployed-student in-domain error (0.23) so the teacher is NOT the dominant student-limiter in-domain. CONDITIONAL: the clustered-SiOx-defect sub-region has elevated teacher force MAE (~0.35 eV/A), flagged for monitoring / later coverage-failure active learning; it does not block acceptance but bounds achievable student accuracy there.",
+  "gate_effect": "TEACHER ACCEPTED => the pipeline may proceed to distillation dataset/labeling and (downstream) student training + student validation. The original-vs-v5 STUDENT comparison is a STUDENT-VALIDATION-stage action, gated BEHIND this acceptance \u2014 not the first action.",
+  "no_scientific_compute_performed": true
+}

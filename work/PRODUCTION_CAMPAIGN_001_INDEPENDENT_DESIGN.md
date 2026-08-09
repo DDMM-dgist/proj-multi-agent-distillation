@@ -217,3 +217,34 @@ predictions / atom-count mismatch. Stops at the verdict; triggers no downstream 
   read-only student-eval adapter, action_type already in the frozen taxonomy) — build later under frozen
   contracts.
 - No **GENUINE_ARCHITECTURE_BLOCKER**. No architecture change in this task.
+
+## 27. Pipeline-order correction — Teacher validation is PC001's gate (EXECUTED)
+
+The canonical scientific pipeline is: **scope / DFT reference → TEACHER VALIDATION → [gate: teacher
+ACCEPTED?] → distillation dataset/labeling → student training → student validation → physical/MD →
+coverage-failure / active learning.** Production Campaign 001 sits at **Teacher validation**; all
+student-level work (including the original-vs-v5 comparison in §17–§19) is **downstream of the teacher
+acceptance gate**, not the first action. §17's "primary bottleneck = MODEL_SELECTION" is therefore a
+**student-validation-stage** concern; the actual PC001 first action is the **teacher-acceptance gate**.
+
+**Teacher-validation gate — EXECUTED offline** (read-only from `error_a` — the teacher forward was already
+run to produce it; NO new teacher inference), `work/production_campaign_001_teacher_validation.py` →
+`runs/production_campaign_001/pc001-teacher-validation/`:
+
+| Metric (in-scope: SiO2 + SiO2-x defects/vacancies/surfaces/liquid/ambient-crystal; cc001 artifact excluded) | Value |
+|---|---|
+| in-scope frames | 727 |
+| teacher force MAE | **0.152 eV/Å** (≤ 0.20 bar; and < deployed-student in-domain ~0.23 ⇒ not the dominant limiter) |
+| teacher energy MAE | **18.8 meV/atom** (≤ 50) |
+| EOS ambient (α-quartz/coesite) | SMOOTH; B0 202/228 GPa |
+| flagged sub-regions (force MAE > 1.5× in-scope mean) | SiOx_defect_dilute (0.23), SiOx_defect_clustered (0.35) |
+
+**TEACHER_VERDICT = `ACCEPT_CONDITIONAL`** (FACT/DERIVED): accepted as the distillation teacher for the
+in-scope domain (A1 absolute + A2 EOS + A3 relative-not-dominant-limiter all pass), **conditional** on the
+elevated SiOx-defect sub-region (teacher force ~0.23–0.35 eV/Å) — flagged for monitoring and, if student
+validation later shows it limiting, for the pipeline's coverage-failure / active-learning loop. The
+verdict **does not block** proceeding; it bounds achievable student accuracy in the clustered-defect region.
+
+**Re-sequenced next action (downstream, gated by this ACCEPT):** the original-vs-v5 student comparison
+(`examples/production_campaign_001/action_proposal.json`) is the **student-validation** stage, to run
+after the teacher-accept gate — not before. It remains prepared, not executed.

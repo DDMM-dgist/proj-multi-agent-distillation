@@ -54,18 +54,40 @@
     "interpretation": "Excluding the cc001 data artifact, the teacher is accurate across all domains (<=0.32/family). In deployment-relevant domains the ORIGINAL student is DISTILLATION-limited (errB ~= errA; student worse than teacher in bulk-amorphous/surfaces/liquid) or MIXED (SiOx-defect/vacancy). No domain is genuinely teacher-limited. This DIFFERS from the R1 6-cell 'teacher-limited' conclusion."
   },
 
-  "primary_bottleneck": "MODEL_SELECTION",
-  "primary_bottleneck_reason": "Two materially-distinct student candidates (original, v5) exist with NO common DFT evaluation set, so CURRENT_STUDENT cannot be established. Every downstream lever (is distillation or teacher the limit for the deployed student; whether v5's defect re-augment actually helped) depends on knowing which student is current/best. This is the smallest unbiased next step and directly quarantines the historical 'v5 ADOPTED' claim.",
+  "pipeline_order": "scope/DFT-reference -> TEACHER_VALIDATION -> gate(teacher ACCEPTED?) -> distillation/labeling -> student_training -> student_validation -> physical/MD -> coverage/active_learning",
+
+  "teacher_validation": {
+    "phase_position": "PC001 = TEACHER VALIDATION (the gate before any distillation/student work)",
+    "executed": true,
+    "method": "read-only from error_a (teacher-vs-DFT; teacher forward already run) + EOS; NO new teacher inference",
+    "in_scope_force_mae_eV_A": 0.152,
+    "in_scope_energy_mae_meV_atom": 18.76,
+    "eos_ambient_smooth": true,
+    "relative_check": "teacher in-scope 0.152 < deployed student in-domain ~0.23 => teacher NOT the dominant limiter",
+    "conditional_flagged_subregions": ["SiOx_defect_dilute (~0.23)", "SiOx_defect_clustered (~0.35)"],
+    "TEACHER_VERDICT": "ACCEPT_CONDITIONAL",
+    "gate_effect": "teacher ACCEPTED => distillation + student stages unlocked downstream; flagged SiOx-defect region monitored for later coverage-failure/active-learning",
+    "run_dir": "runs/production_campaign_001/pc001-teacher-validation/"
+  },
+
+  "primary_bottleneck": "TEACHER_VALIDATION_GATE (now PASSED: ACCEPT_CONDITIONAL) -> next: STUDENT_MODEL_SELECTION (downstream)",
+  "primary_bottleneck_reason": "Per the canonical pipeline, the FIRST gate is teacher validation, not student selection. The teacher gate is now executed offline and PASSED (ACCEPT_CONDITIONAL). The earlier 'MODEL_SELECTION' framing is a STUDENT-VALIDATION-stage concern, correctly gated BEHIND teacher acceptance. With the teacher ACCEPTED, the next scientific action is the original-vs-v5 student comparison on a common DFT set.",
 
   "first_action": {
-    "name": "fair_domain_aware_student_comparison_on_common_dft_set",
-    "action_type": "evaluate_heldout_fidelity",
-    "role": "ml-trainer",
-    "summary": "Evaluate BOTH the original and v5 committees on ONE common DFT set (the 28 al_iter3 SCAN cells that postdate both students) with identical force-RMSE metric + domain masks, producing a fair per-domain original-vs-v5 ranking.",
-    "requires_new_compute": true,
-    "compute": "student committee inference (2x4 SIMPLE-NN, CPU/LAMMPS, minutes); NO teacher/DFT/MD/training",
-    "approval_required": false,
-    "not_executed": true
+    "name": "TEACHER_VALIDATION_AND_ACCEPTANCE (EXECUTED offline; verdict ACCEPT_CONDITIONAL)",
+    "note": "This was PC001's true first action (the teacher gate). See teacher_validation above.",
+    "next_action_downstream_gated": {
+      "name": "fair_domain_aware_student_comparison_on_common_dft_set",
+      "action_type": "evaluate_heldout_fidelity",
+      "role": "ml-trainer",
+      "gated_behind": "TEACHER_VERDICT = ACCEPT_CONDITIONAL (now satisfied)",
+      "summary": "Evaluate BOTH original and v5 committees on the 28 common al_iter3 DFT cells (postdate both students) with identical force-RMSE metric + domain masks; per-domain original-vs-v5 ranking.",
+      "requires_new_compute": true,
+      "compute": "student committee inference (2x4 SIMPLE-NN, CPU/LAMMPS, minutes); NO teacher/DFT/MD/training",
+      "approval_required": false,
+      "not_executed": true,
+      "proposal": "examples/production_campaign_001/action_proposal.json"
+    }
   },
 
   "requires_new_compute": true,
