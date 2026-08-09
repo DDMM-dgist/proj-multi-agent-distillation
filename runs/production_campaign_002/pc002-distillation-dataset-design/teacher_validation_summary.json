@@ -1,0 +1,77 @@
+{
+  "campaign": "PC002_DISTILLATION_DATASET_DESIGN",
+  "accepted_teacher": "base Allegro",
+  "teacher_sha": "b56e20ffc31da601feed8411c92675bdae9eb886db153ff67dd37dea161b1c57",
+  "target_domain": [
+    "amorphous_SiO2",
+    "SiO2x_dilute_vacancy",
+    "SiO2x_clustered_vacancy_voidsurface",
+    "surfaces",
+    "high_T_liquid_distorted",
+    "ambient_crystalline_reference"
+  ],
+  "candidate_structure_pool": "LOCAL unlabeled production MD (amorphous + dilute + clustered + 3000-atom + melt); all target domains have candidates",
+  "valid_local_accepted_teacher_labels": "minimal (11 AL cells + 60 seeds); bulk historical labeled set KISTI-only",
+  "domain_coverage": {
+    "amorphous_SiO2": {
+      "candidate_available": true,
+      "labeled_accepted_teacher": "historical(KISTI, likely covered)",
+      "status": "CANDIDATE_COVERED_LABELS_KISTI"
+    },
+    "SiO2x_dilute_vacancy": {
+      "candidate_available": true,
+      "labeled_accepted_teacher": "partial(historical KISTI)",
+      "status": "CANDIDATE_COVERED"
+    },
+    "SiO2x_clustered_vacancy_voidsurface": {
+      "candidate_available": true,
+      "labeled_accepted_teacher": "UNVERIFIABLE / likely SPARSE",
+      "status": "CANDIDATE_COVERED_LABELS_GAP"
+    },
+    "surfaces": {
+      "candidate_available": true,
+      "labeled_accepted_teacher": "partial(historical)",
+      "status": "CANDIDATE_COVERED"
+    },
+    "high_T_liquid_distorted": {
+      "candidate_available": true,
+      "labeled_accepted_teacher": "partial(historical)",
+      "status": "CANDIDATE_COVERED"
+    },
+    "ambient_crystalline_reference": {
+      "candidate_available": true,
+      "labeled_accepted_teacher": "historical",
+      "status": "CANDIDATE_COVERED"
+    }
+  },
+  "label_gaps": [
+    "SiO2x_clustered_vacancy_voidsurface"
+  ],
+  "preserved_dft_validation_assets": {
+    "n_scan_cells": 42,
+    "role": "PC004 Student-vs-DFT reference (in-domain dilute+clustered SiO2-x)",
+    "policy": "PRESERVED \u2014 not consumed into distillation training; these are the ONLY high-fidelity in-domain Student-vs-DFT anchors"
+  },
+  "split_strategy": "GROUP split by source trajectory/config/defect-family (NOT random frame split of correlated MD frames)",
+  "DATASET_DECISION": "DISTILLATION_DATASET_REVISE",
+  "decision_reason": "Candidate structures for EVERY target domain exist locally as unlabeled production MD (amorphous glass; dilute vacancy x0.03-0.24 350 frames; clustered/void 102 frames + 8 carved clustered cells; 3000-atom configs; 4000K melt). BUT the reusable historical teacher-labeled training set (~10k) is KISTI-only (not locally verifiable) and its clustered coverage is unverifiable + provenance-suggested SPARSE (augment seeds = DFT corpus, not production clustered). The target domain REQUIRES clustered-vacancy/void-surface coverage (the PC001-flagged region). => the dataset is broadly useful but has an identifiable, repairable target-domain LABEL gap (clustered/void with accepted teacher b56e20ff). Suitable UNLABELED clustered candidates already exist locally => REVISE via ONE bounded teacher-labeling action, not INSUFFICIENT and not blind reuse.",
+  "reused_existing_asset": "the historical teacher-labeled bulk (amorphous/dilute) may be REUSED where valid; the CLUSTERED/void region needs new accepted-teacher labels",
+  "requires_new_teacher_labels": true,
+  "new_teacher_labeling_target": "clustered-vacancy/void-surface (+ balancing dilute/amorphous) frames from existing production_12288 clustered + random_sweep dumps, labeled with accepted teacher b56e20ff",
+  "next_action": "ONE bounded label_with_teacher ActionProposal (approval-gated; prepared, NOT executed): examples/production_campaign_002/action_proposal.json",
+  "DISTILLATION_DATASET_STAGE": "REVISE (open until labeling closes the clustered gap)",
+  "STUDENT_TRAINING_STAGE_AUTHORIZED": false,
+  "NEW_PIPELINE_CURRENT_STUDENT": "NONE",
+  "EXISTING_HISTORICAL_STUDENT_ASSETS": [
+    "original_deployed_committee",
+    "v5_committee"
+  ],
+  "blocking_unknowns": [],
+  "nonblocking_unknowns": [
+    "exact distribution of the KISTI historical labeled set (not locally inspectable)",
+    "exact augment lineage (KISTI); not needed for the coverage decision",
+    "per-frame coordination distributions of the full dump pool (not parsed; committee_u defect-Si stats used as proxy)"
+  ],
+  "no_scientific_compute_performed": true,
+  "student_model_inspected": false
+}

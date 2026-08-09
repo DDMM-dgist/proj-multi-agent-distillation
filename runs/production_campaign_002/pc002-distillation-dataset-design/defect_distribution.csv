@@ -1,0 +1,4 @@
+defect_family,candidate_source,frames_or_cells,label_status
+dilute_random_vacancy,random_sweep x003-024,350,UNLABELED
+clustered_sphere_plane_vacancy,anneal_calib_clustered,102,UNLABELED
+carved_clustered_defect_cells,embedding_clustered+al_iter3,37,mixed(DFT-labeled subset preserved)

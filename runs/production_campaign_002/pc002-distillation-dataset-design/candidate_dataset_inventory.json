@@ -1,0 +1,47 @@
+{
+  "amorphous_SiO2": {
+    "source": "production_12288 12288-atom cristobalite->melt->quench glass (rdf.dump)",
+    "frames": 501,
+    "atoms": 12288,
+    "composition": "SiO2 stoichiometric",
+    "label_status": "UNLABELED"
+  },
+  "SiO2x_dilute_vacancy": {
+    "source": "production_12288/random_sweep x003..x024 (7 vacancy fractions)",
+    "frames_per_x": {
+      "x003": 50,
+      "x006": 50,
+      "x009": 50,
+      "x012": 50,
+      "x015": 50,
+      "x018": 50,
+      "x024": 50
+    },
+    "total_frames": 350,
+    "atoms": "~11.3k-11.9k",
+    "x_range": "0.03-0.24",
+    "label_status": "UNLABELED"
+  },
+  "SiO2x_clustered_vacancy_voidsurface": {
+    "source": "production_12288/anneal_calib_clustered {T1000, plane_T1000}",
+    "frames": {
+      "T1000": 51,
+      "plane_T1000": 51
+    },
+    "total_frames": 102,
+    "atoms": 12288,
+    "label_status": "UNLABELED",
+    "plus_carved": "embedding_clustered 8 carved clustered cells (local_x 0.11-0.60)"
+  },
+  "sio2x_production_3000atom": {
+    "source": "sio2x_production/{pristine,random,sphere,plane}_{x006,x012}",
+    "atoms": 3000,
+    "configs": 7,
+    "label_status": "UNLABELED"
+  },
+  "high_T_liquid_distorted": {
+    "source": "production_12288 melt frames (4000K hold) + melt_msd dumps",
+    "label_status": "UNLABELED",
+    "note": "thermal/distorted configs available in the melt-quench trajectory"
+  }
+}

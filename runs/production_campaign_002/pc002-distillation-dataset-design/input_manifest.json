@@ -1,0 +1,12 @@
+{
+  "teacher_sha256": "b56e20ffc31da601feed8411c92675bdae9eb886db153ff67dd37dea161b1c57",
+  "teacher_invoked": false,
+  "student_model_inspected": false,
+  "read_sources": [
+    "production_12288/*",
+    "sio2x_production/*",
+    "embedding_clustered/clustered_cells_summary.csv",
+    "al_iter3/*/manifest*.csv",
+    "gpu_return_v5_committee/.../AL11_with_umax_v5.xyz"
+  ]
+}

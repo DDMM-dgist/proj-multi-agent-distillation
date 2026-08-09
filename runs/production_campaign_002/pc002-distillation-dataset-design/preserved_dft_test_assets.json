@@ -1,0 +1,5 @@
+{
+  "n_scan_cells": 42,
+  "role": "PC004 Student-vs-DFT reference (in-domain dilute+clustered SiO2-x)",
+  "policy": "PRESERVED \u2014 not consumed into distillation training; these are the ONLY high-fidelity in-domain Student-vs-DFT anchors"
+}

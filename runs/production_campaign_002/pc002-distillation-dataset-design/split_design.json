@@ -1,0 +1,7 @@
+{
+  "strategy": "GROUP split by source trajectory/config/defect-family (NOT random frame split of correlated MD frames)",
+  "train": "broad target-domain teacher-labeled frames (amorphous + dilute + clustered + surfaces + high-T), grouped by config",
+  "validation": "held-out configs/time-segments for model selection",
+  "test_independent": "the PRESERVED DFT SCAN cells (Student-vs-DFT, PC004) + a group-disjoint held-out config",
+  "leakage_policy": "design held-out independence UP FRONT (R1 lesson); keep DFT test assets out of training"
+}

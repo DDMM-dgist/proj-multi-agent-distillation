@@ -1,0 +1,5 @@
+{
+  "method": "trajectory-frame correlation (descriptive; no forensic lineage)",
+  "finding": "MD dumps contain temporally-correlated frames (50-500/config) => a numerically large but structurally repetitive set if frame-sampled densely; sub-sample by time spacing per config",
+  "lineage": "NONBLOCKING (exact augment lineage KISTI-only; not needed for the coverage decision)"
+}

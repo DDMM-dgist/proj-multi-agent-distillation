@@ -1,0 +1,16 @@
+{
+  "run_id": "pc002-distillation-dataset-design",
+  "stage": "production_campaign_002",
+  "package_head": "ed3e6cc4c55a54dab99dd865999bc5ddd2c176cf",
+  "accepted_teacher_sha256": "b56e20ffc31da601feed8411c92675bdae9eb886db153ff67dd37dea161b1c57",
+  "teacher_invoked": false,
+  "student_model_inspected": false,
+  "analysis_code_sha256": "e7eec61cc3aa509c2bcd905879b8e5eacfdbeda612945e4c9ab798f5ade85ffe",
+  "no_model_invocation": true,
+  "no_dft": true,
+  "no_md": true,
+  "no_training": true,
+  "no_network": true,
+  "no_semantic_judge": true,
+  "historical_decisions_used_as_authority": false
+}
