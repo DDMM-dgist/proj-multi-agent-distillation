@@ -1,0 +1,89 @@
+{
+  "architecture_status": "FROZEN_COMPLETE",
+  "architecture_baseline": "0c5892e5e91910ed2c7e53f0e10b6b8d10ef7738",
+  "production_reset": true,
+  "historical_decisions_authoritative": false,
+  "prior_r1_artifacts": "HISTORICAL_EXPLORATORY_PRODUCTION_AUDITS (R1.P1, R1.P1R, R1.P1R2 preserved append-only; not the starting state)",
+
+  "scientific_objective": "A deployable SIMPLE-NN interatomic potential (distilled from an Allegro teacher) for amorphous SiO2 and oxygen-deficient SiO2-x with dilute AND clustered oxygen vacancies, accurate enough for production MD and physical-property validation at production density/temperature.",
+
+  "target_domain": ["amorphous_SiO2_stoichiometric", "SiO2-x_dilute_vacancy", "SiO2-x_clustered_vacancy",
+                    "void_surface_under-coordinated_Si", "production_density_~2.2", "ambient_to_moderate_T",
+                    "long_timescale_MD"],
+  "domain_out_of_scope": ["high_pressure_dense_polymorphs (stishovite/pyrite/PbO2)", "elemental_Si_bulk",
+                          "isolated_clusters"],
+
+  "current_teacher": {
+    "identity": "base KISTI Allegro, deployed TorchScript teacher/model.nequip.pth",
+    "sha256": "b56e20ffc31da601feed8411c92675bdae9eb886db153ff67dd37dea161b1c57",
+    "status": "SELECTED (only teacher with broad DFT validation; error_a Fmae 0.190 eV/A global, E-MAE 35.8 meV/atom)",
+    "note": "a fine-tuned teacher_finetuned_v2 (b3be4d2a) exists but is NOT deployed and its gain did not survive distillation; not selected on independent evidence."
+  },
+  "current_student": {
+    "candidates": ["original/deployed committee (SIMPLE_NN_DISTILLATION_CE, 4 seeds)", "v5 committee (gpu_return_v5_committee, 4 seeds, md5 42a85cd0/52507ee6/bab2e896/92f669b4)"],
+    "status": "UNRESOLVED",
+    "reason": "no common DFT evaluation set exists for both: original has error_c on the 1155-frame test_set; v5 has DFT numbers only on 6 held-out cells (R1). A fair ranking is not possible offline."
+  },
+
+  "raw_asset_summary": {
+    "dft_labelled_cells": "39 SCAN cells (11 original AL + 28 al_iter3: 11A + v6 + heldout); dilute + clustered SiO2-x, local_x -0.09..0.60",
+    "common_test_set": "test_set.xyz 1155 frames (teacher held-out); error_a/b/c share idx+config_type; 881 SiO2-eligible for student",
+    "teacher_error_a_csv": "teacher_diag/error_a_allegro_vs_dft.csv",
+    "student_error_c_csv": "teacher_diag/error_c_simplenn_vs_dft.csv (ORIGINAL student)",
+    "student_error_b_csv": "teacher_diag/error_b_clean_simplenn_vs_allegro.csv (ORIGINAL student vs teacher)",
+    "eos": "teacher_diag/eos_{teacher,student}_bm_summary.csv (bulk modulus per phase)",
+    "physical_validation": "12288-atom glass PASS (RDF/ADF/CN/S(Q)/FSDP/MSD/NVE/mechanics/PH)",
+    "uncertainty": "committee u_alpha production study (sio2x_production/committee_u_out/)"
+  },
+
+  "independent_model_comparison": {
+    "global_force_mae_eV_A": {"teacher_vs_dft": 0.19, "student_vs_dft": 0.233, "student_vs_teacher": 0.175},
+    "energy_mae_meV_atom_shift": {"teacher_vs_dft": 35.82, "student_vs_dft": 27.09},
+    "teacher_force_outlier": "the only Fmae>5 is cluster cc001 = 56.65 eV/A (known atom-overlap DATA artifact, not model error)",
+    "per_domain_attribution_original_student": {
+      "SiOx_defect": "MIXED (errA 0.324 / errC 0.432 / errB 0.309)",
+      "bulk_amorphous_quench": "DISTILLATION_LIMITED (0.202 / 0.279 / 0.206)",
+      "bulk_crystal": "DISTILLATION_LIMITED but tiny (0.031 / 0.067 / 0.062)",
+      "vacancy_SiOx": "MIXED (0.187 / 0.218 / 0.121)",
+      "high_pressure": "DISTILLATION_LIMITED (0.193 / 0.459 / 0.421); EOS B0 overstiffened (stishovite teacher 344 vs student 526) — OUT of deployment domain",
+      "surfaces": "DISTILLATION_LIMITED (0.216 / 0.317 / 0.221)",
+      "liquid": "DISTILLATION_LIMITED (0.211 / 0.283 / 0.219)",
+      "cluster": "TEACHER_LIMITED only due to the cc001 data artifact (exclude => not teacher-limited)",
+      "elemental_Si": "STUDENT_NOT_EVALUATED (out of scope)"
+    },
+    "interpretation": "Excluding the cc001 data artifact, the teacher is accurate across all domains (<=0.32/family). In deployment-relevant domains the ORIGINAL student is DISTILLATION-limited (errB ~= errA; student worse than teacher in bulk-amorphous/surfaces/liquid) or MIXED (SiOx-defect/vacancy). No domain is genuinely teacher-limited. This DIFFERS from the R1 6-cell 'teacher-limited' conclusion."
+  },
+
+  "primary_bottleneck": "MODEL_SELECTION",
+  "primary_bottleneck_reason": "Two materially-distinct student candidates (original, v5) exist with NO common DFT evaluation set, so CURRENT_STUDENT cannot be established. Every downstream lever (is distillation or teacher the limit for the deployed student; whether v5's defect re-augment actually helped) depends on knowing which student is current/best. This is the smallest unbiased next step and directly quarantines the historical 'v5 ADOPTED' claim.",
+
+  "first_action": {
+    "name": "fair_domain_aware_student_comparison_on_common_dft_set",
+    "action_type": "evaluate_heldout_fidelity",
+    "role": "ml-trainer",
+    "summary": "Evaluate BOTH the original and v5 committees on ONE common DFT set (the 28 al_iter3 SCAN cells that postdate both students) with identical force-RMSE metric + domain masks, producing a fair per-domain original-vs-v5 ranking.",
+    "requires_new_compute": true,
+    "compute": "student committee inference (2x4 SIMPLE-NN, CPU/LAMMPS, minutes); NO teacher/DFT/MD/training",
+    "approval_required": false,
+    "not_executed": true
+  },
+
+  "requires_new_compute": true,
+  "approval_required": false,
+
+  "v5_heldout_leakage_provenance": "IMPORTANT_BUT_NONBLOCKING",
+  "v5_leakage_reason": "The first action is a RELATIVE original-vs-v5 comparison on the 28 al_iter3 DFT cells, which postdate BOTH students' training => held-out from both by construction/timing; the relative ranking is valid without the KISTI train_list. Leakage would only block an ABSOLUTE leakage-clean generalization claim, which is not this action.",
+
+  "blocking_unknowns": ["which student (original vs v5) is best on a common DFT set spanning the deployment domain (dilute+clustered SiO2-x)"],
+  "nonblocking_unknowns": ["exact v5 train_list/augmentation frame manifest (KISTI)",
+                           "absolute leakage-clean generalization number for v5",
+                           "cell_ho_01/ho_08 held-out scores",
+                           "original-student held-out predictions on the 6 R1 cells"],
+
+  "historical_comparison_nonauthoritative": {
+    "coordination_log": "v5 ADOPTED 2026-07-16 (beat original on deployment distribution + error(c) 0.337<0.368)",
+    "status_prose": "keep original student",
+    "independent_conclusion": "CURRENT_STUDENT UNRESOLVED (no common DFT set)",
+    "classification": "HISTORICAL_RECORD_INTERNALLY_CONFLICTED; independent analysis neither confirms nor refutes v5 adoption because the two students were never evaluated on a common DFT set."
+  }
+}

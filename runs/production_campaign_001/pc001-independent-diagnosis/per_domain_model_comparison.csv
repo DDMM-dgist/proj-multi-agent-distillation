@@ -1,0 +1,10 @@
+domain_family,n_frames,errA_teacher_vs_dft_Fmae,errC_student_vs_dft_Fmae,errB_student_vs_teacher_Fmae,committee_Fstd,attribution
+SiOx_defect,96,0.324,0.432,0.309,0.208,MIXED
+bulk_amorphous_quench,152,0.202,0.279,0.206,0.121,DISTILLATION_LIMITED
+bulk_crystal,328,0.031,0.067,0.062,0.038,DISTILLATION_LIMITED
+cluster,68,1.182,0.404,0.28,0.187,TEACHER_LIMITED
+elemental_Si,257,0.063,,,,STUDENT_NOT_EVALUATED
+high_pressure,58,0.193,0.459,0.421,0.563,DISTILLATION_LIMITED
+liquid,34,0.211,0.283,0.219,0.11,DISTILLATION_LIMITED
+surfaces,69,0.216,0.317,0.221,0.128,DISTILLATION_LIMITED
+vacancy_SiOx,93,0.187,0.218,0.121,0.055,MIXED

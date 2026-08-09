@@ -1,0 +1,19 @@
+{
+  "run_id": "pc001-independent-diagnosis",
+  "stage": "production_campaign_001",
+  "phase": "diagnosis",
+  "package_head": "edbb67dbbe96b8b66fb73f901caba25e3feb9f6d",
+  "analysis_code_sha256": "fa5ecd3153dc09c486e438715bea99c327d22723b3508b6f2f61b52405c65d0f",
+  "inputs_sha256": {
+    "error_a_allegro_vs_dft.csv": "5b1c86bbd33166d20e817c54ca73ecb0fffd849a76c786574df440d50dc1304c",
+    "error_b_clean_simplenn_vs_allegro.csv": "e199b7abf27f61dd7c18716c8f62e93a1553f1e5e7185fa63b13489993c4dc7c",
+    "error_c_simplenn_vs_dft.csv": "535f0e6377801c78c6393ef1929f959a53d996490cd097fd651df91a97b42967"
+  },
+  "no_model_invocation": true,
+  "no_dft": true,
+  "no_md": true,
+  "no_training": true,
+  "no_network": true,
+  "no_semantic_judge": true,
+  "historical_decisions_used": false
+}
