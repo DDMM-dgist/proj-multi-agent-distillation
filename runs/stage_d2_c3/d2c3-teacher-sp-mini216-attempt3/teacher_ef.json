@@ -1,0 +1,49 @@
+{
+  "source_structure": "/home/hyunjin/CLADE/SiO2-x_distillatio/materials-ml-kit/research-sio2-allegro-simplenn-distillation/teacher_diag/nve_drift/mini216_nvt_fixed.data",
+  "source_sha256": "3d2dd2464d83ca144e2c6d51382b83546b1152da06a386bfe3672550f4348364",
+  "teacher_model": "/home/hyunjin/CLADE/SiO2-x_distillatio/materials-ml-kit/research-sio2-allegro-simplenn-distillation/gpu_finetune_handoff/models/teacher_current_compiled.nequip.pth",
+  "model_sha256": "b56e20ffc31da601feed8411c92675bdae9eb886db153ff67dd37dea161b1c57",
+  "n_atoms": 216,
+  "composition": {
+    "O": 144,
+    "Si": 72
+  },
+  "predicted_total_energy_eV": -1628.5079406630311,
+  "energy_per_atom_eV": -7.5393886141807,
+  "forces_artifact": "forces.csv",
+  "max_force_eV_A": 17.08609595225839,
+  "units": {
+    "energy": "eV",
+    "energy_per_atom": "eV/atom",
+    "force": "eV/Angstrom",
+    "length": "Angstrom"
+  },
+  "inference_metadata": {
+    "cutoff_A": 5.0,
+    "type_symbol_map": {
+      "1": "O",
+      "2": "Si"
+    },
+    "one_forward_pass": true,
+    "device": "one explicitly selected RTX 6000 Ada GPU",
+    "runtime_s": 0.8352967556566
+  },
+  "force_array_shape": [
+    216,
+    3
+  ],
+  "model_device": "cuda:1",
+  "model_dtype": "float32",
+  "model_type_names": [
+    "O",
+    "Si"
+  ],
+  "cutoff_A": 5.0,
+  "inference_wall_time_s": 0.8352967556566,
+  "software_versions": {
+    "python": "3.10.19",
+    "torch": "2.6.0",
+    "nequip": "0.16.1",
+    "allegro": "?"
+  }
+}
