@@ -32,10 +32,16 @@ for f in msd.csv msd_summary.json provenance.json criterion_results.json; do
   [ -f "$RUN_DIR/$f" ] || { echo "missing $f — run C1 first"; exit 1; }
 done
 grep -q '"STAGE_D2_C1_AXIS_A": "PASS"' "$RUN_DIR/provenance.json" || { echo "Axis-A not PASS; refuse"; exit 1; }
-# APPEND-ONLY precondition: the historical deferred judge_interpretation.json must be preserved and the
-# attempt-1 output filenames must be FRESH (never overwrite history). Refuse otherwise.
-conda run -n mad-client python -c "import sys; sys.path.insert(0,'$REPO/work'); from stage_d2_judge_map import assert_appendonly; assert_appendonly('$RUN_DIR')" \
-  || { echo "append-only precondition failed (attempt artifacts exist or deferred file missing)"; exit 1; }
+# ATTEMPT 2 (attempt 1 already occurred and failed with READ_ALLOW_PATH_RESOLUTION_LOOP).
+ATTEMPT="${STAGE_D2_JUDGE_ATTEMPT:-2}"
+# APPEND-ONLY precondition: the historical deferred judge_interpretation.json must be preserved and
+# THIS attempt's output filenames must be FRESH (never overwrite history). Refuse otherwise.
+conda run -n mad-client python -c "import sys; sys.path.insert(0,'$REPO/work'); from stage_d2_judge_map import assert_appendonly; assert_appendonly('$RUN_DIR', $ATTEMPT)" \
+  || { echo "append-only precondition failed (attempt-$ATTEMPT artifacts exist or deferred file missing)"; exit 1; }
+# EVIDENCE-READ PREFLIGHT (network-free; no LLM): confirm the Judge task's repo-relative evidence paths
+# resolve INSIDE the run-dir allow-list and are readable — guards against the attempt-1 refused-read
+# loop. Fail closed.
+conda run -n mad-client python work/stage_d2_judge_preflight.py || { echo "evidence-read preflight FAILED — refuse to launch"; exit 1; }
 
 echo "== GPU$DEV free gate (>= $MIN_FREE) =="
 FREE=$(nvidia-smi -i "$DEV" --query-gpu=memory.free --format=csv,noheader,nounits | tr -d ' ')
@@ -67,14 +73,15 @@ echo "== APPEND-ONLY: write judge_interpretation_attempt1.json / judge_provenanc
 # Never overwrites the historical deferred judge_interpretation.json or any Axis-A scientific artifact;
 # advisory verdict is the LLM's genuine verdict (NOT rebound to Axis-A); PASS/REVISE/FAIL ->
 # ADVANCE/REVISE/FAIL_STOP; verifies preserved artifacts remain byte-identical.
-REPO="$REPO" conda run -n mad-client python - "$JEXCH/exchange" "$RUN_DIR" <<'PY'
+REPO="$REPO" ATTEMPT="$ATTEMPT" conda run -n mad-client python - "$JEXCH/exchange" "$RUN_DIR" <<'PY'
 import json, sys, glob, os
 sys.path.insert(0, os.path.join(os.environ["REPO"], "work"))
 from stage_d2_judge_map import write_attempt_records
 exch, run_dir = sys.argv[1], sys.argv[2]
+attempt = int(os.environ["ATTEMPT"])
 provs = sorted(glob.glob(f"{exch}/provenance/*.json"), key=lambda f: json.load(open(f)).get("recorded_at",""))
 jp = json.load(open(provs[-1])) if provs else {}
-semantic = write_attempt_records(run_dir, jp, axis_a_verdict="PASS")
-print("advisory_verdict=", semantic["advisory_judge_verdict"], "-> STAGE_D2_C1_TRANSITION=", semantic["STAGE_D2_C1_TRANSITION"])
+semantic = write_attempt_records(run_dir, jp, attempt=attempt, axis_a_verdict="PASS")
+print(f"attempt={attempt} advisory_verdict=", semantic["advisory_judge_verdict"], "-> STAGE_D2_C1_TRANSITION=", semantic["STAGE_D2_C1_TRANSITION"])
 PY
 echo "judge exit=$RC. NOTE: this script is PREPARATION — run only after separate explicit approval."

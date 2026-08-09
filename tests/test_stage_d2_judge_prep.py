@@ -55,13 +55,14 @@ class StageD2JudgePrepTests(unittest.TestCase):
 
     def test_advisory_verdict_not_rebound(self):
         # a FAIL advisory verdict stays FAIL even though Axis-A is PASS (no rebinding)
-        interp, prov, sem = M.build_attempt_records(_prov("FAIL"), axis_a_verdict="PASS")
+        interp, prov, sem = M.build_attempt_records(_prov("FAIL"), attempt=2, axis_a_verdict="PASS")
         self.assertEqual(interp["advisory_verdict"], "FAIL")
         self.assertIn("not rebound", interp["axis_a_authoritative_verdict"].lower())
         self.assertEqual(sem["STAGE_D2_C1_AXIS_A"], "PASS")
         self.assertEqual(sem["STAGE_D2_C1_TRANSITION"], "FAIL_STOP")
+        self.assertEqual(sem["attempt"], 2)
         # REVISE -> REVISE
-        _, _, sem2 = M.build_attempt_records(_prov("REVISE"))
+        _, _, sem2 = M.build_attempt_records(_prov("REVISE"), attempt=2)
         self.assertEqual(sem2["STAGE_D2_C1_TRANSITION"], "REVISE")
 
     def test_append_only_fresh_and_preserves(self):
@@ -69,23 +70,23 @@ class StageD2JudgePrepTests(unittest.TestCase):
             rd = _seed_run(d)
             before = {f.name: hashlib.sha256(f.read_bytes()).hexdigest()
                       for f in rd.iterdir()}
-            sem = M.write_attempt_records(rd, _prov("PASS"))
+            sem = M.write_attempt_records(rd, _prov("PASS"), attempt=2)
             self.assertEqual(sem["STAGE_D2_C1_TRANSITION"], "ADVANCE")
-            for f in M.ATTEMPT1:
-                self.assertTrue((rd / f).exists())                 # fresh attempt files written
-            self.assertTrue((rd / "run_manifest.after_judge.json").exists())
+            for f in M.attempt_names(2):
+                self.assertTrue((rd / f).exists())                 # fresh attempt-2 files written
+                self.assertIn("attempt2", f)
             # preserved artifacts byte-identical (deferred interp + scientific + wrapper)
             for name in M.PRESERVE_BYTE_IDENTICAL:
                 self.assertEqual(hashlib.sha256((rd / name).read_bytes()).hexdigest(), before[name], name)
-            # a SECOND attempt must be refused (fresh filenames only)
+            # re-running the SAME attempt must be refused (fresh filenames only)
             with self.assertRaises(FileExistsError):
-                M.write_attempt_records(rd, _prov("PASS"))
+                M.write_attempt_records(rd, _prov("PASS"), attempt=2)
 
     def test_deferred_missing_refused(self):
         with tempfile.TemporaryDirectory() as d:
             rd = Path(d); (rd / "msd.csv").write_text("x\n")   # no deferred interp
             with self.assertRaises(FileNotFoundError):
-                M.assert_appendonly(rd)
+                M.assert_appendonly(rd, 2)
 
     def test_preserved_drift_detected(self):
         with tempfile.TemporaryDirectory() as d:

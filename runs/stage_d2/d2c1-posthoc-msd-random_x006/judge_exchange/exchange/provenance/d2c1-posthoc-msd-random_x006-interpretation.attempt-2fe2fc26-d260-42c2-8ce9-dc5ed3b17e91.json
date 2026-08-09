@@ -1,0 +1,74 @@
+{
+  "attempt_id": "attempt-2fe2fc26-d260-42c2-8ce9-dc5ed3b17e91",
+  "parent_attempt_id": null,
+  "retry_category": "provider",
+  "task_id": "d2c1-posthoc-msd-random_x006-interpretation",
+  "agent": "judge",
+  "provider": "local-openai",
+  "model_id": "qwen2.5-7b-instruct",
+  "runtime_version": "pydantic-ai-runtime/0.1.0",
+  "prompt_sha256": "5e902597944c4e700c4d82b77e7462a6971781cbd1b0614dc33015a48a3682f9",
+  "input_artifacts_sha256": {},
+  "tool_manifest_sha256": "b2ef4579dde5062daa2e2eac32253286972993df18a811902ef9954028272bbe",
+  "raw_response": "",
+  "parsed_result": null,
+  "tool_invocations": [
+    {
+      "tool": "read_json",
+      "argument": "msd_summary.json",
+      "ok": false,
+      "detail": "ToolAccessError: path outside the read allow-list: /home/hyunjin/proj-mad-pydanticai-full-runtime/msd_summary.json"
+    },
+    {
+      "tool": "read_csv_summary",
+      "argument": "msd.csv",
+      "ok": false,
+      "detail": "ToolAccessError: path outside the read allow-list: /home/hyunjin/proj-mad-pydanticai-full-runtime/msd.csv"
+    },
+    {
+      "tool": "read_artifact_manifest",
+      "argument": "manifest.json",
+      "ok": false,
+      "detail": "ToolAccessError: path outside the read allow-list: /home/hyunjin/proj-mad-pydanticai-full-runtime/manifest.json"
+    },
+    {
+      "tool": "read_json",
+      "argument": "msd_summary.json",
+      "ok": false,
+      "detail": "ToolAccessError: path outside the read allow-list: /home/hyunjin/proj-mad-pydanticai-full-runtime/msd_summary.json"
+    },
+    {
+      "tool": "read_csv_summary",
+      "argument": "msd.csv",
+      "ok": false,
+      "detail": "ToolAccessError: path outside the read allow-list: /home/hyunjin/proj-mad-pydanticai-full-runtime/msd.csv"
+    },
+    {
+      "tool": "read_artifact_manifest",
+      "argument": "manifest.json",
+      "ok": false,
+      "detail": "ToolAccessError: path outside the read allow-list: /home/hyunjin/proj-mad-pydanticai-full-runtime/manifest.json"
+    }
+  ],
+  "validation_errors": [],
+  "usage_source": "provider",
+  "prompt_tokens": 0,
+  "completion_tokens": 0,
+  "recorded_at": "2026-08-09T03:09:18.890331+00:00",
+  "accepted": false,
+  "failure_category": "usage_limit_exceeded",
+  "exception_class": "UsageLimitExceeded",
+  "exception_message": "The next request would exceed the request_limit of 6",
+  "retryable": false,
+  "started_at": "2026-08-09T03:09:14.296782+00:00",
+  "finished_at": "2026-08-09T03:09:18.890046+00:00",
+  "latency_s": 4.593264,
+  "correlation_id": "d2c1-judge",
+  "mode": "shadow",
+  "controller_mutated": false,
+  "estimated_cost": null,
+  "accepted_verdict": null,
+  "llm_proposed_verdict": null,
+  "verdict_overridden": false,
+  "criterion_contradictions": []
+}
