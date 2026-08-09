@@ -1,0 +1,134 @@
+{
+  "cell_ho_02": {
+    "input_data_path": "/home/hyunjin/CLADE/SiO2-x_distillatio/materials-ml-kit/research-sio2-allegro-simplenn-distillation/al_iter3/heldout_dft_batch/cell_ho_02/input.data",
+    "input_data_sha256": "bd0edeb8b5fb3b4dffb579776db5f8d0fa0a569e20edf97664dfbbbe3a5e7f7a",
+    "out_data_sha256": "c9853c872bf62c054dd64bf76d92f84255845f179b83e64b7c95b740ab22257c",
+    "n_atoms": 67,
+    "composition": {
+      "O": 45,
+      "Si": 22
+    },
+    "box_A": 11.0,
+    "canonical_coord_hash": "fa848bb741293686",
+    "domain": {
+      "distribution": "random",
+      "x_label": "x006",
+      "center_cn": "3",
+      "local_x": "-0.0227"
+    },
+    "parent_source_dump": "/home/hyunjin/CLADE/SiO2-x_distillatio/materials-ml-kit/research-sio2-allegro-simplenn-distillation/production_12288/random_sweep/x006/prod.dump",
+    "parent_frame_idx": "20",
+    "derivation": "carved ~11A cell around center atom + inner-sphere-frozen anneal (out.data)",
+    "atom_order_changed_from_parent": true
+  },
+  "cell_ho_03": {
+    "input_data_path": "/home/hyunjin/CLADE/SiO2-x_distillatio/materials-ml-kit/research-sio2-allegro-simplenn-distillation/al_iter3/heldout_dft_batch/cell_ho_03/input.data",
+    "input_data_sha256": "eb85cbebf45f1f6344b0681cb8e82b3bf5300be0484bafcf997a0196f969fa47",
+    "out_data_sha256": "ebe4541befd4f2e1f567ffc9cc4f19cd4c4ad34d51e068647eda3aa58ae7a31e",
+    "n_atoms": 73,
+    "composition": {
+      "O": 48,
+      "Si": 25
+    },
+    "box_A": 11.0,
+    "canonical_coord_hash": "278fd06355c60375",
+    "domain": {
+      "distribution": "random",
+      "x_label": "x015",
+      "center_cn": "1",
+      "local_x": "0.04"
+    },
+    "parent_source_dump": "/home/hyunjin/CLADE/SiO2-x_distillatio/materials-ml-kit/research-sio2-allegro-simplenn-distillation/production_12288/random_sweep/x015/prod.dump",
+    "parent_frame_idx": "20",
+    "derivation": "carved ~11A cell around center atom + inner-sphere-frozen anneal (out.data)",
+    "atom_order_changed_from_parent": true
+  },
+  "cell_ho_04": {
+    "input_data_path": "/home/hyunjin/CLADE/SiO2-x_distillatio/materials-ml-kit/research-sio2-allegro-simplenn-distillation/al_iter3/heldout_dft_batch/cell_ho_04/input.data",
+    "input_data_sha256": "2af12376ee66d31a45736d1278251130ab43e51b0610ff7e75aa95fe929228c0",
+    "out_data_sha256": "dbf380d8067b83c34d8c45515db9711532b5a5fae2df0bc23e0cb99c89b23f39",
+    "n_atoms": 49,
+    "composition": {
+      "O": 25,
+      "Si": 24
+    },
+    "box_A": 11.0,
+    "canonical_coord_hash": "210ac7a2ba38d1ed",
+    "domain": {
+      "distribution": "clustered",
+      "x_label": "sphere_T1000",
+      "center_cn": "0",
+      "local_x": "0.4792"
+    },
+    "parent_source_dump": "/home/hyunjin/CLADE/SiO2-x_distillatio/materials-ml-kit/research-sio2-allegro-simplenn-distillation/production_12288/anneal_calib_clustered/T1000/prod.dump",
+    "parent_frame_idx": "20",
+    "derivation": "carved ~11A cell around center atom + inner-sphere-frozen anneal (out.data)",
+    "atom_order_changed_from_parent": true
+  },
+  "cell_ho_05": {
+    "input_data_path": "/home/hyunjin/CLADE/SiO2-x_distillatio/materials-ml-kit/research-sio2-allegro-simplenn-distillation/al_iter3/heldout_dft_batch/cell_ho_05/input.data",
+    "input_data_sha256": "62fa7d527c0adff964e86ae8100b0c2cb2576896830fea4869d64db9619d5f15",
+    "out_data_sha256": "27ec5bac7e1948c43ea483f6a0d9eb16854b928705a38d70e666b736b320521f",
+    "n_atoms": 49,
+    "composition": {
+      "O": 22,
+      "Si": 27
+    },
+    "box_A": 11.0,
+    "canonical_coord_hash": "5b6f2adf0e322e5e",
+    "domain": {
+      "distribution": "clustered",
+      "x_label": "sphere_T1000",
+      "center_cn": "1",
+      "local_x": "0.5926"
+    },
+    "parent_source_dump": "/home/hyunjin/CLADE/SiO2-x_distillatio/materials-ml-kit/research-sio2-allegro-simplenn-distillation/production_12288/anneal_calib_clustered/T1000/prod.dump",
+    "parent_frame_idx": "30",
+    "derivation": "carved ~11A cell around center atom + inner-sphere-frozen anneal (out.data)",
+    "atom_order_changed_from_parent": true
+  },
+  "cell_ho_06": {
+    "input_data_path": "/home/hyunjin/CLADE/SiO2-x_distillatio/materials-ml-kit/research-sio2-allegro-simplenn-distillation/al_iter3/heldout_dft_batch/cell_ho_06/input.data",
+    "input_data_sha256": "946ab8395974e6173443f2028053dd9ff18820f7e1a6f542fae49261cdd51649",
+    "out_data_sha256": "bd9fdc4d02effd417d49e360d8ba5eac7888f8db73e972ad2110fe48db934219",
+    "n_atoms": 63,
+    "composition": {
+      "O": 35,
+      "Si": 28
+    },
+    "box_A": 11.0,
+    "canonical_coord_hash": "dbb57cd36a0683b0",
+    "domain": {
+      "distribution": "clustered",
+      "x_label": "plane_T1000",
+      "center_cn": "0",
+      "local_x": "0.375"
+    },
+    "parent_source_dump": "/home/hyunjin/CLADE/SiO2-x_distillatio/materials-ml-kit/research-sio2-allegro-simplenn-distillation/production_12288/anneal_calib_clustered/plane_T1000/prod.dump",
+    "parent_frame_idx": "20",
+    "derivation": "carved ~11A cell around center atom + inner-sphere-frozen anneal (out.data)",
+    "atom_order_changed_from_parent": true
+  },
+  "cell_ho_07": {
+    "input_data_path": "/home/hyunjin/CLADE/SiO2-x_distillatio/materials-ml-kit/research-sio2-allegro-simplenn-distillation/al_iter3/heldout_dft_batch/cell_ho_07/input.data",
+    "input_data_sha256": "9fbcafab0452660ad574ebcf6a9cfa013ecde36361ba324f7f8a3ca42e80a371",
+    "out_data_sha256": "deb55d186f5814cad9bcd9566b3b16efb8ed09f2de9ed8416adbf1272262081f",
+    "n_atoms": 52,
+    "composition": {
+      "O": 28,
+      "Si": 24
+    },
+    "box_A": 11.0,
+    "canonical_coord_hash": "c198b19f90a797b5",
+    "domain": {
+      "distribution": "clustered",
+      "x_label": "plane_T1000",
+      "center_cn": "1",
+      "local_x": "0.4167"
+    },
+    "parent_source_dump": "/home/hyunjin/CLADE/SiO2-x_distillatio/materials-ml-kit/research-sio2-allegro-simplenn-distillation/production_12288/anneal_calib_clustered/plane_T1000/prod.dump",
+    "parent_frame_idx": "30",
+    "derivation": "carved ~11A cell around center atom + inner-sphere-frozen anneal (out.data)",
+    "atom_order_changed_from_parent": true
+  }
+}

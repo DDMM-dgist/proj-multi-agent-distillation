@@ -1,0 +1,7 @@
+{
+  "AL11_with_umax_v5_present": true,
+  "AL11_is": "v5 EVALUATION output (the 11 AL SCAN cells run through the v5 committee to append uncertainty), NOT v5 training data (committee_umax_AL11_v5.log)",
+  "eleven_al_cells_in_v5_training": "UNRESOLVED (project's own script eval_errorc_v5_seed01.py:427: 'The 11 AL cells may or may not be in the v5 re-augment training set')",
+  "heldout_vs_AL11_or_DFT_cells_identity": "NONE match at Level 0 or Level 1 (see membership_matrix) => the 6 held-out cells are STRUCTURALLY DISTINCT from the 11 AL / DFT-labelled cells; the AL-overlap concern (R1.P1 caveat) affects DEPLOYMENT error(c), NOT the held-out cells.",
+  "al_iter3_28_cells_in_v5_training": "NO (al_iter3 dft cells postdate v5 and feed v6, per HANDOFF_v6.md)"
+}

@@ -1,0 +1,44 @@
+{
+  "run_id": "prod-run1-v5-leakage-resolution",
+  "parent_r1p1": {
+    "head": "f7f5c65e8ba9e57777f4ac309c83fc4faf3b3d75",
+    "run_id": "prod-run1-v5-heldout-generalization"
+  },
+  "read_only": true,
+  "no_model_invocation": true,
+  "no_dft": true,
+  "no_md": true,
+  "no_training": true,
+  "no_scheduler": true,
+  "no_network": true,
+  "no_judge": true,
+  "inputs": {
+    "manifest_heldout.csv": {
+      "path": "/home/hyunjin/CLADE/SiO2-x_distillatio/materials-ml-kit/research-sio2-allegro-simplenn-distillation/al_iter3/heldout_dft_batch/manifest_heldout.csv",
+      "sha256": "7ba7f2b9672e263ed8c388982da4a54274ec6804c3d44073814dbf6b46a41592"
+    },
+    "AL11_with_umax_v5.xyz": {
+      "path": "/home/hyunjin/CLADE/SiO2-x_distillatio/materials-ml-kit/research-sio2-allegro-simplenn-distillation/gpu_return_v5_committee/v5_committee_bundle/AL11_with_umax_v5.xyz",
+      "sha256": "c87216702918844217d3b5aabc71aba852116e957e60399e0ce500faef435bd7"
+    },
+    "v5_seed01_input.yaml": {
+      "path": "/home/hyunjin/CLADE/SiO2-x_distillatio/materials-ml-kit/research-sio2-allegro-simplenn-distillation/gpu_return_v5_committee/v5_committee_bundle/seed01/input.yaml",
+      "sha256": "f92171360a6ea0c59ac1c52803081cc6d4d46c0a45e2f990e7c1bf4d498cb53e"
+    }
+  },
+  "held_out_input_data_sha256": {
+    "cell_ho_02": "bd0edeb8b5fb3b4dffb579776db5f8d0fa0a569e20edf97664dfbbbe3a5e7f7a",
+    "cell_ho_03": "eb85cbebf45f1f6344b0681cb8e82b3bf5300be0484bafcf997a0196f969fa47",
+    "cell_ho_04": "2af12376ee66d31a45736d1278251130ab43e51b0610ff7e75aa95fe929228c0",
+    "cell_ho_05": "62fa7d527c0adff964e86ae8100b0c2cb2576896830fea4869d64db9619d5f15",
+    "cell_ho_06": "946ab8395974e6173443f2028053dd9ff18820f7e1a6f542fae49261cdd51649",
+    "cell_ho_07": "9fbcafab0452660ad574ebcf6a9cfa013ecde36361ba324f7f8a3ca42e80a371"
+  },
+  "v5_committee_member_md5": {
+    "seed01": "42a85cd0f510561c527069e1fb1ab8bf",
+    "seed02": "52507ee62ca5a2b16bb12af0643c38ea",
+    "seed03": "bab2e896c2ade58b15dec5b71ab7eddf",
+    "seed04": "92f669b4b91090ea6acaf457006f6367"
+  },
+  "lineage_findings_source": "/tmp/claude-1002/-home-hyunjin-CLADE-SiO2-x-distillatio-materials-ml-kit-paper-sio2-agentic-distillation/192ca6bd-72d4-47f0-b066-84bc7a70e6fa/scratchpad/proj-mad-pydanticai-full-runtime/work/run1r_lineage_findings.json"
+}
