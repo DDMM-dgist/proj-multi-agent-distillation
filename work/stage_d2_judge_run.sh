@@ -32,6 +32,10 @@ for f in msd.csv msd_summary.json provenance.json criterion_results.json; do
   [ -f "$RUN_DIR/$f" ] || { echo "missing $f — run C1 first"; exit 1; }
 done
 grep -q '"STAGE_D2_C1_AXIS_A": "PASS"' "$RUN_DIR/provenance.json" || { echo "Axis-A not PASS; refuse"; exit 1; }
+# APPEND-ONLY precondition: the historical deferred judge_interpretation.json must be preserved and the
+# attempt-1 output filenames must be FRESH (never overwrite history). Refuse otherwise.
+conda run -n mad-client python -c "import sys; sys.path.insert(0,'$REPO/work'); from stage_d2_judge_map import assert_appendonly; assert_appendonly('$RUN_DIR')" \
+  || { echo "append-only precondition failed (attempt artifacts exist or deferred file missing)"; exit 1; }
 
 echo "== GPU$DEV free gate (>= $MIN_FREE) =="
 FREE=$(nvidia-smi -i "$DEV" --query-gpu=memory.free --format=csv,noheader,nounits | tr -d ' ')
@@ -47,8 +51,10 @@ CUDA_VISIBLE_DEVICES="$DEV" setsid conda run -n vllm-mad --no-capture-output \
 VP=$!; PGID=$(ps -o pgid= -p "$VP" | tr -d ' ')
 for i in $(seq 1 90); do curl -sf http://127.0.0.1:8000/v1/models >/dev/null 2>&1 && break; sleep 2; done
 
-echo "== one advisory Judge (retries=0); reads ONLY the run dir; writes judge_interpretation.json =="
+echo "== one advisory Judge (retries=0; LOCAL LOOPBACK only); reads ONLY the run dir =="
 mkdir -p "$JEXCH/exchange"
+# Provider = local-openai to the LOCAL LOOPBACK vLLM endpoint (127.0.0.1) only; no external network,
+# no paid API. retries=0 (RuntimeContext provider_retries defaults to 0 -> exactly one attempt).
 env -u ANTHROPIC_API_KEY PYDANTIC_AI_PROVIDER=local-openai PYDANTIC_AI_MODEL="$SERVED" \
     PYDANTIC_AI_BASE_URL=http://127.0.0.1:8000/v1 PYDANTIC_AI_SMOKE_CONFIRM=yes \
   conda run -n mad-client --no-capture-output python -m runtimes.pydantic_ai.cli run-task \
@@ -57,20 +63,18 @@ env -u ANTHROPIC_API_KEY PYDANTIC_AI_PROVIDER=local-openai PYDANTIC_AI_MODEL="$S
     --repo-root "$REPO" --mode shadow --correlation-id d2c1-judge 2>&1 | tee "$RUN_DIR/judge_stdout.log"
 RC=${PIPESTATUS[0]}
 term
-echo "== extract JudgeVote -> judge_interpretation.json (advisory; Axis-A PASS preserved) =="
-conda run -n mad-client python - "$JEXCH/exchange" "$RUN_DIR/judge_interpretation.json" <<'PY'
-import json, sys, glob
-exch, out = sys.argv[1], sys.argv[2]
+echo "== APPEND-ONLY: write judge_interpretation_attempt1.json / judge_provenance_attempt1.json / semantic_transition_attempt1.json =="
+# Never overwrites the historical deferred judge_interpretation.json or any Axis-A scientific artifact;
+# advisory verdict is the LLM's genuine verdict (NOT rebound to Axis-A); PASS/REVISE/FAIL ->
+# ADVANCE/REVISE/FAIL_STOP; verifies preserved artifacts remain byte-identical.
+REPO="$REPO" conda run -n mad-client python - "$JEXCH/exchange" "$RUN_DIR" <<'PY'
+import json, sys, glob, os
+sys.path.insert(0, os.path.join(os.environ["REPO"], "work"))
+from stage_d2_judge_map import write_attempt_records
+exch, run_dir = sys.argv[1], sys.argv[2]
 provs = sorted(glob.glob(f"{exch}/provenance/*.json"), key=lambda f: json.load(open(f)).get("recorded_at",""))
-p = json.load(open(provs[-1])) if provs else {}
-vote = (p.get("parsed_result") or {})
-rec = {"status": "COMPLETED", "deterministic_authoritative": False,
-       "advisory_verdict": vote.get("verdict"), "criteria_checked": vote.get("criteria_checked"),
-       "rationale": vote.get("rationale"), "criterion_contradictions": len(p.get("criterion_contradictions") or []),
-       "provider": p.get("provider"), "model_id": p.get("model_id"),
-       "prompt_tokens": p.get("prompt_tokens"), "completion_tokens": p.get("completion_tokens"),
-       "latency_s": p.get("latency_s"), "axis_a_authoritative_verdict": "PASS (preserved)"}
-open(out, "w").write(json.dumps(rec, indent=2) + "\n")
-print("wrote", out, "advisory_verdict=", rec["advisory_verdict"])
+jp = json.load(open(provs[-1])) if provs else {}
+semantic = write_attempt_records(run_dir, jp, axis_a_verdict="PASS")
+print("advisory_verdict=", semantic["advisory_judge_verdict"], "-> STAGE_D2_C1_TRANSITION=", semantic["STAGE_D2_C1_TRANSITION"])
 PY
 echo "judge exit=$RC. NOTE: this script is PREPARATION — run only after separate explicit approval."
