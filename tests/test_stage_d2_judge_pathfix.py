@@ -86,16 +86,16 @@ class StageD2JudgePathFixTests(unittest.TestCase):
         self.assertIn("stage_d2_judge_preflight.py", rn)     # preflight wired before launch
         self.assertIn("assert_appendonly('$RUN_DIR', $ATTEMPT)", rn)
 
-    # G: attempt-2 output names are fresh & append-only (attempt 1 already occurred)
-    def test_attempt2_names_fresh(self):
+    # G: append-only attempt naming (attempt 1 already occurred and FAILED; attempt 2 ran + was closed)
+    def test_attempt2_names_and_no_successful_attempt1(self):
         import stage_d2_judge_map as M
         names = M.attempt_names(2)
         self.assertTrue(all("attempt2" in n for n in names))
-        # none of the attempt-2 outputs exist yet in the real run dir (Judge attempt-2 not run)
-        for n in names:
-            self.assertFalse((RD / n).exists(), n)
-        # and a successful attempt-1 interpretation must NOT exist (attempt 1 failed)
+        # a successful attempt-1 interpretation must NEVER exist (attempt 1 failed, stays failed)
         self.assertFalse((RD / "judge_interpretation_attempt1.json").exists())
+        # attempt-3 names would be fresh (no attempt 3 has occurred)
+        for n in M.attempt_names(3):
+            self.assertFalse((RD / n).exists(), n)
 
     # H + I: failed attempt-1 exchange provenance preserved; scientific artifacts byte-identical
     def test_attempt1_provenance_and_scientific_artifacts_preserved(self):
