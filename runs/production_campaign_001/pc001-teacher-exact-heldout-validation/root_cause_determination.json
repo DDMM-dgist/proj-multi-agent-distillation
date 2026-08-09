@@ -1,0 +1,73 @@
+{
+  "_record": "Root-cause determination for the teacher's defect-domain relative-fidelity degradation, from the EXACT seed-123 TRAIN split of dataset.xyz. Read-only; no inference. Follows the decision tree: coverage / diversity / teacher-model-training / DFT-labels.",
+  "evidence": {
+    "train_split": {
+      "train": 9140,
+      "val": 1142,
+      "test": 1142
+    },
+    "defect_coverage_TRAIN": {
+      "dilute_oxygen_deficient_vacancy": {
+        "n": 1192,
+        "families": {
+          "vacancy_int_AL": 627,
+          "vacancy": 228,
+          "SiOx_int_AL": 337
+        },
+        "local_x_range": [
+          -0.054,
+          0.753
+        ],
+        "distinct_local_x": 72,
+        "distinct_natoms": 102,
+        "dft_comp_RMS_mean": 1.323
+      },
+      "clustered_vacancy_voidsurface": {
+        "n": 707,
+        "families": {
+          "SiOx_max_AL": 374,
+          "quench_max_AL": 313,
+          "surfaces_max_AL": 20
+        },
+        "local_x_range": [
+          0.0,
+          0.933
+        ],
+        "distinct_local_x": 16,
+        "distinct_natoms": 24,
+        "dft_comp_RMS_mean": 3.622
+      },
+      "amorphous_baseline": {
+        "n": 1067
+      }
+    },
+    "interpolation": {
+      "dilute_test_within_train_force_range": 1.0,
+      "clustered_test_within_train_force_range": 1.0,
+      "meaning": "100% of held-out defect frames' force scales lie within the training defect force-scale range => test defects are INTERPOLATION, not extrapolation"
+    },
+    "generalization_gap": {
+      "train_force_MAE": 0.149,
+      "test_force_MAE": 0.156,
+      "gap": 0.007,
+      "meaning": "near-zero => the model fits training and held-out defects EQUALLY; the defect error is an irreducible fit floor, NOT an overfitting/under-coverage gap"
+    }
+  },
+  "decision_tree": {
+    "coverage_insufficient": false,
+    "coverage_sufficient_but_diversity_insufficient": false,
+    "coverage_and_diversity_sufficient__teacher_model_training_problem": true,
+    "dft_labels_problem": "POSSIBLE_SECONDARY (unconfirmed; requires reference review)"
+  },
+  "DETERMINATION": "TEACHER_MODEL_TRAINING_LIMITATION",
+  "reasoning": "The oxygen-deficient defect structures ARE well represented in the training split \u2014 dilute 1192 frames (local_x -0.05..0.75, 72 distinct compositions, 102 distinct sizes) and clustered 707 frames (local_x 0..0.93, force RMS 0.5..7.4) \u2014 i.e. coverage AND compositional/force-scale DIVERSITY are sufficient. Every held-out defect frame interpolates the training defect force-scale range (100%), and the train->test generalization gap is ~0 (0.149->0.156). Therefore the teacher's degraded relative fidelity in the oxygen-deficient domain is NOT a data-coverage or diversity problem and NOT extrapolation/overfitting: it is an intrinsic force-error FLOOR of the teacher model/training (~0.15-0.35 eV/A absolute), most visible in the low-force dilute domain where that floor dominates the normalized error.",
+  "secondary_check": "DFT_LABEL_QUALITY on defect structures (under-coordinated Si / void surfaces may carry noisier or less-converged SCAN forces contributing an irreducible error) \u2014 flag for reference review; not confirmable without DFT re-checks. surfaces_max_AL is thin in train (20 frames) \u2014 the only mildly sparse defect corner.",
+  "REFINES_prior_recommendation": "Supersedes the FINAL_PC001_teacher_verdict.json recommended_next ('DFT-anchored active learning targeting dilute+clustered'). Since coverage+diversity are already SUFFICIENT, adding more defect DFT data (AL) is UNLIKELY to lower the floor. The correct remedy is TEACHER MODEL/TRAINING improvement (e.g., increased capacity, low-force/defect-weighted force loss, training-length/hyperparameter changes) AND/OR a DFT-label quality review of the defect families \u2014 NOT dataset augmentation.",
+  "final_teacher_verdict_unchanged": "TEACHER_REVISE_BEFORE_DISTILLATION (the cause of the required revision is now identified as model/training-level, not coverage)",
+  "PC002_authorized": false,
+  "no_inference": true,
+  "no_dft": true,
+  "no_md": true,
+  "no_training": true,
+  "student_data_used": false
+}

@@ -184,3 +184,41 @@ oxygen-deficient region needs both teacher improvement and dataset coverage.
 Recommended next (later task; not executed here): one minimal DFT-anchored active-learning action targeting
 dilute + clustered oxygen-deficient vacancies to raise teacher relative fidelity in the core domain.
 PC001 is now closed permanently on this authoritative evidence.
+
+---
+
+## Root cause of the defect-domain degradation (training-set coverage/diversity)
+
+Diagnostic on the **exact seed-123 TRAIN split** of `dataset.xyz` (read-only; DFT forces from the data
+file; **no inference**). Artifacts: `train_defect_coverage.json`, `root_cause_determination.json`; script
+`work/pc001_train_defect_coverage.py`.
+
+| domain | TRAIN frames | families | local_x range (distinct) | DFT force RMS mean | test⊂train force range |
+|---|---|---|---|---|---|
+| amorphous | 1067 | bulk_amo/quench/liquid | 0 (stoich) | 1.95 | 100% |
+| **dilute vacancy** | **1192** | vacancy_int_AL 627, vacancy 228, SiOx_int_AL 337 | −0.05→0.75 (72) | 1.32 | **100%** |
+| **clustered/void** | **707** | SiOx_max_AL 374, quench_max_AL 313, surfaces_max_AL 20 | 0→0.93 (16) | 3.62 | **100%** |
+
+**Decision tree →**
+- coverage insufficient? **NO** — dilute 1192, clustered 707 training frames (substantial).
+- coverage OK but diversity insufficient? **NO** — wide compositional spread (72 / 16 distinct local_x),
+  wide force-scale spread (clustered RMS 0.5–7.4), and **100% of held-out defect frames interpolate** the
+  training defect force-scale range.
+- **coverage + diversity sufficient → TEACHER/MODEL/TRAINING problem.** ✔ — reinforced by the **near-zero
+  train→test gap** (0.149→0.156): the model fits training and held-out defects *equally*, so the defect
+  error is an **irreducible fit floor**, not under-coverage or overfitting.
+- DFT-labels problem? **POSSIBLE SECONDARY** — under-coordinated-Si / void-surface SCAN forces may be
+  noisier/less-converged (flag for reference review; `surfaces_max_AL` is the only thin corner, 20 train
+  frames). Unconfirmable without DFT re-checks.
+
+**DETERMINATION: `TEACHER_MODEL_TRAINING_LIMITATION`** — the teacher has an intrinsic force-error floor
+(~0.15–0.35 eV/Å) on defect structures, most visible in the low-force dilute domain where that floor
+dominates the normalized error. It is **not** a training-data coverage or diversity problem.
+
+**Refines the REVISE remedy (correcting the earlier suggestion):** because coverage + diversity are
+already sufficient, **DFT-anchored active learning / dataset augmentation is unlikely to lower the floor**.
+The indicated fix is **teacher model/training improvement** (increased capacity, low-force/defect-weighted
+force loss, training-length/hyperparameter changes) **and/or a DFT-label quality review** of the defect
+families — not more defect data. The FINAL PC001 verdict stays `TEACHER_REVISE_BEFORE_DISTILLATION`; the
+cause of the required revision is now identified as **model/training-level**, and **PC002 remains
+unauthorized**.

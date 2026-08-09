@@ -1,0 +1,376 @@
+{
+  "split_counts": {
+    "train": 9140,
+    "val": 1142,
+    "test": 1142,
+    "total_with_forces": 11424
+  },
+  "domains": {
+    "amorphous_SiO2": {
+      "TRAIN": {
+        "n": 1067,
+        "local_x": {
+          "min": 0.0,
+          "max": 0.0,
+          "mean": 0.0,
+          "std": 0.0
+        },
+        "dft_comp_RMS": {
+          "min": 0.815,
+          "max": 4.676,
+          "mean": 1.947,
+          "std": 0.765
+        },
+        "natoms": {
+          "min": 54,
+          "max": 192
+        },
+        "distinct_natoms": 37,
+        "distinct_lx_rounded": 1
+      },
+      "TEST": {
+        "n": 140,
+        "local_x": {
+          "min": 0.0,
+          "max": 0.0,
+          "mean": 0.0,
+          "std": 0.0
+        },
+        "dft_comp_RMS": {
+          "min": 0.896,
+          "max": 4.211,
+          "mean": 2.021,
+          "std": 0.758
+        },
+        "natoms": {
+          "min": 96,
+          "max": 192
+        },
+        "distinct_natoms": 22,
+        "distinct_lx_rounded": 1
+      },
+      "train_fraction_of_all_train": 0.1167,
+      "test_force_scale_within_train_range_frac": 1.0,
+      "per_config_family_TRAIN": {
+        "bulk_amo": {
+          "n": 254,
+          "local_x": {
+            "min": 0.0,
+            "max": 0.0,
+            "mean": 0.0,
+            "std": 0.0
+          },
+          "dft_comp_RMS": {
+            "min": 0.815,
+            "max": 3.651,
+            "mean": 1.028,
+            "std": 0.306
+          },
+          "natoms": {
+            "min": 192,
+            "max": 192
+          },
+          "distinct_natoms": 1,
+          "distinct_lx_rounded": 1
+        },
+        "quench_int_AL": {
+          "n": 328,
+          "local_x": {
+            "min": 0.0,
+            "max": 0.0,
+            "mean": 0.0,
+            "std": 0.0
+          },
+          "dft_comp_RMS": {
+            "min": 0.895,
+            "max": 4.676,
+            "mean": 1.641,
+            "std": 0.407
+          },
+          "natoms": {
+            "min": 54,
+            "max": 186
+          },
+          "distinct_natoms": 36,
+          "distinct_lx_rounded": 1
+        },
+        "quench": {
+          "n": 244,
+          "local_x": {
+            "min": 0.0,
+            "max": 0.0,
+            "mean": 0.0,
+            "std": 0.0
+          },
+          "dft_comp_RMS": {
+            "min": 1.872,
+            "max": 4.409,
+            "mean": 2.344,
+            "std": 0.258
+          },
+          "natoms": {
+            "min": 192,
+            "max": 192
+          },
+          "distinct_natoms": 1,
+          "distinct_lx_rounded": 1
+        },
+        "liquid": {
+          "n": 241,
+          "local_x": {
+            "min": 0.0,
+            "max": 0.0,
+            "mean": 0.0,
+            "std": 0.0
+          },
+          "dft_comp_RMS": {
+            "min": 2.456,
+            "max": 3.876,
+            "mean": 2.932,
+            "std": 0.222
+          },
+          "natoms": {
+            "min": 192,
+            "max": 192
+          },
+          "distinct_natoms": 1,
+          "distinct_lx_rounded": 1
+        }
+      }
+    },
+    "SiO2x_dilute_vacancy": {
+      "TRAIN": {
+        "n": 1192,
+        "local_x": {
+          "min": -0.054,
+          "max": 0.753,
+          "mean": 0.086,
+          "std": 0.17
+        },
+        "dft_comp_RMS": {
+          "min": 0.64,
+          "max": 3.215,
+          "mean": 1.323,
+          "std": 0.349
+        },
+        "natoms": {
+          "min": 111,
+          "max": 258
+        },
+        "distinct_natoms": 102,
+        "distinct_lx_rounded": 72
+      },
+      "TEST": {
+        "n": 149,
+        "local_x": {
+          "min": 0.0,
+          "max": 0.747,
+          "mean": 0.093,
+          "std": 0.178
+        },
+        "dft_comp_RMS": {
+          "min": 0.669,
+          "max": 2.167,
+          "mean": 1.287,
+          "std": 0.312
+        },
+        "natoms": {
+          "min": 123,
+          "max": 243
+        },
+        "distinct_natoms": 53,
+        "distinct_lx_rounded": 27
+      },
+      "train_fraction_of_all_train": 0.1304,
+      "test_force_scale_within_train_range_frac": 1.0,
+      "per_config_family_TRAIN": {
+        "vacancy_int_AL": {
+          "n": 627,
+          "local_x": {
+            "min": 0.0,
+            "max": 0.0,
+            "mean": 0.0,
+            "std": 0.0
+          },
+          "dft_comp_RMS": {
+            "min": 0.64,
+            "max": 2.4,
+            "mean": 1.152,
+            "std": 0.241
+          },
+          "natoms": {
+            "min": 111,
+            "max": 258
+          },
+          "distinct_natoms": 47,
+          "distinct_lx_rounded": 1
+        },
+        "vacancy": {
+          "n": 228,
+          "local_x": {
+            "min": 0.0,
+            "max": 0.0,
+            "mean": 0.0,
+            "std": 0.0
+          },
+          "dft_comp_RMS": {
+            "min": 0.916,
+            "max": 1.558,
+            "mean": 1.266,
+            "std": 0.169
+          },
+          "natoms": {
+            "min": 189,
+            "max": 240
+          },
+          "distinct_natoms": 2,
+          "distinct_lx_rounded": 1
+        },
+        "SiOx_int_AL": {
+          "n": 337,
+          "local_x": {
+            "min": -0.054,
+            "max": 0.753,
+            "mean": 0.305,
+            "std": 0.189
+          },
+          "dft_comp_RMS": {
+            "min": 0.727,
+            "max": 3.215,
+            "mean": 1.679,
+            "std": 0.347
+          },
+          "natoms": {
+            "min": 117,
+            "max": 203
+          },
+          "distinct_natoms": 78,
+          "distinct_lx_rounded": 72
+        }
+      }
+    },
+    "SiO2x_clustered_vacancy_voidsurface": {
+      "TRAIN": {
+        "n": 707,
+        "local_x": {
+          "min": 0.0,
+          "max": 0.933,
+          "mean": 0.288,
+          "std": 0.307
+        },
+        "dft_comp_RMS": {
+          "min": 0.543,
+          "max": 7.378,
+          "mean": 3.622,
+          "std": 1.024
+        },
+        "natoms": {
+          "min": 12,
+          "max": 216
+        },
+        "distinct_natoms": 24,
+        "distinct_lx_rounded": 16
+      },
+      "TEST": {
+        "n": 84,
+        "local_x": {
+          "min": 0.0,
+          "max": 0.857,
+          "mean": 0.253,
+          "std": 0.299
+        },
+        "dft_comp_RMS": {
+          "min": 1.655,
+          "max": 6.333,
+          "mean": 3.354,
+          "std": 1.006
+        },
+        "natoms": {
+          "min": 24,
+          "max": 144
+        },
+        "distinct_natoms": 12,
+        "distinct_lx_rounded": 8
+      },
+      "train_fraction_of_all_train": 0.0774,
+      "test_force_scale_within_train_range_frac": 1.0,
+      "per_config_family_TRAIN": {
+        "surfaces_max_AL": {
+          "n": 20,
+          "local_x": {
+            "min": 0.0,
+            "max": 0.0,
+            "mean": 0.0,
+            "std": 0.0
+          },
+          "dft_comp_RMS": {
+            "min": 0.543,
+            "max": 3.449,
+            "mean": 1.936,
+            "std": 0.76
+          },
+          "natoms": {
+            "min": 12,
+            "max": 192
+          },
+          "distinct_natoms": 5,
+          "distinct_lx_rounded": 1
+        },
+        "quench_max_AL": {
+          "n": 313,
+          "local_x": {
+            "min": 0.0,
+            "max": 0.0,
+            "mean": 0.0,
+            "std": 0.0
+          },
+          "dft_comp_RMS": {
+            "min": 1.906,
+            "max": 7.347,
+            "mean": 3.977,
+            "std": 0.728
+          },
+          "natoms": {
+            "min": 36,
+            "max": 192
+          },
+          "distinct_natoms": 7,
+          "distinct_lx_rounded": 1
+        },
+        "SiOx_max_AL": {
+          "n": 374,
+          "local_x": {
+            "min": 0.105,
+            "max": 0.933,
+            "mean": 0.545,
+            "std": 0.195
+          },
+          "dft_comp_RMS": {
+            "min": 1.07,
+            "max": 7.378,
+            "mean": 3.415,
+            "std": 1.099
+          },
+          "natoms": {
+            "min": 32,
+            "max": 216
+          },
+          "distinct_natoms": 18,
+          "distinct_lx_rounded": 15
+        }
+      }
+    }
+  },
+  "global_generalization_gap": {
+    "train_force_MAE": 0.149,
+    "test_force_MAE": 0.156,
+    "gap": 0.007,
+    "note": "near-zero => the model fits train and held-out EQUALLY; defect error is NOT an overfitting/under-coverage gap"
+  },
+  "root_cause": {
+    "coverage_counts_sufficient": true,
+    "test_defects_are_interpolation_not_extrapolation": true,
+    "near_zero_generalization_gap": true,
+    "determination": null
+  }
+}
