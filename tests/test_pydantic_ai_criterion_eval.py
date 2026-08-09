@@ -135,10 +135,12 @@ class CriterionEvalTests(unittest.TestCase):
                              exp["historical_verdict"], cid)
 
     def test_judge_spec_states_results_are_authoritative(self):
-        md = (ROOT / "agents" / "judge.md").read_text().lower()
+        md = " ".join((ROOT / "agents" / "judge.md").read_text().lower().split())  # normalize wraps
         self.assertIn("deterministic_criterion_results", md)
         self.assertIn("authoritative", md)
-        self.assertIn("never recompute or reverse", md)
+        # deterministic-verdict ownership: the policy owns the verdict; the LLM must not contradict facts
+        self.assertIn("owned by the deterministic policy", md)
+        self.assertIn("never contradict", md)
 
     def test_no_task_id_special_casing(self):
         # the evaluator and every criterion spec must be generic (no per-checkpoint answer key)

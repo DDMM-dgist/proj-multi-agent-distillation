@@ -88,7 +88,8 @@ def _validate_typed(candidate, spec):
 
 
 def _accept_via_exchange(invocation, spec, task, context, mode, strategy) -> RouteResult:
-    from orchestration.exchange import FileExchangeRuntime, validate_agent_response
+    from orchestration.exchange import (FileExchangeRuntime, bind_authoritative_judge_vote,
+                                         validate_agent_response)
     from .models import ValidationErrorRecord
     from .redaction import redact
     rec = invocation.provenance
@@ -102,6 +103,18 @@ def _accept_via_exchange(invocation, spec, task, context, mode, strategy) -> Rou
         # so a FAIL is auditable from the persisted artifact, not only from stdout.
         rec.validation_errors.append(
             ValidationErrorRecord(stage="contract_validation", message=error))
+    # Deterministic-verdict ownership: record which verdict was ACCEPTED (deterministic for an
+    # authoritative gate; the LLM's for advisory) plus the LLM's proposed verdict + any flagged
+    # criterion contradictions, so the ownership boundary is auditable from the artifact.
+    if validated is not None and getattr(spec, "result_contract", None) == "JudgeVote":
+        _bound, brec = bind_authoritative_judge_vote(invocation.candidate, task)
+        if brec.get("authoritative"):
+            rec.accepted_verdict = brec["authoritative_verdict"]
+            rec.llm_proposed_verdict = brec["llm_proposed_verdict"]
+            rec.verdict_overridden = bool(brec["verdict_overridden"])
+            rec.criterion_contradictions = list(brec["criterion_contradictions"])
+        else:
+            rec.accepted_verdict = validated.get("verdict")
     accepted = False
     if validated is not None and mode == "primary":
         FileExchangeRuntime(context.exchange_dir).accept(spec, task["task_id"],

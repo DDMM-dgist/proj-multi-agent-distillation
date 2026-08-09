@@ -32,7 +32,10 @@ def evaluate_checkpoint(exp, prov, stdout, *, expected_provider=DEFAULT_EXPECTED
                         expected_model=DEFAULT_EXPECTED_MODEL):
     parsed = prov.get("parsed_result")
     tools = prov.get("tool_invocations", []) or []
-    verdict = (parsed or {}).get("verdict")
+    # Deterministic-verdict ownership: the ACCEPTED verdict is the one bound by trusted code
+    # (deterministic for an authoritative gate). Older provenance has no accepted_verdict -> fall
+    # back to the model's parsed verdict (unchanged historical behaviour).
+    verdict = prov.get("accepted_verdict") or (parsed or {}).get("verdict")
     hist = exp["historical_verdict"]
     acceptable = set(exp.get("acceptable_verdicts", []))
     ordered = exp.get("ordered_criteria", [])

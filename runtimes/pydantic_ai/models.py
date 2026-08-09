@@ -208,3 +208,13 @@ class RuntimeInvocationRecord(BaseModel):
     mode: Literal["", "primary", "shadow", "dry_run", "validate_only"] = ""
     controller_mutated: bool = False
     estimated_cost: Optional[float] = None
+    # --- Deterministic-verdict ownership (Stage D-1 refactor) ----------------------
+    # For an authoritative (fully deterministic) judge gate the ACCEPTED verdict is owned by the
+    # deterministic policy and bound by trusted code; the LLM's proposed verdict is preserved for
+    # audit but is not authoritative. accepted_verdict is the verdict actually accepted for the gate
+    # (deterministic for authoritative gates; the LLM's verdict for advisory gates). Absent (None) on
+    # older provenance -> consumers fall back to parsed_result.verdict.
+    accepted_verdict: Optional[str] = None
+    llm_proposed_verdict: Optional[str] = None
+    verdict_overridden: bool = False
+    criterion_contradictions: list[str] = Field(default_factory=list)

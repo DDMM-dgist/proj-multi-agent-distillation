@@ -148,6 +148,49 @@ missing/extra criterion → rejected; advisory block is not verdict-binding; no 
 Deterministic severity now MATCHES historical for all 7 development checkpoints (was 5/7 with the LLM
 doing the arithmetic). This does **not** by itself certify generalization — see below.
 
+## v2 refactor — deterministic-verdict OWNERSHIP (post-holdout)
+
+The Stage D-1 holdout replay returned an **LLM_VERDICT_REGENERATION_CONSISTENCY_FAILURE**: on
+`hd-committee-v3final` the Judge read the evidence correctly and got all criterion booleans right, but
+emitted **FAIL** where the deterministic policy gives **REVISE**; the v1 enforcement *rejected* the
+vote, so canonical consistency was 7/8. The failure was not evidence-grounding, arithmetic, safety, or
+policy — it was that the architecture asked the LLM to **regenerate** a verdict the deterministic
+policy already owns, and validated the copy. That redundant step is an avoidable liveness/consistency
+risk.
+
+**Fix — move the ownership boundary.** For a **fully deterministic** gate
+(`deterministic_authoritative = true`):
+
+1. the deterministic **criterion evaluator** owns the criterion booleans;
+2. the deterministic **policy** (`derive_severity`) owns the **authoritative final verdict**;
+3. the **LLM does not own or override** the verdict;
+4. the LLM produces only **interpretation** (rationale, per-criterion commentary, concerns, remediation);
+5. the accepted scientific verdict is **bound from the deterministic policy by trusted code**.
+
+**Typed separation** (`criterion_eval.py`): `DeterministicGateDecision{criterion_results,
+authoritative_verdict, provenance}` (produced by trusted code) vs `JudgeInterpretation{rationale,
+criterion_commentary, concerns, recommended_remediation}` (the LLM's contribution).
+
+**Binding** (`orchestration/exchange.py::bind_authoritative_judge_vote`, applied inside
+`validate_agent_response` and recorded by `production_router`): for an authoritative gate the accepted
+JudgeVote's `verdict` is set to `deterministic_suggested_severity` and its `criteria_checked` is rebuilt
+from the ordered criteria + the deterministic booleans; the LLM's `rationale`/`required_fix` are kept;
+its proposed verdict and any criterion-fact contradiction are recorded in provenance
+(`llm_proposed_verdict`, `verdict_overridden`, `criterion_contradictions`, `accepted_verdict`) but are
+**not** authoritative. A verdict-wording difference no longer fails the gate; a contradictory criterion
+claim is **overridden and flagged**, never accepted. **Advisory** gates
+(`deterministic_authoritative = false`) keep the genuine semantic Judge verdict path unchanged.
+
+Safety is preserved, not weakened: the accepted verdict + booleans are now *always* the deterministic
+ones (the LLM cannot set or contradict them), FAIL/REVISE/PASS semantics are unchanged, and
+canonical validation, request_limit=6, the duplicate-read guard, provenance, authorization, and
+controller authority all remain. Regression tests: authoritative REVISE/FAIL/PASS cannot be changed by
+the LLM; a final verdict is always produced even if the LLM's wording/structure differs; contradictory
+commentary is overridden + flagged; advisory gates still take a genuine LLM verdict; and a 15-case
+network-free corpus (7 dev + 8 consumed-holdout) binds every case to the deterministic verdict against
+an adversarial LLM vote. The evaluator reads `accepted_verdict` (falling back to the raw verdict for
+pre-refactor archives, so historical results are unchanged).
+
 ## Holdout requirement (why 7/7 here is necessary, not sufficient)
 
 The 7 checkpoints are now a **development set** (the layer + specs were observed against them). Final
