@@ -1,0 +1,25 @@
+# STUDENT adapter template — any trainable MLIP with train+predict+deploy.
+kind: <simple-nn | grace-fs | mock | your-kind>   # built-in kinds OR use adapter.train/train.command
+# If not a built-in kind, provide ONE of:
+# adapter: {train: your.module.train_fn, predict: your.module.predict_fn, load: your.module.load_fn}
+train:
+  env: <conda-env-with-your-trainer>
+  # built-in simple-nn style:
+  config_template: templates/student/<your>.input.yaml.template
+  descriptor_params: {<E1>: /abs/params_E1, <E2>: /abs/params_E2}
+  total_epoch: <N>                                # DEV cap allowed; keep final value documented
+  learning_rate: 1.0e-4
+  batch_size: <B>
+  nodes: "<arch>"
+  runner: {module: adapters.<your_wrapper>}       # for a CLI wrapper
+  # OR a generic command form:
+  # command: [python, -m, your.trainer, --dataset, "{dataset_path}", --out, "{out_dir}", --seed, "{seed}"]
+  # artifact: "<relative checkpoint path>"
+struct_weight_policy: {name: C_SIZE_NORMALIZED_BOUNDED, applies_to: training_only}   # optional
+committee: {n_seeds: 4, seeds: [<s1>, <s2>, <s3>, <s4>]}
+predict:
+  env: <conda-env>
+  command: [python, -m, your.predict, --checkpoint, "{checkpoint}", --structures, "{structures}", --output, "{output}"]
+  energy_key: student_energy
+  forces_key: student_forces
+deploy: {lammps_pair_style: "<style>", elements: [<E1>, <E2>]}

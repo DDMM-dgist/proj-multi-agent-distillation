@@ -1,0 +1,16 @@
+# TEACHER adapter template — point at ANY ASE-calculator MLIP. No controller change needed.
+kind: <your-teacher-name>            # informational; core does NOT dispatch on this
+model: /abs/path/to/teacher_model    # checkpoint / compiled model / named foundation model
+calculator:
+  # EITHER a factory callable:
+  # factory: mace.calculators.mace_mp        # module.callable
+  # OR module/class/constructor form (for classmethod constructors):
+  module: <python.module>                    # e.g. nequip.ase
+  class: <CalculatorClass>                   # e.g. NequIPCalculator
+  constructor: <classmethod_or_null>         # e.g. from_compiled_model (or null for __init__)
+  model_arg: __positional__                  # how `model` is passed: __positional__ | <kwarg name> | null
+  model_is_path: true
+  kwargs: {device: cpu}                      # e.g. {device: cpu, chemical_species_to_atom_type_map: {O: O, Si: Si}}
+elements_order: [<E1>, <E2>]
+provenance: {packages: [<pkg1>, <pkg2>]}     # versions recorded in the label manifest
+emits_stress: false                          # verify empirically (adapters.teacher.check_stress_support)

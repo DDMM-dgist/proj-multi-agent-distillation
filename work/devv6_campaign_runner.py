@@ -39,10 +39,11 @@ def det_check(run_dir, stage_name):
         ok = d.get("n_train",0)>0 and d.get("n_validation",0)>0
         return ok, f"split n_train={d.get('n_train')} n_validation={d.get('n_validation')} no_exact_leak={d.get('no_exact_frame_leakage','?')}"
     if stage_name == "training":
+        import os as _os
         d = json.loads((art/"student_committee.manifest.json").read_text())
-        members = d.get("members", d.get("committee", []))
-        n_ok = sum(1 for m in members if (m.get("status","ok")=="ok" or m.get("checkpoint"))) if isinstance(members,list) else 0
-        return n_ok>=1 and n_ok==len(members), f"committee members={len(members) if isinstance(members,list) else '?'} ok={n_ok}"
+        members = d.get("models", d.get("members", d.get("committee", [])))  # train_committee writes 'models'
+        n_ok = sum(1 for m in members if _os.path.exists(m.get("path",""))) if isinstance(members, list) else 0
+        return (n_ok >= 1 and n_ok == len(members)), f"committee models={len(members) if isinstance(members,list) else '?'} checkpoints_ok={n_ok}"
     if stage_name == "evaluation":
         d = json.loads((art/"accuracy_report.json").read_text())
         return True, f"accuracy_report keys={sorted(d)[:6]}"

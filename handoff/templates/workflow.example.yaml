@@ -1,0 +1,18 @@
+# EXAMPLE workflow config (architecture-neutral). Copy + point inputs at YOUR teacher/student configs.
+run_id: <YOUR_RUN>
+inputs:
+  - "{project_dir}/configs/teacher.<name>.yaml"
+  - "{project_dir}/configs/student.<name>.yaml"
+  - "{project_dir}/configs/distillation_scope.yaml"
+  - "{project_dir}/configs/dataset_policy.yaml"
+  - "{project_dir}/configs/validation_profile.yaml"
+  - {path: "{project_dir}/data/seed_or_source_structures.xyz", copy: false}
+  - {path: "/abs/path/to/teacher_model", copy: false}
+stages:
+  - {name: teacher_baseline,  env: <teacher-env>, gate: {criteria: ["teacher applicability + reference purpose explicit"]}, command: [...], outputs: [...]}
+  - {name: acquisition,       env: <teacher-env>, gate: {criteria: ["augment-atoms/teacher-MD output has parent_structure_id"]}, command: ["{python}", -m, adapters.acquisition, ...], outputs: [...]}   # optional
+  - {name: teacher_labeling,  env: <teacher-env>, gate: {criteria: ["teacher labels + provenance manifest complete"]}, command: ["{python}", -m, adapters.acquisition, label, ...], outputs: [artifacts/teacher_labeled.extxyz, artifacts/teacher_labels.manifest.json]}
+  - {name: dataset_split,     gate: {criteria: ["train/valid/test split lineage-disjoint or documented"]}, command: ["{python}", -m, workflow.steps, split-dataset, ...], outputs: [...]}
+  - {name: training,          env: <student-env>, gate: {criteria: ["committee checkpoints + manifest complete"]}, command: ["{python}", -m, workflow.steps, train-committee, ...], outputs: [artifacts/student_committee.manifest.json, artifacts/committee]}
+  - {name: evaluation,        env: <student-env>, gate: {criteria: ["student-vs-teacher held-out channel complete"]}, command: ["{python}", -m, workflow.steps, evaluate-committee, ..., --require-channel, student_vs_teacher], outputs: [...]}
+  - {name: physical_validation, gate: {criteria: ["declared observables reported per profile"]}, command: ["{python}", "{project_dir}/validation/<validator>.py", ...], outputs: [artifacts/validation_report.json]}

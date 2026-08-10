@@ -1,0 +1,14 @@
+# VALIDATION PROFILE template — model-independent observables + thresholds + reference sources.
+kind: <material>-validation
+intended_use: <deployment description>
+axes:
+  student_vs_teacher: {set: <held-out valid set>, interpretation: within_distribution_fidelity,
+                       metrics: [energy_MAE, force_component_MAE_RMSE, per_structure_averaged_force_error, domain_resolved]}
+  student_vs_dft:      {set: <independent DFT reference set>, interpretation: independent_scientific_validation}
+uncertainty:
+  definition: "committee force spread; record the EXECUTABLE definition; note any manuscript normalization difference"
+physical_validation:
+  emphasize: [RDF, ADF, coordination, density, MSD, NVE_stability]   # material-specific
+  not_mandatory: [EOS, elastic]                                      # if the student is not trained on stress
+  thresholds: {<observable>: <value/tolerance>}
+  reference_sources: {<observable>: <experiment|DFT|teacher>}
