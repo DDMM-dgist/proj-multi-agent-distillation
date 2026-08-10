@@ -10,10 +10,11 @@
   },
   "dataset_provenance": {
     "file": "03_allegro_train/dataset.xyz", "sha256_prefix32": "382d0b2b35ed9c571314ff59df71e9c9",
-    "current_total": 13898,
+    "true_total": 11424,
+    "CORRECTION": "prior '13898 total / 2474 appended' RETRACTED as false — grep -o token artifact (2474 headers have config_type= twice). ASE + Lattice= counts = 11424. NO appended frames.",
     "ORIGINAL_TEACHER_CORPUS": {"frames": [0, 11423], "N": 11424},
-    "POST_ORIGINAL_TRAINING_DATA": {"frames": [11424, 13897], "N": 2474},
-    "rule": "never mixed silently; PC002 uses only [0,11423]", "frozen": "work/dataset_provenance_split_fact.json"
+    "POST_ORIGINAL_TRAINING_DATA": {"N": 0, "status": "does_not_exist"},
+    "frozen": "work/dataset_provenance_split_fact.json"
   },
   "track_a": {
     "state": "EXTERNAL_GPU_TRAINING_PREPARED",
@@ -31,9 +32,11 @@
   "track_b": {
     "PC002_SOURCE_STRUCTURE_INVENTORY": "COMPLETE",
     "PC002_DATASET_STRUCTURE_RESOLVED": true,
-    "PC002_selected_frames": 6436, "PC002_train": 5789, "PC002_val": 647, "PC002_candidates": 12481,
-    "PC002_selected_by_domain": {"DILUTE_OXYGEN_DEFICIENT": 1937, "CLUSTERED_VOID": 1505, "AMBIENT_CRYSTAL": 1366,
-                                 "STOICHIOMETRIC_AMORPHOUS": 640, "SURFACE": 567, "HIGH_T_LIQUID": 313, "OTHER_RELEVANT_SIO": 108},
+    "PC002_correction_pass": "applied (crystalline trim, corrected leakage-safe split, atom-weight exposure, dataset-count correction)",
+    "PC002_selected_frames": 5552, "PC002_train": 4987, "PC002_val": 558, "PC002_candidates": 12481,
+    "PC002_total_atoms": 1020697, "PC002_production_atom_share": 0.3207,
+    "PC002_selected_by_domain": {"DILUTE_OXYGEN_DEFICIENT": 1937, "CLUSTERED_VOID": 1504, "AMBIENT_CRYSTAL": 600,
+                                 "STOICHIOMETRIC_AMORPHOUS": 640, "SURFACE": 450, "HIGH_T_LIQUID": 313, "OTHER_RELEVANT_SIO": 108},
     "PC002_TEACHER_LABELING": "WAIT_FINAL_TEACHER",
     "PC003": "PREPARED", "NEW_PIPELINE_CURRENT_STUDENT": "NONE",
     "PC003_committee_seeds": [234, 345, 555, 777], "PC003_seed_777": "VERIFIED",

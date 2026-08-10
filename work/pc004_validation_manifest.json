@@ -1,8 +1,9 @@
 {
   "campaign": "production_campaign_004",
-  "student_vs_teacher_eval_set": {"source": "work/pc002_student_valid_structure_manifest.csv", "n_frames": 647,
-    "by_domain": {"DILUTE_OXYGEN_DEFICIENT": 195, "CLUSTERED_VOID": 152, "AMBIENT_CRYSTAL": 137,
-                  "STOICHIOMETRIC_AMORPHOUS": 64, "SURFACE": 57, "HIGH_T_LIQUID": 31, "OTHER_RELEVANT_SIO": 11}},
+  "student_vs_teacher_eval_set": {"source": "work/pc002_student_valid_structure_manifest.csv", "n_frames": 558,
+    "by_domain": {"DILUTE_OXYGEN_DEFICIENT": 195, "CLUSTERED_VOID": 152, "AMBIENT_CRYSTAL": 60,
+                  "STOICHIOMETRIC_AMORPHOUS": 64, "SURFACE": 45, "HIGH_T_LIQUID": 31, "OTHER_RELEVANT_SIO": 11},
+    "source_group_independence_caveat": "val shares lineages with train (blocked split); single-lineage domains not cross-lineage independent — see pc002_structure_design_decision.json"},
   "student_vs_dft_eval_set": {"source": "work/pc004_dft_exclusion_manifest.csv", "n_cells": 11,
     "composition": "4 dilute (x=0) + 7 clustered (x 0.114-0.60)", "labels": "SCAN DFT (independent)"},
   "central_domain_split_for_reporting": ["STOICHIOMETRIC_AMORPHOUS", "DILUTE_OXYGEN_DEFICIENT", "CLUSTERED_VOID"],

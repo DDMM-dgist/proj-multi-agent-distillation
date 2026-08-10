@@ -2,6 +2,15 @@
   "campaign": "production_campaign_003",
   "state": "PREPARED",
   "NEW_PIPELINE_CURRENT_STUDENT": "NONE",
+  "config_authority": "HISTORICAL_BASELINE_CONFIG (recovered from gpu2 SIMPLE-NN bundles); NOT FINAL_PC003_CONFIG until the new workflow independently adopts each value",
+  "gate_authority": "u_max<0.30 is HISTORICAL_REFERENCE_GATE, not a current source-grounded pipeline rule",
+  "loss_normalization_verified": {
+    "source": "simple_nn/models/loss.py (v2.0.0)",
+    "energy_E_loss_type_1": "criterion(E_/n_atoms, E_target/n_atoms) then mean over batch => PER-ATOM energy, PER-STRUCTURE averaged (each structure equal weight regardless of size)",
+    "force_F_loss_type_1": "criterion(F_,F) reduced by torch.mean over ALL force components in batch => ATOM-WEIGHTED (large cells dominate force training)",
+    "lever": "item['struct_weight'] (weighted flag) can re-weight per structure; recommended to offset the large-production-cell atom-weight skew",
+    "implication": "frame fractions ~ energy-training exposure; ATOM fractions ~ force-training exposure -> see pc002_domain_counts.json exposure_by_domain"
+  },
   "student_software": {"name": "SIMPLE-NN", "version": "v2.0.0", "commit": "d69dc23", "backend": "PyTorch"},
   "preprocessing_schema": {
     "data_type": "symmetry_function",

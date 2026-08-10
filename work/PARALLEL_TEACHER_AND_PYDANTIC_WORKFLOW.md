@@ -16,11 +16,11 @@ Existing-teacher screen complete → **`NO_EXISTING_TEACHER_IMPROVES_TARGET_HELD
 validation for v2/v6. Root cause `A_MODEL_TRAINING_UNDERFIT` (held-out defect force floor) —
 **not reopened**.
 
-## Dataset provenance (FROZEN — `work/dataset_provenance_split_fact.json`)
-`dataset.xyz` (sha `382d0b2b…`) has **13,898** frames. ORIGINAL_TEACHER_CORPUS = frames **[0,11423]**
-(N=11,424; confirmed by exact seed-123 split + NequIP-metric reproduction). POST_ORIGINAL_TRAINING_DATA
-= frames **[11424,13897]** (N=2,474; appended after original training, separate asset). **Never mixed
-silently;** all PC002 corpus enumeration uses only [0,11423].
+## Dataset provenance (CORRECTED — `work/dataset_provenance_split_fact.json`)
+`dataset.xyz` (sha `382d0b2b…`) has **11,424** frames total — the full ORIGINAL_TEACHER_CORPUS
+[0,11423]. The earlier **"13,898 / 2,474 appended" claim is RETRACTED as false**: it was a
+`grep -o config_type=` token artifact (2,474 headers carry the token twice); ASE + `Lattice=` counts
+both = 11,424; **no appended frames exist**. Track-A's 11,424 constraint is unaffected.
 
 ## TRACK A — EXTERNAL GPU (DATA PREPARED, NOT EXECUTED; recipe owned by GPU branch)
 Deliverable: `work/EXTERNAL_GPU_TARGET_TEACHER_TRAINING_PACKAGE.md` + portable package
@@ -35,7 +35,7 @@ warm-start ckpt `51342b33`; scripts, manifests, READMEs, integrity SHA256SUMS).
 ## TRACK B — CPU PydanticAI (ACTIVE, running now)
 | campaign | state | deliverable |
 |---|---|---|
-| PC002 structural design | **`PC002_DATASET_STRUCTURE_RESOLVED = TRUE`** (frame-level); `SOURCE_INVENTORY=COMPLETE`; labeling `WAIT_FINAL_TEACHER` | `PRODUCTION_CAMPAIGN_002_STRUCTURE_SELECTION.md`; **6,436-frame** selected ensemble (`pc002_selected_structure_manifest.csv`), train 5,789 / val 647, candidate inventory 12,481, domain map, redundancy report, `pc002_structure_design_decision.json` |
+| PC002 structural design | **`PC002_DATASET_STRUCTURE_RESOLVED = TRUE`** (frame-level, correction pass); `SOURCE_INVENTORY=COMPLETE`; labeling `WAIT_FINAL_TEACHER` | `PRODUCTION_CAMPAIGN_002_STRUCTURE_SELECTION.md`; **5,552-frame** ensemble (high-pressure crystalline trimmed), train 4,987 / val 558, candidate 12,481 (11,424 corpus + 1,057 prod, 0 appended), atom-weighted exposure (prod 32%), leakage-safe blocked+buffer split, `pc002_structure_design_decision.json` |
 | PC003 student workflow | PREPARED (`NEW_PIPELINE_CURRENT_STUDENT = NONE`); committee seeds 234/345/555/**777 VERIFIED** | `pc003_student_workflow_spec.json`, `pc003_historical_asset_inventory.json`, `pc003_seed_verification.json`, `PC003_STUDENT_WORKFLOW_PREP.md` |
 | PC004 student validation | PREPARED (teacher-independent infra); DFT exclusions verified | `pc004_validation_protocol.json`, `pc004_validation_manifest.json`, `pc004_dft_exclusion_manifest.csv` (11), `PC004_VALIDATION_PROTOCOL_PREP.md` |
 | PC005 physical validation | PREPARED (scripts + baselines; no new MD) | `pc005_physical_validation_protocol.json`, `pc005_existing_asset_inventory.json`, `PC005_PHYSICAL_VALIDATION_PROTOCOL_PREP.md` |
