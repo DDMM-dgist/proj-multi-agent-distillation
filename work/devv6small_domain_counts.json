@@ -1,0 +1,48 @@
+{
+  "DEV_SUBSET_OF": "PC002_FULL_DATASET",
+  "DEVELOPMENT_ONLY": true,
+  "FINAL_SCIENTIFIC_DATASET": false,
+  "n_selected": 400,
+  "n_production_large_frames": 10,
+  "by_domain": {
+    "DILUTE_OXYGEN_DEFICIENT": 140,
+    "CLUSTERED_VOID": 108,
+    "STOICHIOMETRIC_AMORPHOUS": 46,
+    "AMBIENT_CRYSTAL": 43,
+    "SURFACE": 32,
+    "HIGH_T_LIQUID": 23,
+    "OTHER_RELEVANT_SIO": 8
+  },
+  "target_by_domain": {
+    "DILUTE_OXYGEN_DEFICIENT": 140,
+    "CLUSTERED_VOID": 108,
+    "STOICHIOMETRIC_AMORPHOUS": 46,
+    "AMBIENT_CRYSTAL": 43,
+    "SURFACE": 32,
+    "HIGH_T_LIQUID": 23,
+    "OTHER_RELEVANT_SIO": 8
+  },
+  "train": 360,
+  "valid": 40,
+  "train_by_domain": {
+    "DILUTE_OXYGEN_DEFICIENT": 126,
+    "CLUSTERED_VOID": 97,
+    "STOICHIOMETRIC_AMORPHOUS": 41,
+    "AMBIENT_CRYSTAL": 39,
+    "SURFACE": 29,
+    "HIGH_T_LIQUID": 21,
+    "OTHER_RELEVANT_SIO": 7
+  },
+  "valid_by_domain": {
+    "DILUTE_OXYGEN_DEFICIENT": 14,
+    "CLUSTERED_VOID": 11,
+    "STOICHIOMETRIC_AMORPHOUS": 5,
+    "AMBIENT_CRYSTAL": 4,
+    "SURFACE": 3,
+    "HIGH_T_LIQUID": 2,
+    "OTHER_RELEVANT_SIO": 1
+  },
+  "dft_cells_excluded": 11,
+  "dft_overlap": 0,
+  "materialized": "/tmp/claude-1002/-home-hyunjin-CLADE-SiO2-x-distillatio-materials-ml-kit-paper-sio2-agentic-distillation/192ca6bd-72d4-47f0-b066-84bc7a70e6fa/scratchpad/proj-mad-pydanticai-full-runtime/work/devv6small_ensemble.xyz"
+}
