@@ -131,7 +131,10 @@ def _write_structure_list(struct_list_path: Path, dataset_path: Path, tag: str, 
     if not weights:
         struct_list_path.write_text(f"[{tag}]\n{d} :\n")
         return
-    lines = [f"[{tag}-{i:06d} : {float(w):.6f}]\n{d} {i}\n" for i, w in enumerate(weights)]
+    # NOTE: use a SLICE 'i:i+1' (not bare 'i') so SIMPLE-NN's ase.io.read returns a LIST of one
+    # Atoms; a bare integer index yields a single Atoms which SIMPLE-NN iterates into Atom objects
+    # (AttributeError: 'Atom' has no 'cell').
+    lines = [f"[{tag}-{i:06d} : {float(w):.6f}]\n{d} {i}:{i+1}\n" for i, w in enumerate(weights)]
     struct_list_path.write_text("".join(lines))
 
 

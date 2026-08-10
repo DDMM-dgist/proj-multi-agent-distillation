@@ -143,7 +143,9 @@ def train_committee(student_config, dataset, output_dir, manifest):
     cfg = load_config(student_config)
     output_dir = Path(output_dir)
     models = []
-    for seed in range(1, int(cfg.get("committee", {}).get("n_seeds", 4)) + 1):
+    committee_cfg = cfg.get("committee", {}) or {}
+    seeds = committee_cfg.get("seeds") or list(range(1, int(committee_cfg.get("n_seeds", 4)) + 1))
+    for seed in seeds:
         artifact = train_student(cfg, dataset, output_dir / f"seed-{seed}", seed)
         models.append({"kind": artifact.kind, "seed": seed, "path": str(artifact.path),
                        "integrity": artifact_digest(artifact.path),
