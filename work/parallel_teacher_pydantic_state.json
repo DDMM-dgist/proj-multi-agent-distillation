@@ -1,0 +1,39 @@
+{
+  "TRACK_A": "EXTERNAL_GPU_TRAINING_PREPARED",
+  "TRACK_B": "CPU_PYDANTIC_WORKFLOW_ACTIVE",
+  "join_condition": "FINAL_TEACHER_IDENTITY_RESOLVED_AND_PC002_DATASET_STRUCTURE_RESOLVED",
+  "teacher_status": {
+    "existing_teacher_screen": "NO_EXISTING_TEACHER_IMPROVES_TARGET_HELDOUT_FIDELITY",
+    "candidates": {"base_b56e20ff": "baseline", "teacher_finetuned_v2": "DO_NOT_ADVANCE", "teacher_v6_finetuned": "DO_NOT_ADVANCE"},
+    "root_cause": "A_MODEL_TRAINING_UNDERFIT",
+    "full_1142_validation_for_v2_v6": "NOT_RUN (per instruction)"
+  },
+  "track_a": {
+    "state": "EXTERNAL_GPU_TRAINING_PREPARED",
+    "experiment": "PC-A1 target-focused same-architecture warm-start fine-tune",
+    "package_dir": "work/external_gpu_teacher_package",
+    "package_size_mb": 104,
+    "corpus_frames": 3766, "core_target": 2966, "replay": 800,
+    "corpus_sha256_prefix32": "46433913d71d174efa4df010956c1c6a",
+    "warm_start_ckpt_sha16": "51342b332ba04287",
+    "new_dft": false, "sweep": false, "executed_here": false,
+    "fallback_A6": "target-focused higher-capacity Allegro (documented only, not prepared)"
+  },
+  "track_b": {
+    "PC002_STRUCTURE_SELECTION": "RESOLVED",
+    "PC002_FINAL_TEACHER_LABELING": "BLOCKED_ON_FINAL_TEACHER",
+    "PC003": "PREPARED", "NEW_PIPELINE_CURRENT_STUDENT": "NONE",
+    "PC004": "PREPARED", "PC005": "PREPARED"
+  },
+  "join_sequence": [
+    "register candidate model + SHA256",
+    "screen on exact 373-frame target held-out",
+    "if improved: full 1142 held-out validation + select",
+    "if not: retain b56e20ff (TEACHER_LIMITATION_ACCEPTED_FOR_RESOURCE_CONSTRAINED_INITIAL_PIPELINE)",
+    "final PC002 labeling with FINAL teacher",
+    "PC003 student training", "PC004 validation", "PC005 physical validation"
+  ],
+  "cpu_hard_rules": ["no Allegro training", "no teacher fine-tuning", "no DFT", "no new long MD",
+                     "no final student training pre-final-teacher", "no mass teacher-labeling yet",
+                     "no touching VASP", "no architecture change", "no provenance re-audit", "no push/PR"]
+}

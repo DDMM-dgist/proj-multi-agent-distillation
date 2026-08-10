@@ -1,6 +1,7 @@
 # Model weights — never commit (see NOTICE.md)
 *.pth
 *.pt
+*.ckpt
 potential_saved_bestmodel
 params_Si
 params_O

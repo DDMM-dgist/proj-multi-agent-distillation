@@ -1,0 +1,50 @@
+{
+  "campaign": "production_campaign_001",
+  "phase": "phase_1_cheap_existing_teacher_candidate_screen",
+  "purpose": "Before any new training, screen every materially-distinct EXISTING teacher on the scientifically central held-out domains to see whether an already-produced model solves the oxygen-deficient force-fidelity gap.",
+  "authoritative_run_dir": "runs/production_campaign_001/pc001-existing-teacher-screen/",
+  "screening_set": {
+    "description": "exact seed-123 held-out TEST frames restricted to the three central domains",
+    "n_frames": 373,
+    "composition": {"amorphous_SiO2": 140, "SiO2x_dilute_vacancy": 149, "SiO2x_clustered_vacancy_voidsurface": 84},
+    "provenance": "dataset_index taken verbatim from the committed exact-heldout per-frame metrics (fresh_test_per_frame_metrics.csv); identical structures evaluated for every candidate",
+    "metric_defs": "component force MAE/RMSE over atoms x 3; normalized_RMSE = err_RMSE / DFT_component_RMS; energy_MAE per atom (meV) reported with convention caveat"
+  },
+  "candidates_enumerated": {
+    "base_b56e20ff": {
+      "sha256": "b56e20ffc31da601feed8411c92675bdae9eb886db153ff67dd37dea161b1c57",
+      "identity": "= 03_allegro_train compiled output (byte-identical); the current pipeline teacher",
+      "screened": "reused (NOT rerun) from committed exact-heldout per-frame metrics",
+      "dedup_note": "the .pt2 (6c172722) and best.ckpt (51342b33) are the SAME base model in other formats -> not distinct candidates"
+    },
+    "teacher_finetuned_v2_b3be4d2a": {
+      "sha256_prefix": "b3be4d2aa33ec5cd",
+      "bytes": 4907282,
+      "identity": "ER (elastic-response/energy-anchored) fine-tune of the base teacher",
+      "copies_byte_identical": ["gpu_return/", "gpu_return_v2/return_to_cpu/teacher/", "gpu_return_v3final/return_to_cpu*/teacher/"],
+      "load_ok": true,
+      "screened": "fresh NequIPCalculator inference on the SAME 373 frames (19.7 min, CPU)"
+    },
+    "teacher_v6_finetuned_277262dc": {
+      "sha256_prefix": "277262dc2d471247",
+      "bytes": 4907282,
+      "identity": "tier-weighted ER-FT teacher, warm-started from a T1 checkpoint (2026-07-08, NOT from base b56e20ff), trained on 16 DFT-anchor defect cells to lower the defect-core force floor",
+      "source": "v6_return_package/ (transferred 2026-08-10; teacher/ + validation/ only — ER-FT training data NOT local)",
+      "in_sample_certification": "Stage1 STAGE1_v6_SUMMARY.md certifies err(a)_core = 0.360 eV/A on the 17 anchor cells, but those are ALL in-sample; the summary itself flags held-out generalization was never tested",
+      "load_ok": true,
+      "screened": "fresh NequIPCalculator inference on the SAME 373 frames (19.7 min, CPU)",
+      "leakage_caveat": "v6 ER-FT set has 136 'base' frames of unknown split-origin; a null/worse held-out result is robust to leakage (leakage would only help). Overlap check would be required ONLY if v6 had improved."
+    }
+  },
+  "distinct_candidates_screened": 3,
+  "results_per_domain": {
+    "amorphous_SiO2":                       {"N": 140, "base_err_MAE": 0.1797, "ft_v2_err_MAE": 0.1824, "ft_v2_delta": 0.0027, "v6_err_MAE": 0.1855, "v6_delta": 0.0058, "improved_by_any": false},
+    "SiO2x_dilute_vacancy":                 {"N": 149, "base_err_MAE": 0.2258, "ft_v2_err_MAE": 0.2267, "ft_v2_delta": 0.0009, "v6_err_MAE": 0.2300, "v6_delta": 0.0042, "improved_by_any": false},
+    "SiO2x_clustered_vacancy_voidsurface":  {"N": 84,  "base_err_MAE": 0.3528, "ft_v2_err_MAE": 0.3538, "ft_v2_delta": 0.0010, "v6_err_MAE": 0.3637, "v6_delta": 0.0109, "improved_by_any": false}
+  },
+  "advancement_rule": "A candidate advances only if it CLEARLY improves dilute and/or clustered oxygen-deficient fidelity WITHOUT degrading amorphous. No invented pass/fail accuracy threshold; the rule is a monotone-improvement comparison against the base.",
+  "decision": "DO_NOT_ADVANCE",
+  "decision_rationale": "Both fine-tuned candidates are WORSE than base in every central domain (force MAE up everywhere). teacher_finetuned_v2 marginally worse; teacher_v6_finetuned worse by more (clustered +0.0109) DESPITE its in-sample err(a)_core certification — its anchor-cell improvement does NOT generalize to held-out defect structures. No existing teacher improves oxygen-deficient fidelity.",
+  "consistency_with_root_cause": "Consistent with the established PC001 finding A_MODEL_TRAINING_UNDERFIT: ER fine-tuning (v2 energy-anchored; v6 defect-core-anchored) re-anchors targeted quantities but does not lower the force-fitting floor on held-out defect domains (train error ~= test error there). v6 in particular shows in-sample anchor-cell gains that do not transfer out-of-sample. Only a new controlled training experiment can test whether the floor is movable.",
+  "next": "Activate PARALLEL mode: TRACK_A (one minimal controlled Allegro training experiment, approval-gated) + TRACK_B (teacher-weight-independent PydanticAI downstream: PC002 dataset structural design now, PC003/PC004/PC005 infra prep). See work/PARALLEL_TEACHER_AND_PYDANTIC_WORKFLOW.md."
+}
