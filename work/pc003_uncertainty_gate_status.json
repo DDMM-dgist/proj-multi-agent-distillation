@@ -1,13 +1,15 @@
 {
   "campaign": "production_campaign_003",
   "status": "INITIAL_REFERENCE_ONLY (not an authoritative current threshold)",
-  "u_definition_verified_from_source": {
-    "per_atom": "u_alpha = sqrt( sum_xyz Var_members(F_alpha,xyz) ) = Euclidean norm of per-component committee population std for atom alpha",
-    "basis": "force-based; NOT normalized by |F|; population std (ddof=0) over the 4 committee members",
-    "units": "eV/Angstrom",
-    "aggregation": "per frame: u_mean = mean over atoms, u_max = max over atoms; across frames: distribution stats (min/median/mean/max, percentiles)",
-    "source_files": ["...committee_v3final_v2/scripts/eval_committee_umax_v3final_v2.py:130-133",
-                     "sio2x_production/committee_u_out/run_production_committee_u.py", "v5 sweep scripts"]
+  "u_definition_code_vs_manuscript": {
+    "CODE_DEFINITION": "u_alpha = sqrt( sum_{xyz} Var_members(F) )  [force_std=np.std(F_stack,axis=0,ddof=0); u=sqrt(sum(force_std**2,axis=1))]  — eval_committee_umax_v3final_v2.py:130-131; population variance (1/M); NO 1/3 factor",
+    "MANUSCRIPT_DEFINITION": "u_i = [ (1/(3M)) sum_m sum_{xyz} (F_ia^(m) - Fbar_ia)^2 ]^{1/2} = sqrt( (1/3) sum_{xyz} Var_members )  — sections/02-methods.tex:71 (M=4)",
+    "NORMALIZATION_FACTOR_DIFFERENCE": "MANUSCRIPT = CODE / sqrt(3) (~ x0.577). The code SUMS the 3 component variances; the manuscript RMS-AVERAGES over the 3 components. The 1/M is present in both.",
+    "SOURCE_OF_TRUTH": "the EXECUTABLE CODE definition (u_alpha = sqrt(sum_xyz Var)) is authoritative for all future PC003/PC004/PC005 numeric work",
+    "impact": "ranking-INVARIANT: a global sqrt(3) scale does not change Pearson/Spearman correlation, decile enrichment, or which atoms/frames are most uncertain -> the manuscript's r=0.95/rho=0.98/6.9x-enrichment claims are unaffected. But ABSOLUTE u values and any absolute-threshold comparison differ by sqrt(3); the 0.15 code constant is in CODE units.",
+    "aggregation": "per frame u_mean=mean_atoms(u), u_max=max_atoms(u); across frames report distribution (min/med/mean/max, percentiles). sigma_F = N^-1 sum_i u_i (config mean).",
+    "units": "eV/Angstrom; force-based; NOT normalized by |F|",
+    "action_required": "do NOT silently reconcile; both recorded; a future manuscript/code alignment (multiply code u by 1/sqrt(3) OR update the manuscript equation) is a documentation task, NOT done now"
   },
   "coded_constant": {"CARVE_THRESH": 0.15, "units": "eV/Angstrom",
     "usage": "per-atom EXCEEDANCE FRACTION frac(u_alpha>0.15), NOT a pass/fail gate on u_max",

@@ -8,9 +8,12 @@
     "student_vs_independent_DFT": {"purpose": "absolute accuracy", "reference": "11 SCAN DFT cells",
       "eval_structures": "pc004_dft_exclusion_manifest.csv (never in student train/val)"}
   },
-  "metrics": ["energy_MAE", "energy_RMSE", "force_component_MAE", "force_component_RMSE",
+  "metrics": ["energy_MAE", "energy_RMSE", "global_force_component_MAE/RMSE (atom-weighted)",
+              "per_structure_averaged_force_error (each structure equal weight)",
               "per_atom_force_vector_error", "normalized_force_error (err / DFT force scale)",
               "domain_resolved (amorphous / dilute / clustered separation)", "outlier_analysis (per-frame tail)"],
+  "force_reporting_requirement": "report global (atom-weighted) AND per-structure-averaged AND domain-resolved force error SEPARATELY — the raw SIMPLE-NN valid force loss is atom/force-component-weighted (a ~3000-atom production cell dominates), so quality must NOT be read from that single aggregate (see pc003_loss_normalization_analysis.json RAW_SIMPLE_NN_VALIDATION_FORCE_LOSS)",
+  "uncertainty_source_of_truth": "u_alpha = sqrt(sum_xyz Var_members(F)) (EXECUTABLE CODE); manuscript sigma_F = code/sqrt(3); use code definition for all PC004 numbers (pc003_uncertainty_gate_status.json)",
   "leakage_safety": {"dft_reference": "11 SCAN cells hash-verified disjoint from PC002 selected (overlap=0)",
                      "student_val": "contiguous-tail per source_trajectory; train∩val=0"},
   "gates": {"mechanism": "3 independent judge subagents vote on the metric CSVs (not prose), re-vote after fixes",

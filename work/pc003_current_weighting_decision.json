@@ -3,6 +3,7 @@
   "PC003_CURRENT_WEIGHTING_POLICY": "C_SIZE_NORMALIZED_BOUNDED",
   "definition": "struct_weight[s] = clip( (1/N_atoms[s]) / geomean_s(1/N_atoms), 1/sqrt(8), sqrt(8) ); implemented via one unique str_list tag per structure (weight = that clipped value). Applied in TRAINING only (SIMPLE-NN uses uniform weights for validation).",
   "dynamic_range": "8x (min 0.354, max 2.83 after geo-normalization)",
+  "cap_classification": "INITIAL_CONTROLLED_WEIGHTING_POLICY (the 8x cap is a controlled first choice, NOT an optimized/universal value; no weighting sweep run or planned)",
   "effect": {"production_force_share": "0.3207 (unweighted) -> 0.1864", "defect_force_share_dilute_plus_clustered": 0.6578,
              "weight_ratio": 8.0},
   "rationale_vs_criteria": {

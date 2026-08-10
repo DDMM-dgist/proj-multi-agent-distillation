@@ -38,8 +38,13 @@
     "PC002_selected_by_domain": {"DILUTE_OXYGEN_DEFICIENT": 1937, "CLUSTERED_VOID": 1504, "AMBIENT_CRYSTAL": 600,
                                  "STOICHIOMETRIC_AMORPHOUS": 640, "SURFACE": 450, "HIGH_T_LIQUID": 313, "OTHER_RELEVANT_SIO": 108},
     "PC002_TEACHER_LABELING": "WAIT_FINAL_TEACHER",
-    "PC003": "CONFIG_AND_POLICY_RESOLVED", "PC003_TRAINING": "WAIT_FINAL_TEACHER_LABELS",
+    "PC003": "CONFIG_AND_POLICY_RESOLVED_FROZEN", "PC003_TRAINING": "WAIT_FINAL_TEACHER_LABELS",
     "NEW_PIPELINE_CURRENT_STUDENT": "NONE",
+    "PC003_final_corrections": {
+      "validation_force_loss": "RAW_SIMPLE_NN_VALIDATION_FORCE_LOSS = ATOM_OR_FORCE_COMPONENT_WEIGHTED (not structure-balanced; EarlyStopping monitor only; PC004 must report global + per-structure-avg + domain-resolved separately)",
+      "u_alpha_code_vs_manuscript": "CODE u=sqrt(sum_xyz Var_members); MANUSCRIPT u=sqrt((1/3)sum Var)=code/sqrt(3); DIFF=sqrt(3); CODE is source of truth (ranking-invariant, paper r/enrichment unaffected)"
+    },
+    "PC003_weighting_cap_class": "INITIAL_CONTROLLED_WEIGHTING_POLICY (8x cap, not an optimized universal value)",
     "PC003_weighting_policy": "C_SIZE_NORMALIZED_BOUNDED (clip geo-norm 1/N_atoms to 8x; production force 32.1%->18.6%; defects 65.8%)",
     "PC003_architecture": "HISTORICAL_BASELINE_REUSED_FOR_CONTROLLED_FIRST_STUDENT",
     "PC003_committee_seeds": [234, 345, 555, 777], "PC003_seed_777": "VERIFIED",
