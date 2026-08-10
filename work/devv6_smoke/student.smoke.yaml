@@ -1,0 +1,27 @@
+# SMOKE ONLY — corrected kind:simple-nn wiring (ML-Trainer remediation preview). epochs=1, 3 frames.
+kind: simple-nn
+train:
+  env: simple-nn
+  config_template: /tmp/claude-1002/-home-hyunjin-CLADE-SiO2-x-distillatio-materials-ml-kit-paper-sio2-agentic-distillation/192ca6bd-72d4-47f0-b066-84bc7a70e6fa/scratchpad/proj-mad-pydanticai-full-runtime/templates/student/simple-nn.input.yaml.template
+  descriptor_params:
+    Si: /home/hyunjin/CLADE/SiO2-x_distillatio/materials-ml-kit/research-sio2-allegro-simplenn-distillation/gpu_return_v5/seed01_bundle_preview/params_Si
+    O:  /home/hyunjin/CLADE/SiO2-x_distillatio/materials-ml-kit/research-sio2-allegro-simplenn-distillation/gpu_return_v5/seed01_bundle_preview/params_O
+  total_epoch: 1
+  learning_rate: 0.0001
+  double_precision: true
+  batch_size: 2
+  nodes: "30-30"
+  use_stress: false
+  read_stress: false
+  stress_loss_weight: 0.0
+  subprocesses: 0
+  accurate_train_rmse: true
+  runner:
+    module: adapters.simple_nn_v2_wrapper
+committee:
+  n_seeds: 1
+deploy:
+  lammps_pair_style: "nn"
+  elements: [O, Si]
+struct_weight_policy:
+  name: C_SIZE_NORMALIZED_BOUNDED

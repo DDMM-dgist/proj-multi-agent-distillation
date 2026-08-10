@@ -98,6 +98,9 @@ def _train_simple_nn(cfg, dataset_path, out_dir, seed):
     ]
     if train_cfg.get("use_stress"):
         cmd += ["--use-stress", "--stress-loss-weight", str(train_cfg.get("stress_loss_weight", 0.1))]
+    policy = (cfg.get("struct_weight_policy") or {}).get("name", "").strip().lower()
+    if policy:
+        cmd += ["--struct-weight-policy", policy]
 
     print(f"[train_student:simple-nn] seed={seed} -> {out_dir}")
     print("  ", " ".join(cmd))
