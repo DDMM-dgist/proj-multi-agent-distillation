@@ -1,0 +1,19 @@
+{
+  "campaign": "production_campaign_003",
+  "status": "INITIAL_REFERENCE_ONLY (not an authoritative current threshold)",
+  "u_definition_verified_from_source": {
+    "per_atom": "u_alpha = sqrt( sum_xyz Var_members(F_alpha,xyz) ) = Euclidean norm of per-component committee population std for atom alpha",
+    "basis": "force-based; NOT normalized by |F|; population std (ddof=0) over the 4 committee members",
+    "units": "eV/Angstrom",
+    "aggregation": "per frame: u_mean = mean over atoms, u_max = max over atoms; across frames: distribution stats (min/median/mean/max, percentiles)",
+    "source_files": ["...committee_v3final_v2/scripts/eval_committee_umax_v3final_v2.py:130-133",
+                     "sio2x_production/committee_u_out/run_production_committee_u.py", "v5 sweep scripts"]
+  },
+  "coded_constant": {"CARVE_THRESH": 0.15, "units": "eV/Angstrom",
+    "usage": "per-atom EXCEEDANCE FRACTION frac(u_alpha>0.15), NOT a pass/fail gate on u_max",
+    "provenance": "documented ~p99.5; literature DP-GEN 0.05-0.30"},
+  "the_0_30_claim": "u_max<0.30 is NOT a coded gate — 0.30 is only the top of a cited literature range and the magnitude of observed u_max (~0.25-0.62 eV/A on production defect MD). Prior 'u_max<0.30 gate' wording was inaccurate.",
+  "classification": "HISTORICAL_REFERENCE_GATE / INITIAL_REFERENCE_THRESHOLD",
+  "calibration": "the CURRENT threshold will be calibrated later from PC004/PC005 results of the NEW student committee; cannot be set before new students exist",
+  "correction_of_prior_notes": "supersedes earlier memory/CLAUDE.md 'u_max<0.30' as if authoritative"
+}

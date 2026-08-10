@@ -128,9 +128,9 @@
     "split_rule": "production: blocked temporal split with 1-frame BUFFER gap per trajectory (no adjacent straddle); corpus: per-family hash-ordered 90/10 (independent DFT structures, decorrelated)"
   },
   "pc004_dft_references": {
-    "scan_cells_frozen": 0,
-    "appended_reserved": 0,
-    "total": 0
+    "scan_cells_frozen_external": 11,
+    "note": "the 11 SCAN DFT cells are the frozen PC004 reference set (in pc004_dft_exclusion_manifest.csv); they are EXTERNAL to this candidate inventory (dataset.xyz+production), so 0 appear inside it and 0 new independent DFT were found among candidates",
+    "new_independent_dft_in_candidate_space": 0
   },
   "labeling_cost": {
     "total_frames": 5552,

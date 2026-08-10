@@ -38,9 +38,15 @@
     "PC002_selected_by_domain": {"DILUTE_OXYGEN_DEFICIENT": 1937, "CLUSTERED_VOID": 1504, "AMBIENT_CRYSTAL": 600,
                                  "STOICHIOMETRIC_AMORPHOUS": 640, "SURFACE": 450, "HIGH_T_LIQUID": 313, "OTHER_RELEVANT_SIO": 108},
     "PC002_TEACHER_LABELING": "WAIT_FINAL_TEACHER",
-    "PC003": "PREPARED", "NEW_PIPELINE_CURRENT_STUDENT": "NONE",
+    "PC003": "CONFIG_AND_POLICY_RESOLVED", "PC003_TRAINING": "WAIT_FINAL_TEACHER_LABELS",
+    "NEW_PIPELINE_CURRENT_STUDENT": "NONE",
+    "PC003_weighting_policy": "C_SIZE_NORMALIZED_BOUNDED (clip geo-norm 1/N_atoms to 8x; production force 32.1%->18.6%; defects 65.8%)",
+    "PC003_architecture": "HISTORICAL_BASELINE_REUSED_FOR_CONTROLLED_FIRST_STUDENT",
     "PC003_committee_seeds": [234, 345, 555, 777], "PC003_seed_777": "VERIFIED",
+    "PC003_batch_size": 4, "PC003_uncertainty_gate": "INITIAL_REFERENCE (u_max; 0.15 coded exceedance, 0.30 NOT a gate)",
+    "PC003_loss_verified": "energy per-structure/per-atom; force ATOM-WEIGHTED (independently confirmed)",
     "PC004": "PREPARED", "PC004_DFT_exclusions": 11, "PC004_leakage_overlap": 0,
+    "PC004_valid_set": "558 within-distribution (shares lineages; NOT independent generalization)",
     "PC005": "PREPARED"
   },
   "join_sequence": [

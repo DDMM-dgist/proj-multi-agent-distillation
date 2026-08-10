@@ -1,0 +1,20 @@
+{
+  "campaign": "production_campaign_003",
+  "PC003_CURRENT_WEIGHTING_POLICY": "C_SIZE_NORMALIZED_BOUNDED",
+  "definition": "struct_weight[s] = clip( (1/N_atoms[s]) / geomean_s(1/N_atoms), 1/sqrt(8), sqrt(8) ); implemented via one unique str_list tag per structure (weight = that clipped value). Applied in TRAINING only (SIMPLE-NN uses uniform weights for validation).",
+  "dynamic_range": "8x (min 0.354, max 2.83 after geo-normalization)",
+  "effect": {"production_force_share": "0.3207 (unweighted) -> 0.1864", "defect_force_share_dilute_plus_clustered": 0.6578,
+             "weight_ratio": 8.0},
+  "rationale_vs_criteria": {
+    "1_no_production_domination": "production force share 32%->18.6% (7 lineages no longer dominate)",
+    "2_deployment_relevance_preserved": "production retained at 18.6% (pure 1/N would erase it to 2%)",
+    "3_defects_represented": "dilute+clustered = 65.8% of force exposure",
+    "4_simple_reproducible": "one clip formula, one parameter (range=8); deterministic",
+    "5_simple_nn_supported": "per-structure unique str_list tags (verified)",
+    "6_no_core_modification": "stock str_list parsing only",
+    "7_no_teacher_labels": "weights are functions of N_atoms only"
+  },
+  "energy_side_effect": "1/N weighting mildly up-weights small cells in ENERGY loss; bounded to 8x so effect is modest; energy is per-atom-normalized already. Monitored in PC004.",
+  "contingency": "if PC004 shows amorphous or large-cell underfit, add a modest per-domain multiplier (Policy C+domain) or relax the cap; do NOT change without PC004 evidence",
+  "implementation_artifact": "str_list generator will emit one [struct_id : weight] tag per selected structure at PC002-labeling/preprocess time (after final teacher labels exist)"
+}

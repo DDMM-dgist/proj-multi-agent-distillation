@@ -1,0 +1,26 @@
+{
+  "campaign": "production_campaign_003",
+  "subject": "SIMPLE-NN v2.0.0 energy/force/struct_weight loss behavior (verified from source + independent agent)",
+  "source_files": ["simple_nn/models/run.py", "simple_nn/models/loss.py",
+                   "simple_nn/features/data_generator.py", "simple_nn/features/symmetry_function/generating.py"],
+  "criterion": "torch.nn.MSELoss(reduction='none')  (run.py:17) -> per-element squared errors",
+  "energy_loss_E_loss_type_1": {
+    "formula": "e_loss[s] = MSE(E_pred[s]/n_atoms[s], E_target[s]/n_atoms[s]); w_e_loss = mean_s(e_loss[s] * struct_weight[s])",
+    "meaning": "PER-ATOM energy error, one value per structure; struct_weight enters PER STRUCTURE before the batch mean",
+    "size_behavior": "already size-normalized (per-atom); energy contribution of structure s ∝ struct_weight[s]"
+  },
+  "force_loss_F_loss_type_1": {
+    "formula": "f_loss = MSE(F_pred, F_target) elementwise over (atom,xyz); per structure s its block scaled by struct_weight[s]; w_f_loss = mean over ALL force components in batch",
+    "meaning": "ATOM-WEIGHTED: structure s force contribution ∝ struct_weight[s] * N_atoms[s]; denominator = total force components in batch",
+    "consequence": "to equalize per-structure force contribution regardless of size => struct_weight[s] ∝ 1 / N_atoms[s]"
+  },
+  "struct_weight_provisioning": {
+    "granularity": "PER TAG (data_generator.py: `[tag : weight]` in str_list; default 1.0; first value wins on tag collision)",
+    "per_structure_weights": "give each structure its own unique tag -> distinct weight; uses stock str_list parsing; NO SIMPLE-NN core modification",
+    "syntax_example": "[struct_00001 : 0.5]\\n/path/structure.xyz  ::"
+  },
+  "applied_when": "weighted = False if valid else True (run.py:287) -> struct_weight affects TRAINING ONLY; validation metrics are unweighted (clean fidelity)",
+  "coefficients": {"energy_coeff": 1.0, "force_coeff": 0.1, "note": "total = 1.0*e_loss + 0.1*f_loss; struct_weight shared by both e and f"},
+  "independent_verification": "general-purpose agent adversarially re-read the source and CONFIRMED (a) MSELoss reduction none, (b) energy per-atom/per-structure, (c) force atom-weighted, (d) 1/N_atoms equalization algebra, (e) train-only weighting; and confirmed per-tag provisioning needs unique tags with no core mod",
+  "implication_for_PC002_ensemble": "112 production cells (~2900 atoms) = 32.1% of atoms => 32.1% of unweighted force training from only 7 lineages; struct_weight is the lever to correct this (see pc003_current_weighting_decision.json)"
+}

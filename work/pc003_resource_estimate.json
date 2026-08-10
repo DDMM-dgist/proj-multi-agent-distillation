@@ -1,0 +1,19 @@
+{
+  "campaign": "production_campaign_003",
+  "inputs": {"structures": 5552, "total_atoms": 1020697, "committee_models": 4},
+  "teacher_label_storage": {"value": "~12-25 MB", "basis": "3*1,020,697 force floats + 5552 energies (float32/64)", "type": "ESTIMATE (small, precise enough)"},
+  "simplenn_preprocessed_data": {
+    "value": "~50-120 GB (point est. ~80 GB)",
+    "basis": "per-atom SF (70) + derivative dG/dR (~70 x neighbors(~30-60) x 3) ~ 60-90 KB/atom x 1.02M atoms",
+    "type": "ESTIMATE — neighbor count within 5.0 A not measured; dominated by corpus (~52 GB) + production (~25 GB)",
+    "action": "confirm >=~120 GB free disk before preprocessing; preprocess production cells individually"
+  },
+  "training_gpu_memory": {"value": "fits >=16 GB GPU with batch_size 4", "basis": "peak batch ~12k atoms x ~75 KB + model + autograd", "type": "ESTIMATE"},
+  "training_walltime": {
+    "measured_baseline_v6": "37-89 h/seed; 4-seed afterok chain ~213 h (~8.9 days) for 7,347 frames / ~1.34M atoms",
+    "estimate_this_run": "~30-75 h/seed; chain ~120-280 h; our atom count (1.02M) ~0.76x v6 but batch_size 4 (vs 32) slows throughput",
+    "type": "ESTIMATE scaled from MEASURED v6 baseline"
+  },
+  "compute": {"per_seed": "1 GPU", "committee": "4 seeds, afterok SLURM chain (historical pattern)", "type": "inferred from historical jobs 595-598"},
+  "caveat": "estimates marked; only the v6 walltime + committee chain are MEASURED historical values"
+}

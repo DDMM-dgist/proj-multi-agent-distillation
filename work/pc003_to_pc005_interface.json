@@ -1,0 +1,10 @@
+{
+  "campaign": "production_campaign_003_to_005",
+  "student_artifact_for_pc005": "potential_saved_bestmodel (per seed) deployable as LAMMPS pair_style nn",
+  "lammps_interface": {"pair_style": "nn", "pair_coeff": "* * potential_saved_bestmodel O Si",
+                       "element_order": "O Si (type1=O, type2=Si)", "units": "metal", "timestep_ps": 0.001},
+  "compatibility_confirmed": "matches the prepared PC005 scripts (validate_glass.py, compute_melt_msd.py, analyze_nve.py, 04_analyze.py, run_ph.py) which all invoke pair_style nn with O Si order — see pc005_physical_validation_protocol.json",
+  "committee_uncertainty_input": "4 potentials feed eval_committee_umax (u_alpha per-atom force disagreement) on production MD frames",
+  "no_execution": "PC005 not run; interface compatibility confirmed only",
+  "status": "WAIT_FINAL_STUDENT"
+}

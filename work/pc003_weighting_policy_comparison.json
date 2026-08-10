@@ -1,0 +1,18 @@
+{
+  "campaign": "production_campaign_003",
+  "detail_file": "pc003_effective_domain_exposure.json (full per-domain/per-source fractions for A/B/C)",
+  "policies": {
+    "A_HISTORICAL_UNWEIGHTED": {"weight": "1.0 (all)", "production_force_share": 0.3207,
+      "weight_ratio": 1.0, "verdict": "REJECT — 7 production lineages dominate force fitting (32%)"},
+    "B_SIZE_NORMALIZED_PURE": {"weight": "∝ 1/N_atoms", "production_force_share": 0.0202,
+      "weight_ratio": 1500.0, "verdict": "REJECT — over-corrects (production ~erased) AND 1500x weight range (numerically extreme, not simple, loses deployment relevance)"},
+    "C_SIZE_NORMALIZED_BOUNDED": {"weight": "clip(geo-normalized 1/N_atoms, 1/2.83, 2.83) => dynamic range 8x",
+      "production_force_share": 0.1864, "weight_ratio": 8.0,
+      "force_exposure_by_domain": {"DILUTE_OXYGEN_DEFICIENT": 0.3592, "CLUSTERED_VOID": 0.2986,
+        "STOICHIOMETRIC_AMORPHOUS": 0.1276, "AMBIENT_CRYSTAL": 0.0816, "SURFACE": 0.0653,
+        "HIGH_T_LIQUID": 0.0503, "OTHER_RELEVANT_SIO": 0.0174},
+      "verdict": "SELECT — production reduced 32%->18.6% (present, not dominant); defects 65.8%; bounded 8x range; simple; SIMPLE-NN-supported; no core mod; no labels"}
+  },
+  "note": "A force-exposure = atom fractions; pure-B force-exposure = frame fractions; C sits between (bounded). Energy exposure shifts mildly toward smaller cells under 1/N weighting (acceptable; energy is per-atom already).",
+  "optional_domain_multiplier": "Policy C can add a modest per-domain multiplier (e.g. amorphous x1.5) ONLY IF PC004 later shows amorphous underfit; not applied now (avoids arbitrary multipliers)."
+}

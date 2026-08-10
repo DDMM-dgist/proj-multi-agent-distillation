@@ -1,0 +1,23 @@
+{
+  "campaign": "production_campaign_003",
+  "size_distribution": {"corpus": {"n": 5440, "min": 2, "median": 138, "p95": 216, "max": 432},
+                        "production": {"n": 112, "min": 2880, "median": 2940, "max": 3000},
+                        "note": "clean bimodal gap: corpus <=432 atoms, production >=2880 atoms"},
+  "problem": "SIMPLE-NN uses a single fixed batch_size; historical 32 would give worst-case batches of 32 x 3000 = 96,000 atoms (features + dG/dR derivative arrays) -> OOM risk on the 112 production cells.",
+  "DECISION_do_not_inherit_batch_size_32": true,
+  "primary_plan": {
+    "global_batch_size": 4,
+    "worst_case_atoms_per_batch": "4 x 3000 = 12,000 atoms (all-production batch)",
+    "typical_corpus_batch": "4 x ~140 = ~560 atoms",
+    "rationale": "bounds peak batch memory to ~12k atoms (~0.9 GB features est.), fits a >=16 GB GPU; stock SIMPLE-NN, no core change",
+    "throughput_note": "corpus batches are small (5440/4 ~ 1360 batches/epoch) -> slower than bs=32 but acceptable"
+  },
+  "alternative_if_throughput_too_slow": {
+    "scheme": "two size-shards: corpus (batch_size 32) + production (batch_size 2), via a size-aware batch sampler or two train_list groups",
+    "cost": "needs a custom sampler or two-phase epoch; still no SIMPLE-NN core modification (sampler is external)",
+    "status": "documented option; adopt only if bs=4 wall-time is impractical"
+  },
+  "labeling_feasibility": {"teacher_inference_max_cell": "3000 atoms — Allegro handles arbitrary size; single-point on ~3000-atom SiOx is routine on GPU (documented in prior C3 teacher run)",
+    "preprocessing_memory": "per-cell SF + dG/dR arrays for a 3000-atom cell are the peak preprocessing object; process production cells one at a time"},
+  "no_execution": "no preprocessing/labeling/training run performed"
+}
