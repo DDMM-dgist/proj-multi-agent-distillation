@@ -16,22 +16,29 @@ Existing-teacher screen complete → **`NO_EXISTING_TEACHER_IMPROVES_TARGET_HELD
 validation for v2/v6. Root cause `A_MODEL_TRAINING_UNDERFIT` (held-out defect force floor) —
 **not reopened**.
 
-## TRACK A — EXTERNAL GPU (PREPARED, NOT EXECUTED HERE)
+## Dataset provenance (FROZEN — `work/dataset_provenance_split_fact.json`)
+`dataset.xyz` (sha `382d0b2b…`) has **13,898** frames. ORIGINAL_TEACHER_CORPUS = frames **[0,11423]**
+(N=11,424; confirmed by exact seed-123 split + NequIP-metric reproduction). POST_ORIGINAL_TRAINING_DATA
+= frames **[11424,13897]** (N=2,474; appended after original training, separate asset). **Never mixed
+silently;** all PC002 corpus enumeration uses only [0,11423].
+
+## TRACK A — EXTERNAL GPU (DATA PREPARED, NOT EXECUTED; recipe owned by GPU branch)
 Deliverable: `work/EXTERNAL_GPU_TARGET_TEACHER_TRAINING_PACKAGE.md` + portable package
 `work/external_gpu_teacher_package/` (104 MB; corpus 3,766 frames = 2,966 target core + 800 replay;
-warm-start ckpt `51342b33`; config, scripts, manifests, READMEs, integrity SHA256SUMS).
-- Experiment PC-A1: target-focused **same-architecture** warm-start fine-tune (LR 0.001, forces:energy
-  4:1, early stop). One controlled experiment; **no** sweep. Existing DFT labels only; **no new DFT**.
-- A6 fallback (documented only, not prepared): target-focused higher-capacity Allegro, decided only
-  if PC-A1 fails.
+warm-start ckpt `51342b33`; scripts, manifests, READMEs, integrity SHA256SUMS).
+- **The training YAML is `CPU_PREP_DRAFT_ONLY`** — the external GPU server owns the authoritative
+  recipe (LR, loss weights, architecture, epoch cap, sampling, checkpoint policy). The authoritative
+  CPU-side Track-A outputs are the **DATA artifacts only**: source dataset, split identities,
+  target/replay frame identities, base checkpoint, provenance, SHA256s, portable manifests.
+- A6 fallback (documented only): higher-capacity Allegro, decided only if the GPU experiment fails.
 
 ## TRACK B — CPU PydanticAI (ACTIVE, running now)
 | campaign | state | deliverable |
 |---|---|---|
-| PC002 structural design | **STRUCTURE_SELECTION = RESOLVED**; labeling blocked | `PRODUCTION_CAMPAIGN_002_STRUCTURE_SELECTION.md`, `pc002_structure_manifest.csv` (20 structs), state json |
-| PC003 student workflow | PREPARED (`NEW_PIPELINE_CURRENT_STUDENT = NONE`) | `PC003_STUDENT_WORKFLOW_PREP.md` |
-| PC004 student validation | PREPARED (infra teacher-independent) | `PC004_VALIDATION_PROTOCOL_PREP.md` |
-| PC005 physical validation | PREPARED (scripts + baselines; no new MD) | `PC005_PHYSICAL_VALIDATION_PROTOCOL_PREP.md` |
+| PC002 structural design | **`PC002_DATASET_STRUCTURE_RESOLVED = TRUE`** (frame-level); `SOURCE_INVENTORY=COMPLETE`; labeling `WAIT_FINAL_TEACHER` | `PRODUCTION_CAMPAIGN_002_STRUCTURE_SELECTION.md`; **6,436-frame** selected ensemble (`pc002_selected_structure_manifest.csv`), train 5,789 / val 647, candidate inventory 12,481, domain map, redundancy report, `pc002_structure_design_decision.json` |
+| PC003 student workflow | PREPARED (`NEW_PIPELINE_CURRENT_STUDENT = NONE`); committee seeds 234/345/555/**777 VERIFIED** | `pc003_student_workflow_spec.json`, `pc003_historical_asset_inventory.json`, `pc003_seed_verification.json`, `PC003_STUDENT_WORKFLOW_PREP.md` |
+| PC004 student validation | PREPARED (teacher-independent infra); DFT exclusions verified | `pc004_validation_protocol.json`, `pc004_validation_manifest.json`, `pc004_dft_exclusion_manifest.csv` (11), `PC004_VALIDATION_PROTOCOL_PREP.md` |
+| PC005 physical validation | PREPARED (scripts + baselines; no new MD) | `pc005_physical_validation_protocol.json`, `pc005_existing_asset_inventory.json`, `PC005_PHYSICAL_VALIDATION_PROTOCOL_PREP.md` |
 
 Track B does **not** wait for Track A. It stops only at the first genuinely teacher-dependent
 expensive operation (mass labeling / final student training).

@@ -1,0 +1,12 @@
+{
+  "campaign": "production_campaign_004",
+  "student_vs_teacher_eval_set": {"source": "work/pc002_student_valid_structure_manifest.csv", "n_frames": 647,
+    "by_domain": {"DILUTE_OXYGEN_DEFICIENT": 195, "CLUSTERED_VOID": 152, "AMBIENT_CRYSTAL": 137,
+                  "STOICHIOMETRIC_AMORPHOUS": 64, "SURFACE": 57, "HIGH_T_LIQUID": 31, "OTHER_RELEVANT_SIO": 11}},
+  "student_vs_dft_eval_set": {"source": "work/pc004_dft_exclusion_manifest.csv", "n_cells": 11,
+    "composition": "4 dilute (x=0) + 7 clustered (x 0.114-0.60)", "labels": "SCAN DFT (independent)"},
+  "central_domain_split_for_reporting": ["STOICHIOMETRIC_AMORPHOUS", "DILUTE_OXYGEN_DEFICIENT", "CLUSTERED_VOID"],
+  "hard_exclusions": {"never_in_student_training_or_val": "the 11 SCAN cells", "verified_overlap_with_selected": 0},
+  "execution_precondition": "a trained student committee exists AND final teacher fixed",
+  "note": "manifests frozen now; no numeric run performed (no final student)."
+}

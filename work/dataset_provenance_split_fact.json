@@ -1,0 +1,12 @@
+{
+  "frozen_fact": "dataset.xyz split into original-teacher-corpus vs post-original appended data",
+  "source_file": "03_allegro_train/dataset.xyz",
+  "sha256_prefix32": "382d0b2b35ed9c571314ff59df71e9c9",
+  "current_total_frames": 13898,
+  "ORIGINAL_TEACHER_CORPUS": {"frames": [0, 11423], "N": 11424,
+    "evidence": "exact seed-123 split reconstruction + exact reproduction of the original NequIP test metrics"},
+  "POST_ORIGINAL_TRAINING_DATA": {"frames": [11424, 13897], "N": 2474,
+    "status": "appended AFTER original teacher training; NOT part of original teacher provenance; a separate scientific asset (may be useful later)"},
+  "rule": "Do NOT silently mix the two. All PC002 corpus enumeration uses ONLY frames [0,11423].",
+  "verified_this_session": "PC002 frame-level inventory enumerated exactly frames [0,11423] as candidate pool A"
+}

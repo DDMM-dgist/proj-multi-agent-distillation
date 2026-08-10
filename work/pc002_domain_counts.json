@@ -1,0 +1,49 @@
+{
+  "candidate_total": 12481,
+  "candidate_corpus": 11424,
+  "candidate_production": 1057,
+  "candidate_by_domain": {
+    "AMBIENT_CRYSTAL": 3593,
+    "OOD_OR_EXCLUDED": 2670,
+    "DILUTE_OXYGEN_DEFICIENT": 2207,
+    "CLUSTERED_VOID": 2045,
+    "STOICHIOMETRIC_AMORPHOUS": 775,
+    "SURFACE": 770,
+    "HIGH_T_LIQUID": 313,
+    "OTHER_RELEVANT_SIO": 108
+  },
+  "selected_total": 6436,
+  "selected_by_domain": {
+    "DILUTE_OXYGEN_DEFICIENT": 1937,
+    "CLUSTERED_VOID": 1505,
+    "AMBIENT_CRYSTAL": 1366,
+    "STOICHIOMETRIC_AMORPHOUS": 640,
+    "SURFACE": 567,
+    "HIGH_T_LIQUID": 313,
+    "OTHER_RELEVANT_SIO": 108
+  },
+  "train_total": 5789,
+  "val_total": 647,
+  "train_by_domain": {
+    "DILUTE_OXYGEN_DEFICIENT": 1742,
+    "CLUSTERED_VOID": 1353,
+    "AMBIENT_CRYSTAL": 1229,
+    "STOICHIOMETRIC_AMORPHOUS": 576,
+    "SURFACE": 510,
+    "HIGH_T_LIQUID": 282,
+    "OTHER_RELEVANT_SIO": 97
+  },
+  "val_by_domain": {
+    "DILUTE_OXYGEN_DEFICIENT": 195,
+    "CLUSTERED_VOID": 152,
+    "AMBIENT_CRYSTAL": 137,
+    "STOICHIOMETRIC_AMORPHOUS": 64,
+    "SURFACE": 57,
+    "HIGH_T_LIQUID": 31,
+    "OTHER_RELEVANT_SIO": 11
+  },
+  "selected_by_source": {
+    "corpus": 6324,
+    "production": 112
+  }
+}

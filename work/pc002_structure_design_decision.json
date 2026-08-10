@@ -1,0 +1,40 @@
+{
+  "campaign": "production_campaign_002",
+  "decision": "PC002_DATASET_STRUCTURE_RESOLVED = TRUE",
+  "resolved_criteria": {
+    "1_frame_level_candidate_inventory": "pc002_candidate_frame_inventory.csv (12,481 frames)",
+    "2_explicit_domain_mapping": "pc002_domain_mapping.json (family->domain + nO==0 OOD override + production source map)",
+    "3_selected_frame_level_ensemble": "pc002_selected_structure_manifest.csv (6,436 frames)",
+    "4_selected_counts_by_domain": "pc002_domain_counts.json",
+    "5_deterministic_train_val_split": "pc002_student_train_structure_manifest.csv (5,789) + _valid_ (647); source/trajectory-aware contiguous-tail=val",
+    "6_redundancy_treatment": "pc002_redundancy_report.json (production stride=10; broad-family cap=400 even-spacing)",
+    "7_pc004_exclusions_verified": "pc004_dft_exclusion_manifest.csv (11 SCAN cells); selected∩exclusion hashes = 0 (verified)",
+    "8_structure_hashes_provenance": "per-frame structure_hash + source_file + frame_index in every manifest",
+    "9_no_teacher_labels_required": "true (structure identity only; labeling deferred to join)"
+  },
+  "candidate_pools": {
+    "A_original_teacher_corpus": {"source": "03_allegro_train/dataset.xyz frames [0,11423]", "n": 11424,
+      "note": "first 11,424 = ORIGINAL teacher corpus (post-original appended [11424,13897] NOT enumerated)"},
+    "B_production_deployment_MD": {"source": "sio2x_production/{pristine,random,sphere,plane}_x00{6,12}/traj.dump",
+      "n": 1057, "n_trajectories": 7, "frames_per_traj": 151, "natoms": "2880-3000"}
+  },
+  "candidate_by_domain": {"AMBIENT_CRYSTAL": 3593, "OOD_OR_EXCLUDED": 2670, "DILUTE_OXYGEN_DEFICIENT": 2207,
+    "CLUSTERED_VOID": 2045, "STOICHIOMETRIC_AMORPHOUS": 775, "SURFACE": 770, "HIGH_T_LIQUID": 313, "OTHER_RELEVANT_SIO": 108},
+  "selected_ensemble": {
+    "total": 6436, "from_corpus": 6324, "from_production": 112,
+    "by_domain": {"DILUTE_OXYGEN_DEFICIENT": 1937, "CLUSTERED_VOID": 1505, "AMBIENT_CRYSTAL": 1366,
+                  "STOICHIOMETRIC_AMORPHOUS": 640, "SURFACE": 567, "HIGH_T_LIQUID": 313, "OTHER_RELEVANT_SIO": 108},
+    "central_defect_fraction": "dilute+clustered = 3442 / 6436 = 53%",
+    "central_total_fraction": "amorphous+dilute+clustered = 4082 / 6436 = 63%",
+    "broad_replay_fraction": "crystal+surface+liquid+other = 2354 / 6436 = 37%"
+  },
+  "train_val": {"train": 5789, "val": 647, "split_logic": "group by source_trajectory (config_type for corpus, mode for production); contiguous last 10% of each group -> val; deterministic; no adjacent-frame straddle; train∩val=0"},
+  "design_rationale": {
+    "corrects_historical_imbalance": "historical student pool was ~7330 base + 17 defect (0.2% defect); new ensemble is 53% oxygen-deficient",
+    "evidence_basis": "available pool sizes + oxygen-deficiency coverage + trajectory redundancy + historical under-representation + SiOx deployment target + PC004 leakage constraints (NOT arbitrary counts)",
+    "elemental_Si_excluded": "2670 nO==0 frames marked OOD_OR_EXCLUDED (pure-Si not the SiOx student target)",
+    "amorphous_note": "amorphous (640) < defect by available-pool constraint; augmentable later from pristine production + 12288 glass if needed"
+  },
+  "teacher_independent": true,
+  "labeling_status": "PC002_TEACHER_LABELING = WAIT_FINAL_TEACHER (no b56e20ff mass-labeling performed)"
+}

@@ -8,11 +8,20 @@
     "root_cause": "A_MODEL_TRAINING_UNDERFIT",
     "full_1142_validation_for_v2_v6": "NOT_RUN (per instruction)"
   },
+  "dataset_provenance": {
+    "file": "03_allegro_train/dataset.xyz", "sha256_prefix32": "382d0b2b35ed9c571314ff59df71e9c9",
+    "current_total": 13898,
+    "ORIGINAL_TEACHER_CORPUS": {"frames": [0, 11423], "N": 11424},
+    "POST_ORIGINAL_TRAINING_DATA": {"frames": [11424, 13897], "N": 2474},
+    "rule": "never mixed silently; PC002 uses only [0,11423]", "frozen": "work/dataset_provenance_split_fact.json"
+  },
   "track_a": {
     "state": "EXTERNAL_GPU_TRAINING_PREPARED",
-    "experiment": "PC-A1 target-focused same-architecture warm-start fine-tune",
+    "cpu_role": "DATA/PROVENANCE_SUPPORT_ONLY",
+    "training_config_status": "CPU_PREP_DRAFT_ONLY (GPU branch owns LR/loss/arch/epochs/sampling/ckpt-policy)",
+    "authoritative_cpu_outputs": ["source dataset", "split identities", "target/replay frame identities",
+                                  "base checkpoint", "provenance", "SHA256s", "portable manifests"],
     "package_dir": "work/external_gpu_teacher_package",
-    "package_size_mb": 104,
     "corpus_frames": 3766, "core_target": 2966, "replay": 800,
     "corpus_sha256_prefix32": "46433913d71d174efa4df010956c1c6a",
     "warm_start_ckpt_sha16": "51342b332ba04287",
@@ -20,10 +29,16 @@
     "fallback_A6": "target-focused higher-capacity Allegro (documented only, not prepared)"
   },
   "track_b": {
-    "PC002_STRUCTURE_SELECTION": "RESOLVED",
-    "PC002_FINAL_TEACHER_LABELING": "BLOCKED_ON_FINAL_TEACHER",
+    "PC002_SOURCE_STRUCTURE_INVENTORY": "COMPLETE",
+    "PC002_DATASET_STRUCTURE_RESOLVED": true,
+    "PC002_selected_frames": 6436, "PC002_train": 5789, "PC002_val": 647, "PC002_candidates": 12481,
+    "PC002_selected_by_domain": {"DILUTE_OXYGEN_DEFICIENT": 1937, "CLUSTERED_VOID": 1505, "AMBIENT_CRYSTAL": 1366,
+                                 "STOICHIOMETRIC_AMORPHOUS": 640, "SURFACE": 567, "HIGH_T_LIQUID": 313, "OTHER_RELEVANT_SIO": 108},
+    "PC002_TEACHER_LABELING": "WAIT_FINAL_TEACHER",
     "PC003": "PREPARED", "NEW_PIPELINE_CURRENT_STUDENT": "NONE",
-    "PC004": "PREPARED", "PC005": "PREPARED"
+    "PC003_committee_seeds": [234, 345, 555, 777], "PC003_seed_777": "VERIFIED",
+    "PC004": "PREPARED", "PC004_DFT_exclusions": 11, "PC004_leakage_overlap": 0,
+    "PC005": "PREPARED"
   },
   "join_sequence": [
     "register candidate model + SHA256",

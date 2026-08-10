@@ -1,0 +1,24 @@
+{
+  "campaign": "production_campaign_004",
+  "state": "PREPARED",
+  "numeric_execution": "BLOCKED_ON_FINAL_STUDENT",
+  "axes": {
+    "student_vs_final_teacher": {"purpose": "distillation fidelity", "reference": "final teacher (join)",
+      "eval_structures": "PC002 student VAL manifest (held-out; source-aware, no train leakage)"},
+    "student_vs_independent_DFT": {"purpose": "absolute accuracy", "reference": "11 SCAN DFT cells",
+      "eval_structures": "pc004_dft_exclusion_manifest.csv (never in student train/val)"}
+  },
+  "metrics": ["energy_MAE", "energy_RMSE", "force_component_MAE", "force_component_RMSE",
+              "per_atom_force_vector_error", "normalized_force_error (err / DFT force scale)",
+              "domain_resolved (amorphous / dilute / clustered separation)", "outlier_analysis (per-frame tail)"],
+  "leakage_safety": {"dft_reference": "11 SCAN cells hash-verified disjoint from PC002 selected (overlap=0)",
+                     "student_val": "contiguous-tail per source_trajectory; train∩val=0"},
+  "gates": {"mechanism": "3 independent judge subagents vote on the metric CSVs (not prose), re-vote after fixes",
+            "thresholds": "set per-run against the FINAL teacher's own held-out numbers as reference ceiling (NOT invented now)"},
+  "reusable_machinery": {
+    "exact_split_and_per_frame_metrics": "runs/production_campaign_001/pc001-teacher-exact-heldout-validation/ (definitions reused verbatim)",
+    "normalized_fidelity": "work/pc001_force_scale_normalized.py"
+  },
+  "blocked_on": ["trained student committee (PC003)", "final teacher identity"],
+  "ready_now": ["metric definitions", "axis + structure manifests", "leakage guards", "gate wiring"]
+}

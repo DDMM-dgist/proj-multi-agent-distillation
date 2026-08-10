@@ -1,5 +1,14 @@
 # =============================================================================
-# TRACK A — Target-focused WARM-START fine-tune of the SiO2 Allegro teacher
+# !!! CPU_PREP_DRAFT_ONLY — NOT the authoritative GPU training configuration !!!
+# The external GPU server owns the authoritative Teacher-remediation training recipe
+# (learning rate, force/energy loss weights, Allegro architecture, epoch cap, sampling
+# hyperparameters, checkpoint-selection policy). The values in this file are a DRAFT for
+# reference only and must NOT be treated as the GPU training config. The authoritative
+# CPU-side Track-A outputs are the DATA artifacts only: exact source dataset, split
+# identities, target/replay frame identities, base checkpoint, provenance, SHA256s,
+# portable manifests. Do not tune this YAML further on the CPU side.
+# =============================================================================
+# TRACK A — Target-focused WARM-START fine-tune of the SiO2 Allegro teacher (DRAFT)
 # =============================================================================
 # Experiment identity : PC-A1  (ONE controlled first experiment; NOT a sweep)
 # Goal                : lower the HELD-OUT oxygen-deficient (dilute + clustered)
