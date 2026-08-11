@@ -1,0 +1,26 @@
+{
+  "_status": "PLANNED_TEMPLATE \u2014 populated only at execution under tests/fixtures/stage_d2_c3/<run_id>/",
+  "run_id": "d2c3-teacher-sp-mini216",
+  "stage": "stage_d2_c3",
+  "action_type": "label_with_teacher",
+  "subtype": "teacher_single_point",
+  "planned_artifacts": {
+    "action_proposal.json": "PLANNED",
+    "input_manifest.json": "PLANNED",
+    "model_manifest.json": "PLANNED",
+    "approval.json": "GENERATED at approval",
+    "teacher_ef.json": "GENERATED at execution",
+    "forces.csv": "GENERATED",
+    "criterion_results.json": "GENERATED",
+    "provenance.json": "GENERATED",
+    "run_manifest.json": "GENERATED"
+  },
+  "guards": [
+    "explicit human approval (costly_teacher_labeling)",
+    "fresh run dir (no overwrite)",
+    "source+model read-only + sha256 verified",
+    "one forward pass, one GPU",
+    "no scheduler / MD / DFT / training / paid API / network",
+    "writes only under run dir"
+  ]
+}

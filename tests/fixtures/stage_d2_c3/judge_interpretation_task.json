@@ -1,0 +1,23 @@
+{
+  "schema_version": 1,
+  "task_id": "d2c3-teacher-sp-mini216-interpretation",
+  "agent": "judge",
+  "created_at": "2026-08-09T00:00:00Z",
+  "instruction": "Read teacher_ef.json for this run via read_json on 'tests/fixtures/stage_d2_c3/d2c3-teacher-sp-mini216/teacher_ef.json' (full repo-relative path; do NOT use a bare filename; do NOT read any manifest). Interpret ONLY from that artifact. Do NOT recompute the model. Do NOT invent a threshold. The authoritative artifact + physical validity (Axis A/B) is decided deterministically and is not yours to change.",
+  "inputs": [],
+  "criteria": [
+    "The predicted energy per atom is consistent with a representative amorphous a-SiO2 single-point (comparable in scale to the DFT-labeled AL cells, ~ -9.4 to -9.9 eV/atom)",
+    "The predicted force magnitudes are physically reasonable for an equilibrated a-SiO2 mini-cell"
+  ],
+  "constraints": [
+    "read-only: read_json on tests/fixtures/stage_d2_c3/d2c3-teacher-sp-mini216/teacher_ef.json only; no bare filename; no manifest",
+    "advisory semantic interpretation only; do not recompute; do not invent thresholds",
+    "do not alter any artifact; the deterministic Axis-A/B validity is authoritative"
+  ],
+  "context": {
+    "review_lens": "scientific_validity",
+    "review_focus": "Advisory interpretation of the teacher single-point E/F on mini216 a-SiO2.",
+    "deterministic_authoritative": false,
+    "note": "ADVISORY only; separate from and does not override the deterministic validity gate."
+  }
+}

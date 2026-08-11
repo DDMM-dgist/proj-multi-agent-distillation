@@ -15,7 +15,7 @@ import unittest
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
-BASE = "examples/stage_d1_replay"
+BASE = "tests/fixtures/stage_d1_replay"
 
 try:
     import pydantic  # noqa: F401
@@ -54,10 +54,10 @@ _STDOUT = {"strategy": "judge_gate", "accepted": "False", "controller_mutation":
 @unittest.skipUnless(_HAS, "pydantic not installed")
 class StageD1Tests(unittest.TestCase):
     def _ev(self):
-        return _load("stage_d1_evaluate", "work/stage_d1_evaluate.py")
+        return _load("stage_d1_evaluate", "tests/harness/stage_d1_evaluate.py")
 
     def test_fixtures_validate_and_metrics_only(self):
-        v = _load("stage_d1_validate", "work/stage_d1_validate.py")
+        v = _load("stage_d1_validate", "tests/harness/stage_d1_validate.py")
         ok, msgs = v.validate_all(str(ROOT))
         self.assertTrue(ok, "Stage D-1 fixture validation failed:\n" + "\n".join(msgs))
         # no evidence file leaks a verdict

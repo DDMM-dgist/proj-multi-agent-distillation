@@ -16,7 +16,7 @@ import unittest
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
-BASE = ROOT / "examples" / "stage_d2_c3"
+BASE = ROOT / "tests" / "fixtures" / "stage_d2_c3"
 
 try:
     import pydantic  # noqa: F401
@@ -146,7 +146,7 @@ class StageD2C3TeacherPrepTests(unittest.TestCase):
         # gate REJECTED it (authoritative FAIL / accepted=false) rather than rubber-stamping the successful
         # forward. The immutable failed attempt-1 (API mismatch) and attempt-2 (device mismatch) runs carry
         # no teacher_ef.json. teacher_ef.json therefore exists ONLY under attempt-3.
-        base = ROOT / "runs" / "stage_d2_c3"
+        base = ROOT / "tests" / "fixtures" / "stage_d2_c3"
         efs = sorted(p.parent.name for p in base.rglob("teacher_ef.json"))
         self.assertEqual(efs, ["d2c3-teacher-sp-mini216-attempt3"])          # only the completed run
         a3 = base / "d2c3-teacher-sp-mini216-attempt3"
@@ -161,7 +161,7 @@ class StageD2C3TeacherPrepTests(unittest.TestCase):
             self.assertFalse((base / name / "teacher_ef.json").exists())
         t = json.loads((BASE / "judge_interpretation_task.json").read_text())
         self.assertIs(t["context"]["deterministic_authoritative"], False)   # advisory only
-        self.assertIn("runs/stage_d2_c3/", t["instruction"])                # full repo-relative path
+        self.assertIn("tests/fixtures/stage_d2_c3/", t["instruction"])                # full repo-relative path
         self.assertNotIn("manifest", t["instruction"].lower().split("no manifest")[0][-30:] if "no manifest" in t["instruction"].lower() else "")
 
 

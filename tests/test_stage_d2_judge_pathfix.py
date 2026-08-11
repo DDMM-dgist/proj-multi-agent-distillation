@@ -15,9 +15,9 @@ import unittest
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
-RUN_REL = "runs/stage_d2/d2c1-posthoc-msd-random_x006"
+RUN_REL = "tests/fixtures/stage_d2/d2c1-posthoc-msd-random_x006"
 RD = ROOT / RUN_REL
-sys.path.insert(0, str(ROOT / "work"))
+sys.path.insert(0, str(ROOT / "tests" / "harness"))
 
 try:
     import pydantic  # noqa: F401
@@ -63,7 +63,7 @@ class StageD2JudgePathFixTests(unittest.TestCase):
 
     # D: task requests no manifest / read_artifact_manifest, uses repo-relative paths, keeps 4 questions
     def test_task_prohibits_manifest_and_uses_repo_relative_paths(self):
-        t = json.loads((ROOT / "examples/stage_d2/judge_interpretation_task.json").read_text())
+        t = json.loads((ROOT / "tests/fixtures/stage_d2/judge_interpretation_task.json").read_text())
         blob = (t["instruction"] + " " + " ".join(t["constraints"])).lower()
         # the task must explicitly PROHIBIT the spurious manifest read that wasted budget in attempt 1
         self.assertIn("do not call read_artifact_manifest", blob)
@@ -81,7 +81,7 @@ class StageD2JudgePathFixTests(unittest.TestCase):
         from runtimes.pydantic_ai.models import RuntimeContext
         self.assertEqual(RuntimeContext.model_fields["request_limit"].default, 6)
         self.assertEqual(RuntimeContext.model_fields["provider_retries"].default, 0)
-        rn = (ROOT / "work" / "stage_d2_judge_run.sh").read_text()
+        rn = (ROOT / "tests" / "harness" / "stage_d2_judge_run.sh").read_text()
         self.assertIn("retries=0", rn)
         self.assertIn("stage_d2_judge_preflight.py", rn)     # preflight wired before launch
         self.assertIn("assert_appendonly('$RUN_DIR', $ATTEMPT)", rn)

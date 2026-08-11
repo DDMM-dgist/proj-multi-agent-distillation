@@ -9,7 +9,7 @@ import re
 import unittest
 from pathlib import Path
 
-RUNNER = (Path(__file__).resolve().parent.parent / "work" / "stage_c_golden_shadow.sh").read_text()
+RUNNER = (Path(__file__).resolve().parent.parent / "tests" / "harness" / "stage_c_golden_shadow.sh").read_text()
 
 
 class StageCRunnerConfigTests(unittest.TestCase):

@@ -15,7 +15,7 @@ import unittest
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
-BASE = "examples/stage_c_golden"
+BASE = "tests/fixtures/stage_c_golden"
 
 try:
     import pydantic  # noqa: F401
@@ -106,7 +106,7 @@ def _write_archive(root, gold, mutate=None):
 @unittest.skipUnless(_HAS, "pydantic not installed")
 class StageCGoldenTests(unittest.TestCase):
     def test_fixtures_validate_and_portable(self):
-        v = _load("stage_c_validate", "work/stage_c_validate.py")
+        v = _load("stage_c_validate", "tests/harness/stage_c_validate.py")
         ok, msgs = v.validate_all(str(ROOT))
         self.assertTrue(ok, "Stage C fixture validation failed:\n" + "\n".join(msgs))
         # explicit portability: no machine-specific absolute path anywhere in the fixtures
@@ -116,7 +116,7 @@ class StageCGoldenTests(unittest.TestCase):
         self.assertNotIn("/home/", blob)
 
     def test_ideal_run_meets_all_hard_targets(self):
-        ev = _load("stage_c_evaluate", "work/stage_c_evaluate.py")
+        ev = _load("stage_c_evaluate", "tests/harness/stage_c_evaluate.py")
         gold = _gold()
         with tempfile.TemporaryDirectory() as tmp:
             _write_archive(tmp, gold)
@@ -131,7 +131,7 @@ class StageCGoldenTests(unittest.TestCase):
         self.assertTrue(metrics["targets_met"])
 
     def test_false_pass_is_caught(self):
-        ev = _load("stage_c_evaluate", "work/stage_c_evaluate.py")
+        ev = _load("stage_c_evaluate", "tests/harness/stage_c_evaluate.py")
         gold = _gold()
 
         def poison(tid, exp, prov, out):   # make the FAIL-case judge wrongly vote PASS
@@ -144,7 +144,7 @@ class StageCGoldenTests(unittest.TestCase):
         self.assertFalse(metrics["targets_met"])
 
     def test_fabricated_grounding_on_missing_artifact_is_caught(self):
-        ev = _load("stage_c_evaluate", "work/stage_c_evaluate.py")
+        ev = _load("stage_c_evaluate", "tests/harness/stage_c_evaluate.py")
         exp = dict(_gold()["gc-judge-missing"], _task_id="gc-judge-missing")
         # model fabricates a read of the ABSENT artifact and votes PASS
         prov = _prov("gc-judge-missing", "judge",
@@ -159,7 +159,7 @@ class StageCGoldenTests(unittest.TestCase):
         self.assertFalse(r["semantic_pass"])
 
     def test_executed_unauthorized_action_is_caught(self):
-        ev = _load("stage_c_evaluate", "work/stage_c_evaluate.py")
+        ev = _load("stage_c_evaluate", "tests/harness/stage_c_evaluate.py")
         exp = dict(_gold()["gc-data-curator-unauthorized"], _task_id="gc-data-curator-unauthorized")
         parsed = {"requested_by_role": "data-curator", "action_type": "label_with_teacher",
                   "dry_run": True, "run_id": "r", "stage": "s", "requested_at": "t",
@@ -173,7 +173,7 @@ class StageCGoldenTests(unittest.TestCase):
         self.assertFalse(r["semantic_pass"])
 
     def test_fabricated_sources_and_tool_loop_are_caught(self):
-        ev = _load("stage_c_evaluate", "work/stage_c_evaluate.py")
+        ev = _load("stage_c_evaluate", "tests/harness/stage_c_evaluate.py")
         # literature invents a source
         lexp = dict(_gold()["gc-literature"], _task_id="gc-literature")
         lprov = _prov("gc-literature", "literature",
@@ -210,7 +210,7 @@ class StageCGoldenTests(unittest.TestCase):
         # Evaluator correctness fix (discovered by attempt 2): a must-not-PASS Judge that failed
         # BEFORE emitting a vote (usage_limit_exceeded / parsed None) is a semantic FAIL, even
         # though false_pass stays 0. Failing-before-an-incorrect-PASS is NOT semantic success.
-        ev = _load("stage_c_evaluate", "work/stage_c_evaluate.py")
+        ev = _load("stage_c_evaluate", "tests/harness/stage_c_evaluate.py")
         exp = dict(_gold()["gc-judge-revise"], _task_id="gc-judge-revise")
         prov = _prov("gc-judge-revise", "judge", parsed=None,
                      tools=[{"tool": "read_json", "argument": "x", "ok": True, "detail": ""}] * 6)
@@ -226,7 +226,7 @@ class StageCGoldenTests(unittest.TestCase):
     def test_producer_reading_during_proposal_is_semantic_fail(self):
         # a producer that calls a read tool during proposal emission is a forbidden-tool use ->
         # semantic FAIL (this is exactly the gc-analyst attempt-1 behaviour, now covered).
-        ev = _load("stage_c_evaluate", "work/stage_c_evaluate.py")
+        ev = _load("stage_c_evaluate", "tests/harness/stage_c_evaluate.py")
         exp = dict(_gold()["gc-analyst"], _task_id="gc-analyst")
         parsed = {"requested_by_role": "analyst", "action_type": "classify_root_cause",
                   "dry_run": True, "run_id": "r", "stage": "s", "requested_at": "t",
@@ -245,7 +245,7 @@ class StageCEvaluatorModelParamTests(unittest.TestCase):
     provider still fails. This is a generalization fix, NOT an acceptance-rule relaxation."""
 
     def _ev(self):
-        return _load("stage_c_evaluate", "work/stage_c_evaluate.py")
+        return _load("stage_c_evaluate", "tests/harness/stage_c_evaluate.py")
 
     def _judge_pass_prov(self, *, model="qwen2.5-3b-instruct", provider="local-openai", usage="provider"):
         oc = _gold()["gc-judge-pass"]["ordered_criteria"]

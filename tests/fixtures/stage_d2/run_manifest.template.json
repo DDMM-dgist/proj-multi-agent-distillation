@@ -1,0 +1,27 @@
+{
+  "_status": "PLANNED_TEMPLATE \u2014 populated only at execution under tests/fixtures/stage_d2/<run_id>/",
+  "run_id": "d2c1-posthoc-msd-random_x006",
+  "stage": "stage_d2_c1",
+  "action_type": "summarize_md_stability",
+  "subtype": "posthoc_msd",
+  "architecture_v2_freeze_head": "99b9e87eacab5762c7f4c04ac8838445e57b2399",
+  "planned_artifacts": {
+    "action_proposal.json": "PLANNED (this preparation)",
+    "input_manifest.json": "PLANNED",
+    "approval.json": "GENERATED at approval (human)",
+    "msd.csv": "GENERATED at execution",
+    "msd_summary.json": "GENERATED",
+    "criterion_results.json": "GENERATED",
+    "judge_interpretation.json": "GENERATED",
+    "provenance.json": "GENERATED",
+    "run_manifest.json": "GENERATED"
+  },
+  "guards": [
+    "explicit human approval required",
+    "fresh run dir (no overwrite)",
+    "source read-only + sha256 verified",
+    "writes only under run dir",
+    "no scheduler / MD / DFT / training / GPU / network",
+    "wall-time <= 5 min, CPU only"
+  ]
+}

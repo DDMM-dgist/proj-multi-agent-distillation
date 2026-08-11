@@ -1,8 +1,16 @@
-# Model weights — never commit (see NOTICE.md)
+# Credentials — never commit
+.env
+.env.*
+*.pem
+*.key
+
+# Model weights / checkpoints — never commit (see NOTICE.md)
 *.pth
 *.pt
 *.ckpt
+*.pth.tar
 potential_saved_bestmodel
+potential_saved_latest
 params_Si
 params_O
 pca
@@ -28,6 +36,7 @@ vasprun.xml
 __pycache__/
 *.pyc
 .venv/
+venv/
 .ipynb_checkpoints/
 .DS_Store
 build/
@@ -38,10 +47,18 @@ dist/
 configs/*.local.yaml
 .claude/settings.local.json
 
-# Per-user run configs and generated run artifacts
+# Per-user run configs and generated run artifacts (real campaigns are never tracked;
+# small test fixtures live under tests/fixtures/ and are tracked explicitly)
 configs/runs/
 runs/
-work/devv6_smoke/
+
+# Development scratch (harness lives under tests/harness/; nothing else in work/ is tracked)
+work/
+
+# Generated stage-harness outputs (the committed inputs under tests/fixtures/ are kept)
+tests/fixtures/stage_b_smoke/out/
+tests/fixtures/stage_c_golden/out/
+tests/fixtures/stage_d1_replay/out/
 
 # Maintainer handoff guides are shared separately
 MANUAL.md
@@ -50,8 +67,3 @@ output/
 
 # License decision is intentionally deferred by the maintainers
 LICENSE
-work/l4b_gpu2_report.txt
-work/l4b_gpu2_vllm_help.txt
-examples/stage_b_smoke/out/
-examples/stage_c_golden/out/
-examples/stage_d1_replay/out/

@@ -16,7 +16,7 @@ import unittest
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
-sys.path.insert(0, str(ROOT / "work"))
+sys.path.insert(0, str(ROOT / "tests" / "harness"))
 
 try:
     import stage_d2_judge_map as M  # noqa: E402
@@ -97,7 +97,7 @@ class StageD2JudgePrepTests(unittest.TestCase):
                 M.assert_preserved(rd, before)
 
     def test_runner_is_loopback_local_retries0_appendonly(self):
-        rn = (ROOT / "work" / "stage_d2_judge_run.sh").read_text()
+        rn = (ROOT / "tests" / "harness" / "stage_d2_judge_run.sh").read_text()
         self.assertIn("127.0.0.1:8000/v1", rn)                  # local loopback endpoint
         self.assertIn("PYDANTIC_AI_PROVIDER=local-openai", rn)
         self.assertIn("retries=0", rn)

@@ -8,7 +8,7 @@ from __future__ import annotations
 import unittest
 from pathlib import Path
 
-RUNNER = (Path(__file__).resolve().parent.parent / "work" / "stage_d1_shadow_replay.sh").read_text()
+RUNNER = (Path(__file__).resolve().parent.parent / "tests" / "harness" / "stage_d1_shadow_replay.sh").read_text()
 
 
 class StageD1RunnerConfigTests(unittest.TestCase):

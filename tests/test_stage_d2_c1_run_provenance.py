@@ -14,7 +14,7 @@ import unittest
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
-RD = ROOT / "runs" / "stage_d2" / "d2c1-posthoc-msd-random_x006"
+RD = ROOT / "tests" / "fixtures" / "stage_d2" / "d2c1-posthoc-msd-random_x006"
 
 
 def _sha(p):
@@ -69,12 +69,12 @@ class StageD2C1RunProvenanceTests(unittest.TestCase):
         self.assertFalse(self.prov["scheduler"])
 
     def test_advisory_judge_prep_is_readonly_advisory(self):
-        task = json.loads((ROOT / "examples/stage_d2/judge_interpretation_task.json").read_text())
+        task = json.loads((ROOT / "tests/fixtures/stage_d2/judge_interpretation_task.json").read_text())
         self.assertIs(task["context"]["deterministic_authoritative"], False)
         self.assertEqual(len(task["criteria"]), 4)
         self.assertIn("pbc_hard_guarantee", " ".join(task["criteria"]).lower() + task["instruction"].lower())
         self.assertIn("read-only", " ".join(task["constraints"]).lower())
-        rn = (ROOT / "work" / "stage_d2_judge_run.sh").read_text()
+        rn = (ROOT / "tests" / "harness" / "stage_d2_judge_run.sh").read_text()
         self.assertIn('--read-allow "$RUN_DIR"', rn)         # reads only the run dir
         self.assertIn("NO scheduler", rn)                    # documented: no scheduler
         self.assertIn("qwen2.5-7b-instruct", rn)

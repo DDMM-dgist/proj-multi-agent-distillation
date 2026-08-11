@@ -1,5 +1,0 @@
-# Minimal DEV PC005 profile — lightweight structural observable (coordination). No long MD.
-kind: sio2x-dev-pc005
-checks: [coordination]
-thresholds:
-  coordination_cutoffs_angstrom: {default: 2.0}

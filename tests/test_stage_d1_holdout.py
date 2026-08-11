@@ -15,8 +15,8 @@ import unittest
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
-BASE = ROOT / "examples" / "stage_d1_holdout"
-sys.path.insert(0, str(ROOT / "work"))
+BASE = ROOT / "tests" / "fixtures" / "stage_d1_holdout"
+sys.path.insert(0, str(ROOT / "tests" / "harness"))
 
 try:
     import pydantic  # noqa: F401
@@ -77,8 +77,8 @@ class HoldoutPackagingTests(unittest.TestCase):
             self.assertEqual([b["result"] for b in block], [r.result for r in fresh], cid)
 
     def test_no_holdout_case_special_casing_in_helpers(self):
-        for rel in ("work/stage_d1_holdout_gen_fixtures.py", "work/stage_d1_holdout_validate.py",
-                    "work/stage_d1_holdout_evaluate.py"):
+        for rel in ("tests/harness/stage_d1_holdout_gen_fixtures.py", "tests/harness/stage_d1_holdout_validate.py",
+                    "tests/harness/stage_d1_holdout_evaluate.py"):
             src = (ROOT / rel).read_text()
             # the evaluator/validator must be generic: no per-case verdict branching
             self.assertNotIn('if cid ==', src, rel)
@@ -110,8 +110,8 @@ class HoldoutPackagingTests(unittest.TestCase):
         self.assertEqual(r["false_scientific_pass"], 1); self.assertFalse(r["semantic_pass"])
 
     def test_runner_wiring(self):
-        rn = (ROOT / "work" / "stage_d1_holdout_replay.sh").read_text()
-        self.assertIn("examples/stage_d1_holdout", rn)
+        rn = (ROOT / "tests" / "harness" / "stage_d1_holdout_replay.sh").read_text()
+        self.assertIn("tests/fixtures/stage_d1_holdout", rn)
         self.assertIn("stage_d1_holdout_validate.py", rn)
         self.assertIn('STAGE_D1_GPU_MEM_UTIL:-0.36', rn)
         self.assertIn('STAGE_D1_MIN_FREE_MIB:-18000', rn)

@@ -14,7 +14,7 @@ import unittest
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
-RD = ROOT / "runs" / "stage_d2" / "d2c1-posthoc-msd-random_x006"
+RD = ROOT / "tests" / "fixtures" / "stage_d2" / "d2c1-posthoc-msd-random_x006"
 A2 = ("judge_interpretation_attempt2.json", "judge_provenance_attempt2.json",
       "semantic_transition_attempt2.json", "run_manifest.after_judge_attempt2.json")
 
@@ -31,7 +31,7 @@ def _exchange(token):
 @unittest.skipUnless(RD.exists() and (RD / A2[0]).exists(), "closed C1 run dir required")
 class StageD2C1ClosureTests(unittest.TestCase):
     def test_closure_used_no_llm(self):
-        src = (ROOT / "work" / "stage_d2_close_attempt2.py").read_text().lower()
+        src = (ROOT / "tests" / "harness" / "stage_d2_close_attempt2.py").read_text().lower()
         for banned in ("openai", "vllm", "run-task", "base_url", "provider_model", "agent.run"):
             self.assertNotIn(banned, src)      # deterministic closure: no inference/provider call
 
@@ -61,7 +61,7 @@ class StageD2C1ClosureTests(unittest.TestCase):
 
     def test_append_only_fresh_regeneration_refused(self):
         import sys
-        sys.path.insert(0, str(ROOT / "work"))
+        sys.path.insert(0, str(ROOT / "tests" / "harness"))
         from stage_d2_judge_map import assert_appendonly
         with self.assertRaises(FileExistsError):   # attempt-2 files now exist -> re-close refused
             assert_appendonly(RD, 2)

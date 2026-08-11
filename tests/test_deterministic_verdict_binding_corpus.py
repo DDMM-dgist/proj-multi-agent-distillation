@@ -11,7 +11,7 @@ import unittest
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
-CORPORA = ("examples/stage_d1_replay", "examples/stage_d1_holdout")
+CORPORA = ("tests/fixtures/stage_d1_replay", "tests/fixtures/stage_d1_holdout")
 _WRONG = {"PASS": "FAIL", "REVISE": "FAIL", "FAIL": "PASS"}   # a deliberately wrong LLM verdict
 
 try:
