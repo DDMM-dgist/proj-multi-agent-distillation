@@ -1,0 +1,14 @@
+{
+  "_note": "consolidated attempt-2 manifest; additive; does NOT overwrite the original run_manifest.json, the deferred file, or an earlier attempt",
+  "attempt": 2,
+  "STAGE_D2_C1_AXIS_A": "PASS",
+  "STAGE_D2_C1_SEMANTIC_JUDGE": "REVISE",
+  "STAGE_D2_C1_TRANSITION": "REVISE",
+  "STAGE_D2_C1": "AXIS_A_PASS__SEMANTIC_REVISE",
+  "attempt_artifacts": [
+    "judge_interpretation_attempt2.json",
+    "judge_provenance_attempt2.json",
+    "semantic_transition_attempt2.json",
+    "run_manifest.after_judge_attempt2.json"
+  ]
+}

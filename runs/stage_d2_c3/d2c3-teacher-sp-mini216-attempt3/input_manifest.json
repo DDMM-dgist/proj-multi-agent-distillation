@@ -1,0 +1,19 @@
+{
+  "source_structure": "/home/hyunjin/CLADE/SiO2-x_distillatio/materials-ml-kit/research-sio2-allegro-simplenn-distillation/teacher_diag/nve_drift/mini216_nvt_fixed.data",
+  "source_sha256": "3d2dd2464d83ca144e2c6d51382b83546b1152da06a386bfe3672550f4348364",
+  "size_bytes": 18098,
+  "format": "LAMMPS data (atomic)",
+  "n_atoms": 216,
+  "atom_types": 2,
+  "type_symbol_map": {
+    "1": "O",
+    "2": "Si"
+  },
+  "composition": {
+    "O": 144,
+    "Si": 72
+  },
+  "box_L_A": 14.835545077426339,
+  "provenance": "teacher_diag/nve_drift; gate-confirmed representative amorphous a-SiO2 (error(d) mini-cell)",
+  "already_teacher_labeled": false
+}

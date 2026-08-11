@@ -1,0 +1,8 @@
+{
+  "status": "OK",
+  "authoritative_verdict": "FAIL",
+  "accepted": false,
+  "source_model_unchanged": true,
+  "clean_unload": true,
+  "semantic_judge": "deferred (separate approval)"
+}

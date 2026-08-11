@@ -1,0 +1,12 @@
+{
+  "teacher_model": "/home/hyunjin/CLADE/SiO2-x_distillatio/materials-ml-kit/research-sio2-allegro-simplenn-distillation/gpu_finetune_handoff/models/teacher_current_compiled.nequip.pth",
+  "model_sha256": "b56e20ffc31da601feed8411c92675bdae9eb886db153ff67dd37dea161b1c57",
+  "size_bytes": 4905990,
+  "framework": "nequip/allegro (compiled .nequip.pth)",
+  "cutoff_A": 5.0,
+  "chemical_symbols": [
+    "O",
+    "Si"
+  ],
+  "identity_note": "teacher_current_compiled.nequip.pth (gpu_finetune_handoff/models). Confirm base-vs-finetuned teacher version before execution if it matters for the claim."
+}

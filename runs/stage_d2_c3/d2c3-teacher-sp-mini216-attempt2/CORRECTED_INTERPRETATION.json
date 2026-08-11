@@ -1,0 +1,44 @@
+{
+  "_record": "ADDITIVE corrected interpretation of the Stage D-2 C3 ATTEMPT-2 run. The raw run_manifest.json and provenance.json in this directory are PRESERVED BYTE-IDENTICALLY (as produced on the GPU host) and are NOT rewritten. This file is an append-only correction: the raw files carry a COARSE misclassification that this record supersedes.",
+  "raw_files_preserved_immutable": {
+    "run_manifest.json": {"sha256": "d7154bcb058e20651356eca2886aff0ba6cfb273e3683f2660ab1b90c5ed8b97",
+                          "raw_status": "EXECUTION_FAILED_BEFORE_FORWARD",
+                          "raw_note": "failure BEFORE the model forward — no scientific prediction occurred"},
+    "provenance.json": {"sha256": "8c54c4a0730e18f1a74c08050813cdba4026e162bf04001705148f1567fb2f07",
+                        "raw_status": "EXECUTION_FAILED_BEFORE_FORWARD"},
+    "approval.json": {"sha256": "34c099a2fd7b8a5d7e46b4cd238afee6ddfd2a75f77f7052252e51e5a07cb90c",
+                      "note": "immutable execution-time snapshot of the activated attempt-2 external approval"}
+  },
+  "why_the_raw_classification_is_coarse": "The attempt-1-era wrapper decided BEFORE vs AFTER the forward solely from the existence of teacher_ef.json. A model forward that is INVOKED but fails INSIDE the model writes no teacher_ef.json (the executor writes it only after forward_fn returns), so the deterministically-invoked-but-failed model call was recorded as BEFORE_FORWARD. The raw TorchScript traceback in provenance.json proves the model WAS entered: grad_output.forward -> _graph_mixin.forward -> edge_norm.forward -> `r * rmax_recip`.",
+  "CORRECTED_CLASSIFICATION": {
+    "D2_C3_EXECUTION_ATTEMPT_2": "INCOMPLETE_FORWARD_RUNTIME_DEVICE_MISMATCH",
+    "ROOT_CAUSE": "MODEL_INPUT_OR_BUFFER_DEVICE_MISMATCH_CPU_VS_CUDA1",
+    "execution_phase": "FORWARD_STARTED (model invoked) -> failed before FORWARD_COMPLETED",
+    "failure_class": "EXECUTION_FAILED_DURING_FORWARD",
+    "model_forward_invocation_count": 1,
+    "model_forward_invoked": true,
+    "model_forward_completed": false,
+    "valid_teacher_prediction_count": 0,
+    "valid_prediction_generated": false,
+    "teacher_ef_generated": false,
+    "scientific_verdict": null,
+    "automatic_retry": false
+  },
+  "device_mismatch_detail": {
+    "error": "RuntimeError: Expected all tensors to be on the same device, but found at least two devices, cuda:1 and cpu",
+    "site": "nequip/nn/embedding/_edge.py:117  data[self.norm_length_field] = r * rmax_recip",
+    "cuda1_side": "the model buffer rmax_recip (edge-normalization _rmax_recip), on cuda:1 via torch.jit.load(map_location='cuda:1')",
+    "cpu_side": "r (edge length), derived from the input positions, which build_model_input built with torch.tensor(...) on CPU and compute_neighborlist_ returned on CPU — never moved to the model device",
+    "category": "input tensors (and neighbor-list output) remained on CPU while the model was on cuda:1"
+  },
+  "axis_status": "Axis-A / Axis-B scientific status UNCHANGED — no valid E/F artifact exists; this is a runtime device-placement failure, NOT a scientific prediction and NOT a physical-validity result.",
+  "fix": {
+    "adapter": "runtimes/pydantic_ai/stage_d2_c3_teacher_adapter.py: build_model_input() now reads the model's ACTUAL device (from its params/buffers) and moves every input tensor onto it after compute_neighborlist_; forward-phase flags (forward_invoked/forward_completed) added so a DURING-forward failure is classified correctly.",
+    "wrapper": "work/stage_d2_c3_execute.py: failure state machine (PRE_FORWARD / FORWARD_STARTED / FORWARD_COMPLETED / ARTIFACT_COMMITTED) with EXECUTION_FAILED_BEFORE/DURING/AFTER_FORWARD, derived from the adapter phase flags, plus durable counters model_forward_invoked / model_forward_completed / valid_prediction_generated.",
+    "new_preflight": "work/stage_d2_c3_device_consistency_preflight.py: inspects every model param/buffer device + every input tensor device, fails closed on a CPU/CUDA mix, ZERO model calls — would have caught this before scientific execution.",
+    "next_attempt": "attempt 3 -> runs/stage_d2_c3/d2c3-teacher-sp-mini216-attempt3 (fresh identity; wrapper refuses attempt-1 and attempt-2 ids); fresh external approval examples/stage_d2_c3/approvals/d2c3-teacher-sp-mini216-attempt3.approval.json"
+  },
+  "package_head_at_attempt2": "bbcb308bd8dbc4f42bb9f7dcc481e8a8a0dd230e",
+  "external_approval_sha256": "34c099a2fd7b8a5d7e46b4cd238afee6ddfd2a75f77f7052252e51e5a07cb90c",
+  "gpu_archive_sha256": "dd2838c1a3b0a5b355cb1ca983cc3b806e5af765a9d0663f1a252efc38b6865a"
+}
