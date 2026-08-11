@@ -101,10 +101,12 @@ class StageD2JudgePathFixTests(unittest.TestCase):
     def test_attempt1_provenance_and_scientific_artifacts_preserved(self):
         import glob
         prov = glob.glob(str(RD / "judge_exchange/exchange/provenance/*.json"))
-        # the failed attempt-1 exchange provenance is retained (if the run dir carries it)
+        # the failed attempt-1 exchange provenance is retained (if the run dir carries it).
+        # glob order is filesystem-dependent, so assert the usage_limit_exceeded failure is
+        # present among the retained provenance files rather than assuming it is prov[0].
         if prov:
-            p = json.loads(Path(prov[0]).read_text())
-            self.assertEqual(p.get("failure_category"), "usage_limit_exceeded")
+            cats = [json.loads(Path(x).read_text()).get("failure_category") for x in prov]
+            self.assertIn("usage_limit_exceeded", cats)
         # the historical deferred interpretation is still DEFERRED
         self.assertEqual(json.loads((RD / "judge_interpretation.json").read_text())["status"], "DEFERRED")
         # scientific artifacts unchanged vs their recorded hashes
