@@ -15,7 +15,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
-sys.path.insert(0, str(ROOT / "work"))
+sys.path.insert(0, str(ROOT / "tests" / "harness"))
 
 try:
     from runtimes.pydantic_ai.stage_d2_c3_teacher_adapter import device_consistency_report
@@ -27,7 +27,7 @@ except ImportError:  # pragma: no cover
 @unittest.skipUnless(_HAS, "adapter import failed")
 class StageD2C3DeviceConsistencyTests(unittest.TestCase):
     def test_preflight_source_makes_no_model_call(self):
-        src = (ROOT / "work" / "stage_d2_c3_device_consistency_preflight.py").read_text()
+        src = (ROOT / "tests" / "harness" / "stage_d2_c3_device_consistency_preflight.py").read_text()
         # inspects devices, never invokes the model or any forward path
         self.assertNotIn("run_teacher_single_point(", src)
         self.assertNotIn("build_forward_fn(", src)

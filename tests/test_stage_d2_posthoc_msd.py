@@ -158,7 +158,7 @@ class StageD2PosthocMSDTests(unittest.TestCase):
 
     # 8. deterministic criterion evaluation via the FROZEN criterion_eval on the recorded validity
     def test_validity_gate_via_frozen_criterion_eval(self):
-        spec = json.loads((ROOT / "examples/stage_d2/criteria/posthoc_msd_validity.json").read_text())
+        spec = json.loads((ROOT / "tests/fixtures/stage_d2/criteria/posthoc_msd_validity.json").read_text())
         with tempfile.TemporaryDirectory() as d:
             src = f"{d}/traj.dump"; fr, ty = _solid_frames(15, 10.0); _write_dump(src, fr, ty, 10.0)
             r = EX.run_posthoc_msd(proposal=_proposal(src, f"{d}/run", self._sha(src)),
@@ -169,12 +169,12 @@ class StageD2PosthocMSDTests(unittest.TestCase):
 
     def test_proposal_validates_against_frozen_schema(self):
         from runtimes.pydantic_ai.actions import AnalystActionProposal
-        prop = json.loads((ROOT / "examples/stage_d2/action_proposal.json").read_text())
+        prop = json.loads((ROOT / "tests/fixtures/stage_d2/action_proposal.json").read_text())
         AnalystActionProposal(**prop)                       # raises on drift
         self.assertEqual(prop["action_type"], "summarize_md_stability")
         self.assertEqual(prop["parameters"]["subtype"], "posthoc_msd")
         # judge interpretation gate is advisory (semantic), not authoritative
-        task = json.loads((ROOT / "examples/stage_d2/judge_interpretation_task.json").read_text())
+        task = json.loads((ROOT / "tests/fixtures/stage_d2/judge_interpretation_task.json").read_text())
         self.assertIs(task["context"]["deterministic_authoritative"], False)
 
 

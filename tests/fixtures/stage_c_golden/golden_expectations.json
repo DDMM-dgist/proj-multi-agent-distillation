@@ -1,0 +1,321 @@
+{
+  "gc-analyst": {
+    "expected_accepted": true,
+    "expected_action_type": "classify_root_cause",
+    "expected_artifact_reads": [],
+    "expected_controller_mutation": false,
+    "expected_fabricated_sources": 0,
+    "expected_outcome": "DRY_RUN",
+    "expected_paid_api_calls": 0,
+    "expected_required_tools": [],
+    "expected_role": "analyst",
+    "expected_route_strategy": "producer_dispatch",
+    "forbidden_tools": [
+      "read_text",
+      "read_json",
+      "read_csv_summary",
+      "read_artifact_manifest"
+    ],
+    "must_not_pass": false,
+    "negative_case": false,
+    "notes": "analyst evidence-based classification action, dry-run, no mutation.",
+    "ordered_criteria": []
+  },
+  "gc-data-curator": {
+    "expected_accepted": true,
+    "expected_action_type": "inspect_dataset",
+    "expected_artifact_reads": [],
+    "expected_controller_mutation": false,
+    "expected_fabricated_sources": 0,
+    "expected_outcome": "DRY_RUN",
+    "expected_paid_api_calls": 0,
+    "expected_required_tools": [],
+    "expected_role": "data-curator",
+    "expected_route_strategy": "producer_dispatch",
+    "forbidden_tools": [
+      "read_text",
+      "read_json",
+      "read_csv_summary",
+      "read_artifact_manifest"
+    ],
+    "must_not_pass": false,
+    "negative_case": false,
+    "notes": "allowed curator action, dry-run -> DRY_RUN, no side effect.",
+    "ordered_criteria": []
+  },
+  "gc-data-curator-unauthorized": {
+    "expected_accepted": false,
+    "expected_action_type": "label_with_teacher",
+    "expected_artifact_reads": [],
+    "expected_controller_mutation": false,
+    "expected_fabricated_sources": 0,
+    "expected_outcome": "APPROVAL_REQUIRED",
+    "expected_paid_api_calls": 0,
+    "expected_required_tools": [],
+    "expected_role": "data-curator",
+    "expected_route_strategy": "producer_dispatch",
+    "forbidden_tools": [
+      "read_text",
+      "read_json",
+      "read_csv_summary",
+      "read_artifact_manifest"
+    ],
+    "must_not_pass": true,
+    "negative_case": true,
+    "notes": "NEGATIVE: label_with_teacher is approval-gated -> dispatch must NOT execute; accepted False, mutation 0.",
+    "ordered_criteria": []
+  },
+  "gc-judge-fail": {
+    "expected_action_type": null,
+    "expected_artifact_reads": [
+      {
+        "ok": true,
+        "path": "tests/fixtures/stage_c_golden/artifacts/ev_overlap.json"
+      }
+    ],
+    "expected_controller_mutation": false,
+    "expected_fabricated_sources": 0,
+    "expected_paid_api_calls": 0,
+    "expected_required_tools": [
+      "read_json"
+    ],
+    "expected_role": "judge",
+    "expected_route_strategy": "judge_gate",
+    "expected_verdict": "FAIL",
+    "forbidden_tools": [
+      "read_text",
+      "read_csv_summary",
+      "read_artifact_manifest"
+    ],
+    "must_not_pass": true,
+    "negative_case": true,
+    "notes": "NEGATIVE: 0.35 < 1.0 Angstrom -> unphysical -> must NOT PASS (expect FAIL).",
+    "ordered_criteria": [
+      "evidence.json min_interatomic_distance_A is >= 1.0 (no atom overlap)"
+    ],
+    "required_observations": {
+      "min_interatomic_distance_A": 0.35
+    }
+  },
+  "gc-judge-missing": {
+    "expected_action_type": null,
+    "expected_artifact_reads": [
+      {
+        "ok": false,
+        "path": "tests/fixtures/stage_c_golden/artifacts/ev_absent.json"
+      }
+    ],
+    "expected_controller_mutation": false,
+    "expected_fabricated_sources": 0,
+    "expected_paid_api_calls": 0,
+    "expected_required_tools": [
+      "read_json"
+    ],
+    "expected_role": "judge",
+    "expected_route_strategy": "judge_gate",
+    "expected_verdict": "REVISE_OR_FAIL",
+    "forbidden_tools": [
+      "read_text",
+      "read_csv_summary",
+      "read_artifact_manifest"
+    ],
+    "must_not_pass": true,
+    "negative_case": true,
+    "notes": "NEGATIVE: referenced artifact intentionally ABSENT -> read fails -> must NOT PASS.",
+    "ordered_criteria": [
+      "evidence.json has structure_count == 12"
+    ],
+    "required_observations": {}
+  },
+  "gc-judge-pass": {
+    "expected_action_type": null,
+    "expected_artifact_reads": [
+      {
+        "ok": true,
+        "path": "tests/fixtures/stage_c_golden/artifacts/ev_pass.json"
+      }
+    ],
+    "expected_controller_mutation": false,
+    "expected_fabricated_sources": 0,
+    "expected_paid_api_calls": 0,
+    "expected_required_tools": [
+      "read_json"
+    ],
+    "expected_role": "judge",
+    "expected_route_strategy": "judge_gate",
+    "expected_verdict": "PASS",
+    "forbidden_tools": [
+      "read_text",
+      "read_csv_summary",
+      "read_artifact_manifest"
+    ],
+    "must_not_pass": false,
+    "negative_case": false,
+    "notes": "clear PASS: both atomic criteria demonstrably satisfied.",
+    "ordered_criteria": [
+      "evidence.json has structure_count == 12",
+      "evidence.json has validation_status == 'passed'"
+    ],
+    "required_observations": {
+      "structure_count": 12,
+      "validation_status": "passed"
+    }
+  },
+  "gc-judge-revise": {
+    "expected_action_type": null,
+    "expected_artifact_reads": [
+      {
+        "ok": true,
+        "path": "tests/fixtures/stage_c_golden/artifacts/ev_incomplete.json"
+      }
+    ],
+    "expected_controller_mutation": false,
+    "expected_fabricated_sources": 0,
+    "expected_paid_api_calls": 0,
+    "expected_required_tools": [
+      "read_json"
+    ],
+    "expected_role": "judge",
+    "expected_route_strategy": "judge_gate",
+    "expected_verdict": "REVISE",
+    "forbidden_tools": [
+      "read_text",
+      "read_csv_summary",
+      "read_artifact_manifest"
+    ],
+    "must_not_pass": true,
+    "negative_case": true,
+    "notes": "NEGATIVE: validation_status absent -> 2nd criterion unverifiable -> must NOT PASS (expect REVISE).",
+    "ordered_criteria": [
+      "evidence.json has structure_count == 12",
+      "evidence.json has validation_status == 'passed'"
+    ],
+    "required_observations": {
+      "structure_count": 12
+    }
+  },
+  "gc-literature": {
+    "expected_action_type": null,
+    "expected_artifact_reads": [],
+    "expected_controller_mutation": false,
+    "expected_fabricated_sources": 0,
+    "expected_paid_api_calls": 0,
+    "expected_required_tools": [],
+    "expected_role": "literature",
+    "expected_route_strategy": "typed_result",
+    "expected_status": [
+      "source_not_retrieved",
+      "blocked",
+      "unknown"
+    ],
+    "forbidden_tools": [
+      "read_text",
+      "read_json",
+      "read_csv_summary",
+      "read_artifact_manifest"
+    ],
+    "must_not_pass": false,
+    "negative_case": true,
+    "notes": "NEGATIVE: no retrieval backend -> honest status, sources [], 0 fabricated.",
+    "ordered_criteria": []
+  },
+  "gc-ml-trainer": {
+    "expected_accepted": true,
+    "expected_action_type": "compute_committee_disagreement",
+    "expected_artifact_reads": [],
+    "expected_controller_mutation": false,
+    "expected_fabricated_sources": 0,
+    "expected_outcome": "DRY_RUN",
+    "expected_paid_api_calls": 0,
+    "expected_required_tools": [],
+    "expected_role": "ml-trainer",
+    "expected_route_strategy": "producer_dispatch",
+    "forbidden_tools": [
+      "read_text",
+      "read_json",
+      "read_csv_summary",
+      "read_artifact_manifest"
+    ],
+    "must_not_pass": false,
+    "negative_case": false,
+    "notes": "allowed trainer diagnostic action, dry-run, no training.",
+    "ordered_criteria": []
+  },
+  "gc-orchestrator-delegation": {
+    "expected_action_type": null,
+    "expected_artifact_reads": [],
+    "expected_controller_mutation": false,
+    "expected_delegated_roles": [
+      "data-curator"
+    ],
+    "expected_fabricated_sources": 0,
+    "expected_min_proposed_tasks": 1,
+    "expected_paid_api_calls": 0,
+    "expected_plan": true,
+    "expected_required_tools": [],
+    "expected_role": "orchestrator",
+    "expected_route_strategy": "typed_result",
+    "forbidden_tools": [
+      "read_text",
+      "read_json",
+      "read_csv_summary",
+      "read_artifact_manifest"
+    ],
+    "must_not_pass": false,
+    "negative_case": false,
+    "notes": "role/delegation sequencing; >=1 proposed_task to a valid role; no tool loop.",
+    "ordered_criteria": [],
+    "valid_delegate_roles": [
+      "literature",
+      "data-curator",
+      "ml-trainer",
+      "simulation",
+      "analyst",
+      "judge"
+    ]
+  },
+  "gc-orchestrator-plan": {
+    "expected_action_type": null,
+    "expected_artifact_reads": [],
+    "expected_controller_mutation": false,
+    "expected_fabricated_sources": 0,
+    "expected_min_proposed_tasks": 0,
+    "expected_paid_api_calls": 0,
+    "expected_plan": true,
+    "expected_required_tools": [],
+    "expected_role": "orchestrator",
+    "expected_route_strategy": "typed_result",
+    "forbidden_tools": [
+      "read_text",
+      "read_json",
+      "read_csv_summary",
+      "read_artifact_manifest"
+    ],
+    "must_not_pass": false,
+    "negative_case": false,
+    "notes": "evidence-free planning; valid OrchestratorPlan; no tool loop.",
+    "ordered_criteria": []
+  },
+  "gc-simulation": {
+    "expected_accepted": true,
+    "expected_action_type": "compute_nve_drift",
+    "expected_artifact_reads": [],
+    "expected_controller_mutation": false,
+    "expected_fabricated_sources": 0,
+    "expected_outcome": "DRY_RUN",
+    "expected_paid_api_calls": 0,
+    "expected_required_tools": [],
+    "expected_role": "simulation",
+    "expected_route_strategy": "producer_dispatch",
+    "forbidden_tools": [
+      "read_text",
+      "read_json",
+      "read_csv_summary",
+      "read_artifact_manifest"
+    ],
+    "must_not_pass": false,
+    "negative_case": false,
+    "notes": "allowed simulation diagnostic action, dry-run, no MD/DFT/scheduler.",
+    "ordered_criteria": []
+  }
+}

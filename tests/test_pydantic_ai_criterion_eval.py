@@ -11,7 +11,7 @@ import unittest
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
-BASE = "examples/stage_d1_replay"
+BASE = "tests/fixtures/stage_d1_replay"
 
 try:
     import pydantic  # noqa: F401

@@ -18,8 +18,8 @@ import unittest
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
-C3 = ROOT / "examples" / "stage_d2_c3"
-sys.path.insert(0, str(ROOT / "work"))
+C3 = ROOT / "tests" / "fixtures" / "stage_d2_c3"
+sys.path.insert(0, str(ROOT / "tests" / "harness"))
 
 RES = "/home/hyunjin/CLADE/SiO2-x_distillatio/materials-ml-kit/research-sio2-allegro-simplenn-distillation"
 MINI216 = f"{RES}/teacher_diag/nve_drift/mini216_nvt_fixed.data"
@@ -110,12 +110,12 @@ class StageD2C3ExecuteTests(unittest.TestCase):
         ok, checks = P.check_env(device="cpu")
         self.assertIn("pydantic", checks)
         self.assertIsInstance(ok, bool)                     # torch/nequip may be absent here -> ok False
-        src = (ROOT / "work" / "stage_d2_c3_env_preflight.py").read_text()
+        src = (ROOT / "tests" / "harness" / "stage_d2_c3_env_preflight.py").read_text()
         self.assertNotIn("run_teacher_single_point(", src)  # preflight invokes no forward
         self.assertNotIn("build_forward_fn(", src)
 
     def test_no_cli_forward_function_accepted(self):
-        src = (ROOT / "work" / "stage_d2_c3_execute.py").read_text()
+        src = (ROOT / "tests" / "harness" / "stage_d2_c3_execute.py").read_text()
         added = {ln.split('add_argument("')[1].split('"')[0] for ln in src.splitlines() if 'add_argument("' in ln}
         self.assertEqual(added, {"--device", "--expect-head", "--approval", "--attempt"})
         self.assertNotIn("--forward", added)
@@ -247,7 +247,7 @@ class StageD2C3ExecuteTests(unittest.TestCase):
             self.assertTrue(rm["forward_pass_completed"]); self.assertFalse(rm["automatic_retry"])
 
     def test_no_side_job_paths(self):
-        src = (ROOT / "work" / "stage_d2_c3_execute.py").read_text().lower()
+        src = (ROOT / "tests" / "harness" / "stage_d2_c3_execute.py").read_text().lower()
         for banned in ("sbatch", "qsub", "srun", "nequip-train", "lammps", "run_md", "run_dft"):
             self.assertNotIn(banned, src)
 
@@ -264,16 +264,16 @@ class StageD2C3ExecuteTests(unittest.TestCase):
             # targeting either immutable run directory is refused
             for name in ("d2c3-teacher-sp-mini216", "d2c3-teacher-sp-mini216-attempt2"):
                 with self.assertRaisesRegex(W.ExecutionRefused, "immutable failed attempt"):
-                    self._run(d, run_dir=str(ROOT / "runs" / "stage_d2_c3" / name))
+                    self._run(d, run_dir=str(ROOT / "tests" / "fixtures" / "stage_d2_c3" / name))
         # committed failed attempt-1 run: immutable evidence, BEFORE_FORWARD, no teacher_ef.json
-        a1 = ROOT / "runs" / "stage_d2_c3" / "d2c3-teacher-sp-mini216"
+        a1 = ROOT / "tests" / "fixtures" / "stage_d2_c3" / "d2c3-teacher-sp-mini216"
         if a1.is_dir():
             self.assertEqual(json.loads((a1 / "run_manifest.json").read_text())["status"],
                              "EXECUTION_FAILED_BEFORE_FORWARD")
             self.assertFalse((a1 / "teacher_ef.json").exists())
 
     def test_attempt2_immutable_raw_and_additive_correction(self):
-        a2 = ROOT / "runs" / "stage_d2_c3" / "d2c3-teacher-sp-mini216-attempt2"
+        a2 = ROOT / "tests" / "fixtures" / "stage_d2_c3" / "d2c3-teacher-sp-mini216-attempt2"
         if not a2.is_dir():
             self.skipTest("attempt-2 run not present")
         # raw provenance preserved byte-identically with the ORIGINAL coarse classification
@@ -301,12 +301,12 @@ class StageD2C3ExecuteTests(unittest.TestCase):
 
     def test_attempt2_external_approval_prepared_not_active(self):
         ap = self._assert_prepared_approval(
-            ROOT / "examples/stage_d2_c3/approvals/d2c3-teacher-sp-mini216-attempt2.approval.json", 2)
+            ROOT / "tests/fixtures/stage_d2_c3/approvals/d2c3-teacher-sp-mini216-attempt2.approval.json", 2)
         self.assertIn("d2c3-teacher-sp-mini216", ap["supersedes"]["attempt1_run"])
 
     def test_attempt3_external_approval_prepared_and_references_1_2(self):
         ap = self._assert_prepared_approval(
-            ROOT / "examples/stage_d2_c3/approvals/d2c3-teacher-sp-mini216-attempt3.approval.json", 3)
+            ROOT / "tests/fixtures/stage_d2_c3/approvals/d2c3-teacher-sp-mini216-attempt3.approval.json", 3)
         sup = ap["supersedes"]
         self.assertIn("NEQUIP_0_16_1_ATOMICDATADICT_API_MISMATCH", sup["attempt1_root_cause"])
         self.assertIn("MODEL_INPUT_OR_BUFFER_DEVICE_MISMATCH_CPU_VS_CUDA1", sup["attempt2_root_cause"])

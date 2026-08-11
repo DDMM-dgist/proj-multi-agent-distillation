@@ -1,9 +1,0 @@
-{
-  "conclusion": "NO_REPRESENTABILITY_PROBLEM_IN_DEV_400 — no refill needed; R1 uses the original 400.",
-  "root_cause_of_earlier_feature_gen_failure": "NOT a degenerate/small-structure data-quality issue. It was a bug in the struct_weight str_list wiring: per-frame tags used a BARE INTEGER index ('<dataset> i') so ase.io.read(index=i) returned a single Atoms; SIMPLE-NN then iterated it into Atom objects and called .cell on an Atom -> AttributeError. A 105-atom AND a 3000-atom frame both failed under the bug (=> not size-related).",
-  "fix": "adapters/simple_nn_v2_wrapper._write_structure_list emits a SLICE 'i:i+1' per frame -> ase returns a 1-element LIST -> SIMPLE-NN featurizes correctly.",
-  "verification": "smoke on [2,141,3000]-atom frames now PASSES real generate_features+preprocess(PCA)+train+checkpoint; struct_weight round-trip ratio=8.0 (2-atom->2.828, 3000-atom->0.354), not all 1.0.",
-  "refill_performed": false,
-  "R1_dataset": "identical to the frozen DEV 400 (devv6small_ensemble.xyz); nothing removed/replaced",
-  "supersedes": "devv6_R1_representability_report.json (stale; produced while the str_list bug was present)"
-}

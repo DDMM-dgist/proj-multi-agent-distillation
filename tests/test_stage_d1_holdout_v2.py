@@ -14,8 +14,8 @@ import unittest
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
-BASE = ROOT / "examples" / "stage_d1_holdout_v2"
-sys.path.insert(0, str(ROOT / "work"))
+BASE = ROOT / "tests" / "fixtures" / "stage_d1_holdout_v2"
+sys.path.insert(0, str(ROOT / "tests" / "harness"))
 
 try:
     import pydantic  # noqa: F401
@@ -119,8 +119,8 @@ class HoldoutV2Tests(unittest.TestCase):
         self.assertEqual(r["verdict"], "REVISE")           # accepted verdict is the bound one
 
     def test_runner_wiring(self):
-        rn = (ROOT / "work" / "stage_d1_holdout_v2_replay.sh").read_text()
-        self.assertIn("examples/stage_d1_holdout_v2", rn)
+        rn = (ROOT / "tests" / "harness" / "stage_d1_holdout_v2_replay.sh").read_text()
+        self.assertIn("tests/fixtures/stage_d1_holdout_v2", rn)
         self.assertIn("stage_d1_holdout_v2_validate.py", rn)
         self.assertIn('STAGE_D1_GPU_MEM_UTIL:-0.36', rn)
         self.assertIn('STAGE_D1_MIN_FREE_MIB:-18000', rn)

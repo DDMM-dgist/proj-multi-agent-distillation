@@ -1,0 +1,153 @@
+{
+  "hd-committee-uncertainty": {
+    "acceptable_verdicts": [
+      "REVISE",
+      "FAIL"
+    ],
+    "evidence_file": "tests/fixtures/stage_d1_holdout/evidence/hd-committee-uncertainty.json",
+    "expected_controller_mutation": false,
+    "expected_paid_api_calls": 0,
+    "expected_role": "judge",
+    "expected_route_strategy": "judge_gate",
+    "historical_verdict": "REVISE",
+    "must_not_pass": true,
+    "notes": "claimed 3.5x unsupported (artifacts 2.97x) + non-traceable chain -> REVISE.",
+    "ordered_criteria": [
+      "the claimed enrichment ratio is supported by the cited artifacts",
+      "the selection pipeline (frames -> AL cells) is a single traceable chain"
+    ],
+    "source": "coordination_log.csv 2026-06-27 committee-uncertainty-gate REVISE ('3.5x' unsupported; artifacts give 2.97x; chain not traceable)"
+  },
+  "hd-committee-v3final": {
+    "acceptable_verdicts": [
+      "REVISE",
+      "FAIL"
+    ],
+    "evidence_file": "tests/fixtures/stage_d1_holdout/evidence/hd-committee-v3final.json",
+    "expected_controller_mutation": false,
+    "expected_paid_api_calls": 0,
+    "expected_role": "judge",
+    "expected_route_strategy": "judge_gate",
+    "historical_verdict": "REVISE",
+    "must_not_pass": true,
+    "notes": "regresses on u_max mean+max and F_RMSE vs original -> do NOT adopt (REVISE).",
+    "ordered_criteria": [
+      "committee does NOT regress vs original on deployment u_max mean (u_max_mean_deploy <= original_u_max_mean_deploy)",
+      "committee does NOT regress vs original on deployment u_max max (u_max_max_deploy <= original_u_max_max_deploy)",
+      "committee F_RMSE <= original student F_RMSE"
+    ],
+    "source": "gates/coordination_votes.csv 2026-06-29 v3-final-committee-ADOPT (3x REVISE); coordination_log.csv 2026-06-29 v3-final-committee-ADOPT REVISE"
+  },
+  "hd-committee-v3final-v2": {
+    "acceptable_verdicts": [
+      "REVISE",
+      "FAIL"
+    ],
+    "evidence_file": "tests/fixtures/stage_d1_holdout/evidence/hd-committee-v3final-v2.json",
+    "expected_controller_mutation": false,
+    "expected_paid_api_calls": 0,
+    "expected_role": "judge",
+    "expected_route_strategy": "judge_gate",
+    "historical_verdict": "REVISE",
+    "must_not_pass": true,
+    "notes": "u_max max improves below original but mean regresses and F_RMSE regresses -> REVISE.",
+    "ordered_criteria": [
+      "committee does NOT regress vs original on deployment u_max mean (u_max_mean_deploy <= original_u_max_mean_deploy)",
+      "committee does NOT regress vs original on deployment u_max max (u_max_max_deploy <= original_u_max_max_deploy)",
+      "committee F_RMSE <= original student F_RMSE"
+    ],
+    "source": "gates/coordination_votes.csv 2026-07-03 v3-final-v2-committee-ADOPT (3x REVISE); coordination_log.csv 2026-07-03 v3-final-v2-committee-ADOPT REVISE"
+  },
+  "hd-dft-cell_011": {
+    "acceptable_verdicts": [
+      "PASS"
+    ],
+    "evidence_file": "tests/fixtures/stage_d1_holdout/evidence/hd-dft-cell_011.json",
+    "expected_controller_mutation": false,
+    "expected_paid_api_calls": 0,
+    "expected_role": "judge",
+    "expected_route_strategy": "judge_gate",
+    "historical_verdict": "PASS",
+    "must_not_pass": false,
+    "notes": "physical energy/force -> PASS",
+    "ordered_criteria": [
+      "E_per_atom_eV is physical (between -11 and -8 eV/atom)",
+      "max_force_eV_A is physical (<= 50 eV/Angstrom; no atom-overlap force)"
+    ],
+    "source": "scan_labeled_structures/manifest.csv row cell_011 (judge_decision=PASS)"
+  },
+  "hd-dft-cell_016": {
+    "acceptable_verdicts": [
+      "PASS"
+    ],
+    "evidence_file": "tests/fixtures/stage_d1_holdout/evidence/hd-dft-cell_016.json",
+    "expected_controller_mutation": false,
+    "expected_paid_api_calls": 0,
+    "expected_role": "judge",
+    "expected_route_strategy": "judge_gate",
+    "historical_verdict": "PASS",
+    "must_not_pass": false,
+    "notes": "physical energy/force -> PASS",
+    "ordered_criteria": [
+      "E_per_atom_eV is physical (between -11 and -8 eV/atom)",
+      "max_force_eV_A is physical (<= 50 eV/Angstrom; no atom-overlap force)"
+    ],
+    "source": "scan_labeled_structures/manifest.csv row cell_016 (judge_decision=PASS)"
+  },
+  "hd-dft-clustered_cell_005": {
+    "acceptable_verdicts": [
+      "PASS"
+    ],
+    "evidence_file": "tests/fixtures/stage_d1_holdout/evidence/hd-dft-clustered_cell_005.json",
+    "expected_controller_mutation": false,
+    "expected_paid_api_calls": 0,
+    "expected_role": "judge",
+    "expected_route_strategy": "judge_gate",
+    "historical_verdict": "PASS",
+    "must_not_pass": false,
+    "notes": "physical energy/force -> PASS",
+    "ordered_criteria": [
+      "E_per_atom_eV is physical (between -11 and -8 eV/atom)",
+      "max_force_eV_A is physical (<= 50 eV/Angstrom; no atom-overlap force)"
+    ],
+    "source": "scan_labeled_structures/manifest.csv row clustered_cell_005 (judge_decision=PASS)"
+  },
+  "hd-error-decomposition": {
+    "acceptable_verdicts": [
+      "REVISE",
+      "FAIL"
+    ],
+    "evidence_file": "tests/fixtures/stage_d1_holdout/evidence/hd-error-decomposition.json",
+    "expected_controller_mutation": false,
+    "expected_paid_api_calls": 0,
+    "expected_role": "judge",
+    "expected_route_strategy": "judge_gate",
+    "historical_verdict": "REVISE",
+    "must_not_pass": true,
+    "notes": "values correct but scope/aggregation labels missing -> conflation risk -> REVISE.",
+    "ordered_criteria": [
+      "error channels are reported with explicit scope labels (broad held-out vs AL-cell not conflated)",
+      "aggregation convention (frame-mean vs atom-weighted) is labeled for each channel"
+    ],
+    "source": "coordination_log.csv 2026-06-27 error-decomposition-gate REVISE (broad c=0.233 vs AL-cell c=0.368 conflation; frame-mean vs atom-weighted unlabeled); teacher_diag/ERROR_SCOPE.md numbers"
+  },
+  "hd-production-sizing-revote": {
+    "acceptable_verdicts": [
+      "REVISE",
+      "FAIL"
+    ],
+    "evidence_file": "tests/fixtures/stage_d1_holdout/evidence/hd-production-sizing-revote.json",
+    "expected_controller_mutation": false,
+    "expected_paid_api_calls": 0,
+    "expected_role": "judge",
+    "expected_route_strategy": "judge_gate",
+    "historical_verdict": "REVISE",
+    "must_not_pass": true,
+    "notes": "cooling rate/quench time off by ~2x due to a formula bug -> protocol not as intended (REVISE).",
+    "ordered_criteria": [
+      "effective cooling rate matches the intended 1 K/ps protocol",
+      "effective total quench time matches the intended 4.75 ns protocol"
+    ],
+    "source": "coordination_log.csv 2026-06-27 production-sizing-gate production-cell-12288-cubic-REVOTE REVISE (formula extra *2 -> effective 2 K/ps not 1; total ~2.9ns not 4.75ns)"
+  }
+}

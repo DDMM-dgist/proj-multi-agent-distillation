@@ -82,7 +82,7 @@ class StageD2C3AdapterTests(unittest.TestCase):
         self.assertTrue(hasattr(EX, "run_teacher_single_point"))
 
     def test_execution_contract_one_forward_no_side_jobs(self):
-        prop = json.loads((ROOT / "examples/stage_d2_c3/action_proposal.json").read_text())["parameters"]
+        prop = json.loads((ROOT / "tests/fixtures/stage_d2_c3/action_proposal.json").read_text())["parameters"]
         self.assertIs(prop["one_forward_pass"], True)
         for k in ("no_scheduler", "no_training", "no_md", "no_dft", "no_paid_api", "no_overwrite"):
             self.assertIs(prop[k], True)

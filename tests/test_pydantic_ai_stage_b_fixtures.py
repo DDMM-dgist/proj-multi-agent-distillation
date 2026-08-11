@@ -23,7 +23,7 @@ except ImportError:  # pragma: no cover
 
 def _load_validator():
     spec = importlib.util.spec_from_file_location(
-        "stage_b_validate", ROOT / "work" / "stage_b_validate.py")
+        "stage_b_validate", ROOT / "tests" / "harness" / "stage_b_validate.py")
     mod = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(mod)
     return mod
@@ -98,7 +98,7 @@ class StageBFixtureTests(unittest.TestCase):
     def test_orchestrator_fixture_is_plan_only(self):
         # attempt-2 fix 1: the orchestrator smoke is plan-only — no artifact dependency and an
         # explicit "call NO tools" instruction (so it cannot enter a read-tool loop).
-        task = json.loads((ROOT / "examples/stage_b_smoke/orchestrator.json").read_text())
+        task = json.loads((ROOT / "tests/fixtures/stage_b_smoke/orchestrator.json").read_text())
         self.assertEqual(task["inputs"], [])
         instr = task["instruction"].lower()
         self.assertIn("plan-only", instr)
@@ -110,7 +110,7 @@ class StageBFixtureTests(unittest.TestCase):
         # (the contract is NOT relaxed).
         from orchestration.specs import load_agent_specs
         from orchestration.exchange import validate_agent_response
-        task = json.loads((ROOT / "examples/stage_b_smoke/judge.json").read_text())
+        task = json.loads((ROOT / "tests/fixtures/stage_b_smoke/judge.json").read_text())
         self.assertEqual(len(task["criteria"]), 2, "judge task must have two atomic criteria")
         spec = load_agent_specs(str(ROOT / "agent_specs"))["judge"]
         good = {"review_lens": "evidence_provenance", "verdict": "PASS",
