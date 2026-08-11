@@ -11,6 +11,7 @@ Supported reference paths:
 |---|---|---|
 | Claude Code | `.claude/agents/`, `.claude/skills/` | packaged reference frontend |
 | Codex | root `AGENTS.md` | interactive coding-agent frontend |
+| PydanticAI runtime | `python -m runtimes.pydantic_ai.cli` (extra `.[pydantic-ai]`) | provider-neutral typed runtime (OpenAI-compatible / local / Anthropic) |
 | Manual/file exchange | `python -m orchestration.cli` | provider-neutral handoff and testing |
 
 “Supported” does not mean that the repository launches every vendor's agent
