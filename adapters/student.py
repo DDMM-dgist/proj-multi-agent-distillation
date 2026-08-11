@@ -69,9 +69,39 @@ def train_student(cfg, dataset_path, out_dir, seed):
 
 
 def _train_mock(cfg, dataset_path, out_dir, seed):
+    """Analytic mock committee member: writes a seed-only checkpoint.
+
+    This trainer performs no numerical optimization. The returned artifact
+    carries honest provenance describing how the checkpoint was produced so
+    downstream manifests (e.g. student_committee.manifest.json) and gates can
+    explain each committee member without fabricating epochs, losses, or
+    wall-times that were never measured.
+    """
     checkpoint = Path(out_dir) / "mock-model.json"
     checkpoint.write_text(f'{{"seed": {int(seed)}}}\n')
-    return checkpoint
+    return ModelArtifact(
+        kind=cfg["kind"],
+        path=checkpoint,
+        seed=int(seed),
+        metadata={
+            "trainer_kind": "analytic_mock",
+            "training_mode": "no_optimization",
+            "seed": int(seed),
+            "epochs": "not_applicable",
+            "optimizer": "not_applicable",
+            "loss": "not_applicable",
+            "adapter": "adapters.student._train_mock",
+            "checkpoint_contents": (
+                "seed-only JSON consumed by "
+                "adapters.mock_model.MockCheckpointCalculator"
+            ),
+            "notes": (
+                "Synthetic committee member; the checkpoint stores only the "
+                "seed and no learned parameters, so no training curve, "
+                "optimizer state, or wall-time was measured."
+            ),
+        },
+    )
 
 
 def _train_simple_nn(cfg, dataset_path, out_dir, seed):
