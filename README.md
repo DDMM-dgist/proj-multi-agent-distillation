@@ -1,335 +1,375 @@
-# Multi-Agent MLIP Distillation
+# PydanticAI Multi-Agent Framework for MLIP Distillation
 
-Teacher MLIP의 지식을 더 가벼운 student potential로 옮기고, 그 결과를
-teacher·DFT·실제 MD 영역에서 검증하기 위한 **human-in-the-loop multi-agent
-workflow**입니다.
+[![CI](https://github.com/DDMM-dgist/proj-multi-agent-distillation/actions/workflows/ci.yml/badge.svg)](https://github.com/DDMM-dgist/proj-multi-agent-distillation/actions/workflows/ci.yml)
 
-이 저장소는 연구자가 Orchestrator와 대화하면서 다음 과정을 진행하도록 설계됐습니다.
+A multi-agent scientific workflow for **machine-learning interatomic potential (MLIP)
+distillation**. A pretrained **Teacher** MLIP is first evaluated, then used to label a curated
+ensemble of atomic structures; a lighter **Student** MLIP is trained on those labels and validated
+against the Teacher and against independent DFT. Five deterministic stages (**PC001–PC005**) run
+under an authoritative controller that records state, hashes artifacts, and gates progress on a
+three-judge review. A team of **PydanticAI specialist roles** assists with planning, data curation,
+training, recovery, and evidence interpretation — but the scientific state, gate decisions, and
+provenance are owned by deterministic code, not by a language model. All architecture-specific MLIP
+logic is isolated behind **adapters and config**, so the core workflow never names a particular
+Teacher or Student architecture.
+
+> This is a *methodology/workflow* framework. It is validated as an **implementation** on one real
+> Teacher→Student case (SiO₂ Allegro→SIMPLE-NN). It is **not** a claim that any given MLIP
+> architecture is scientifically converged, nor that the workflow is universal across all
+> architectures — see [Status](#status) and [Known limitations](#known-limitations).
+
+---
+
+## Status
+
+| Aspect | State |
+|---|---|
+| Core workflow implementation | **Complete for the current milestone** |
+| Seven-role PydanticAI runtime | **Implemented** |
+| PC001–PC005 deterministic controller | **Implemented** |
+| Reference real end-to-end run (SiO₂ Allegro → SIMPLE-NN) | **Executed** |
+| Architecture-independent handoff | **Pass** |
+| External / different-architecture real campaign | **Not yet demonstrated** |
+| SiO₂ 20-epoch DEV Student scientific convergence | **Not claimed** |
+
+`IMPLEMENTATION_READY_FOR_EXTERNAL_RESEARCH_GROUP = TRUE`
+
+**Portability on a second real MLIP architecture has not yet been scientifically demonstrated.**
+The framework is designed to be architecture-independent and passes an architecture-independence
+check, but the only real Teacher→Student campaign executed to date is the SiO₂ reference case. The
+words *universal* and *fully general* are deliberately avoided until a second architecture has been
+run as a full scientific campaign.
+
+---
+
+## How it works
+
+```mermaid
+flowchart TD
+    R[Researcher] --> A[PydanticAI specialist roles<br/>plan · curate · train · recover · interpret]
+    A --> P[Typed proposals / evidence / recovery<br/>policy + approval + trusted executor]
+    P --> C[Scientific controller<br/>workflow/controller.py — durable state authority]
+    C --> S1[PC001 · Teacher validation]
+    C --> S2[PC002 · Dataset design / curation]
+    C --> S3[PC003 · Student distillation / training]
+    C --> S4[PC004 · Model validation]
+    C --> S5[PC005 · Application / physical validation]
+    S1 & S2 & S3 & S4 & S5 --> G{Gate: PASS / REVISE / FAIL}
+    G -->|PASS| N[Next stage]
+    G -->|REVISE / FAIL| RC[Recovery → human approval → next iteration]
+    RC --> C
+
+    TA[Teacher adapter]:::arch -.-> C
+    SA[Student adapter]:::arch -.-> C
+    VA[Simulation / validation adapters]:::arch -.-> C
+    classDef arch fill:#eef,stroke:#88a,stroke-dasharray: 4 3;
+```
+
+- **`workflow/controller.py` is the authoritative, durable scientific state authority.** It records
+  stage state, attempts, logs, artifact hashes, and gate results under `runs/<CAMPAIGN_ID>/`, and
+  blocks a stage until every earlier stage has a recorded PASS.
+- The **Teacher / Student / simulation / validation adapters** are the *only* architecture-specific
+  boundary. Everything to the left of them is model-agnostic.
+- The PydanticAI roles never execute arbitrary shell or writes; they emit **typed proposals** that
+  must clear policy, approval, and a trusted executor before anything runs.
+
+### The seven PydanticAI roles
+
+| Role | Responsibility | Mode | Key execution limit |
+|---|---|---|---|
+| **Orchestrator** | Drives the campaign, asks the researcher, serializes controller state | proposes / coordinates | Only role that may mutate controller state; still bound by every approval boundary |
+| **Literature** | Gathers literature and candidate validation criteria | analyzes | Read/research only; no producer execution |
+| **Data Curator** | Acquisition, Teacher labeling, split, provenance | proposes | Producer actions are typed and approval/executor-gated |
+| **ML Trainer** | Student committee training and evaluation | proposes | Training is costly → approval-gated |
+| **Simulation** | MD, DFT, physical-validation observables | proposes | DFT / production MD are costly/irreversible → approval-gated |
+| **Analyst** | Interprets the error channels and physical observables | analyzes | Interpretation only; cannot change gate verdicts |
+| **Judge** | Independent gate evaluation, votes PASS / REVISE / FAIL | judges | Three independent judges; advisory over — never overriding — deterministic facts |
+
+Agents do **not** have unrestricted shell/write access. Every producer action is a typed
+`ActionProposal` that passes policy, human-approval boundaries, and the trusted-executor layer.
+
+### Agent-runtime frontends
+
+The scientific workflow, roles, and contracts are **runtime-neutral** — the canonical role
+instructions live in `agents/*.md` and their capabilities/contracts in `agent_specs/*.yaml`, and no
+core module calls an LLM provider. Any frontend can drive a campaign by loading those specs,
+isolating specialist contexts, and returning contract-shaped results to the Orchestrator (see
+[`runtimes/README.md`](runtimes/README.md)).
+
+**Claude Code is the packaged reference frontend.** After cloning, launch it in the repository root
+and start (or resume) a distillation run through the bundled skills:
 
 ```text
-연구 목표 정리
-→ deployment 영역과 Teacher applicability 확인
-→ Teacher baseline과 validation profile 승인
-→ Teacher 학습 분포·dataset coverage·replay 정책 검토
-→ 구조 생성·증강과 teacher labeling
-→ student committee 학습
-→ 정확도·불확실도 평가
-→ 물성·MD·DFT 검증
-→ 서로의 응답을 보지 않는 별도 context의 judge gate
-→ 결과 해석
-→ REVISE/FAIL이면 변경 계획 승인 후 relabel·재학습·재검증
+/distill-start      # begin a new distillation campaign (the Orchestrator asks for what it needs)
+/distill-status     # inspect an in-progress campaign
+/distill-resume     # continue an existing campaign in a fresh session
 ```
 
-비싼 학습, production MD, DFT 제출이나 중요한 과학적 선택에서는 연구자가
-설정과 비용을 확인합니다. 승인된 범위 안의 실행·기록·검증·수정 반복은 Orchestrator와
-전문 agent가 조율합니다.
+You can also just describe the task in natural language. The frontend owns model authentication and
+context creation; the repository owns the roles, contracts, controller state, and evidence. Other
+frontends (the optional PydanticAI runtime, Codex, or manual file exchange) use the same specs.
 
-## Agent runtime
+---
 
-과학 workflow와 agent 역할은 특정 LLM 제품에 고정되지 않습니다.
+## The scientific workflow (PC001–PC005)
 
-- `agents/*.md`: 사람이 읽을 수 있는 canonical 역할·판단 지침
-- `agent_specs/*.yaml`: capability, 입출력 contract, 승인 경계와 위임 관계
-- `orchestration/`: provider-neutral `AgentTask`/`AgentResult`/`JudgeVote` 검증과 파일 교환
-- `.claude/`: Claude Code reference frontend
-- `AGENTS.md`: Codex reference entry point
+`PC001–PC005` are the conceptual scientific stages. A concrete `workflow.yaml` realizes them as
+named controller stages (e.g. `teacher_baseline`, `acquisition`, `teacher_labeling`,
+`dataset_split`, `training`, `evaluation`, `physical_validation`).
 
-Claude Code가 가장 완성된 reference frontend이지만, controller·adapter·validator는
-Claude API를 호출하지 않습니다. 다른 runtime은 같은 agent spec과 prompt를 읽고
-동일한 JSON contract로 결과를 반환하면 됩니다. Runtime별 범위와 사용법은
-`runtimes/README.md`에 정리되어 있습니다.
+- **PC001 — Teacher validation.** Evaluate the pretrained Teacher *before* distillation and record
+  its applicability and reference purpose. Teacher retraining/improvement is an **external
+  remediation path**, not part of the default core workflow.
+- **PC002 — Dataset design / curation.** Assess structure coverage against Teacher-training
+  reference coverage and the application domain: defects, MD, replay, augmentation, duplicates,
+  lineage. Record label source, selection rules, and mixture ratios with provenance.
+- **PC003 — Student distillation / training.** Teacher labeling → Student training → committee /
+  model artifacts (a multi-seed committee by default).
+- **PC004 — Model validation.** Three channels kept **strictly distinct** and never merged into a
+  single number:
+  1. **Student vs Teacher** (distillation fidelity)
+  2. **Teacher vs independent DFT** (Teacher's own accuracy baseline)
+  3. **Student vs independent DFT** (Student's absolute accuracy)
+- **PC005 — Application / physical validation.** Application-specific observables — e.g. RDF,
+  coordination, density, MSD, diffusivity, NVE drift, stability, and other domain observables. Not
+  every observable is mandatory for every system; the validation profile declares which apply.
 
-Registry 확인:
+---
+
+## Reference implementation
+
+**SiO₂** is the real implementation-validation reference case:
+
+- **Teacher:** Allegro (NequIP/Allegro ASE calculator)
+- **Student:** SIMPLE-NN
+
+It was used to verify actual Teacher inference, dataset materialization, Student training, a
+four-member committee, PC004 validation (all three channels), a minimal PC005, failure/recovery
+routing, and provenance/controller behavior end-to-end.
+
+> **The 20-epoch DEV Student is an implementation test model. It is NOT a scientifically converged
+> SiO₂ production potential.** All DEV Student artifacts are marked
+> `DEVELOPMENT_CAMPAIGN=TRUE, DEV_RUNTIME_CAP=20, SCIENTIFIC_CONVERGENCE_CLAIM=FALSE,
+> FINAL_MODEL=FALSE`. No performance claim should be read from it.
+
+Full detail: [`handoff/SIO2_IMPLEMENTATION_VALIDATION_COMPLETE.md`](handoff/SIO2_IMPLEMENTATION_VALIDATION_COMPLETE.md).
+
+---
+
+## Quick start
 
 ```bash
-python -m orchestration.cli validate-specs
-python -m orchestration.cli list
-```
-
-이 명령은 agent를 대신 실행하지 않습니다. 특정 provider에 종속되지 않은 역할과
-교환 contract가 온전한지만 확인합니다.
-
-## Claude Code로 시작하기
-
-저장소를 받은 뒤 루트에서 Claude Code를 실행합니다.
-
-```bash
+# 1. Clone
 git clone https://github.com/DDMM-dgist/proj-multi-agent-distillation.git
 cd proj-multi-agent-distillation
-claude
+
+# 2. Create/activate a Python >= 3.10 environment (conda or venv)
+python -m venv .venv && source .venv/bin/activate      # or: conda create -n distill python=3.10
+
+# 3. Install the core package
+pip install -e .
+
+# 4. (Optional) install the PydanticAI runtime extra
+pip install -e ".[pydantic-ai]"
 ```
 
-Claude 안에서 새 증류 run을 시작합니다.
+Then, conceptually:
 
-```text
-/distill-start
+5. Read the handoff guide — [`handoff/HANDOFF_README.md`](handoff/HANDOFF_README.md).
+6. Prepare Teacher / Student **adapters + configs** (templates in [`handoff/templates/`](handoff/templates/)).
+7. Prepare your structure data (seed / source structures).
+8. Define an **independent DFT holdout** if you have one (kept out of training).
+9. Define a **validation profile** (observables + thresholds + reference sources).
+10. Initialize a campaign and drive it through the controller.
+
+Controller commands (verified against the current CLI):
+
+```bash
+# initialize a run from a workflow config
+python -m workflow.controller init path/to/workflow.yaml runs/<CAMPAIGN_ID>
+
+# inspect state at any time
+python -m workflow.controller status runs/<CAMPAIGN_ID>
+
+# execute one stage
+python -m workflow.controller run-stage runs/<CAMPAIGN_ID> <STAGE_NAME>
+
+# gate a completed stage (PASS requires a 3-judge vote bundle)
+python -m workflow.controller gate runs/<CAMPAIGN_ID> <STAGE_NAME> --votes votes.json
 ```
 
-설명을 함께 입력해도 됩니다.
+The console-script alias `distill-run` (from `pyproject.toml`) is equivalent to
+`python -m workflow.controller`.
 
-```text
-/distill-start 현재 서버의 teacher potential을 더 빠른 student architecture로
-증류하고 싶습니다. 대상 물질과 deployment 조건에 맞는 데이터 생성 방식과
-에너지·구조·동역학 validation 항목부터 함께 정해 주세요.
-```
+A **network-free** end-to-end example that trains a mock Student with no external MLIP lives in
+[`examples/mock/`](examples/mock/). See [`docs/USAGE.md`](docs/USAGE.md) for the full operator
+workflow.
 
-자연어로 “이 저장소의 multi-agent workflow로 새 증류를 시작해 주세요”라고
-요청해도 됩니다.
+### Installation options
 
-특정 사례를 시작할 때는 model과 핵심 observable을 함께 전달합니다. 사례별
-model·material·observable은 범용 core의 기본값이 아니며, 재현용 자료는
-`examples/` 아래에 격리되어 있습니다.
-
-Claude project 설정은 main session을 Orchestrator로 시작하고 다음 전문 agent를 자동
-등록합니다. 다른 runtime도 `agent_specs/`의 같은 역할 구성을 사용합니다.
-
-- Literature: 문헌과 검증 기준
-- Data Curator: acquisition, teacher labeling, split과 provenance
-- ML Trainer: student committee 학습과 평가
-- Simulation: MD, DFT, 물성과 deployment 검증
-- Analyst: 네 가지 error channel과 물성 결과 해석
-- Judge: producer와 분리된 독립 gate 평가
-
-사용자가 agent 파일을 복사하거나 controller 명령을 직접 실행할 필요는 없습니다.
-Orchestrator가 필요한 정보만 질문하고 active config와 run 기록을 준비합니다.
-
-## 대화형 진행 방식
-
-처음 시작할 때 Orchestrator는 보통 다음을 확인합니다.
-
-- teacher 종류, model/checkpoint와 head
-- student architecture와 학습 config
-- 대상 원소와 deployment backend가 요구하는 type mapping
-- 초기 구조 위치
-- augment-atoms, teacher MD 또는 두 방법의 조합
-- DFT/MD reference와 deployment domain
-- 필요한 정확도·에너지·구조·동역학·안정성·성능 validation
-- 선택한 observable의 protocol과 acceptance threshold
-- Teacher 학습 데이터 접근 수준과 replay 가능 여부
-- 각 기준이 Teacher fidelity, DFT/실험 정확성, deployment 안정성 중 무엇인지
-
-정보가 모이면 Orchestrator가 작은 pilot 계획을 제시합니다. 큰 계산은 바로 실행하지
-않고 예상 계산량과 설정을 먼저 공유합니다.
-
-## Teacher baseline과 data coverage
-
-Student 결과를 보기 전에 deployment domain과 validation profile을 정합니다.
-Teacher는 같은 조건에서 먼저 계산되어 Student가 재현할 baseline을 제공하지만,
-Teacher 예측을 물리적 절대정답으로 간주하지 않습니다. 각 observable에는 목적과
-reference source를 분리해 기록합니다.
-
-| 목적 | 일반적인 reference |
+| Command | Installs |
 |---|---|
-| Student–Teacher fidelity | Teacher |
-| 물리적 정확성 | DFT, 실험 또는 검토된 reference |
-| 배포 안정성 | Student MD와 protocol-specific 기준 |
+| `pip install -e .` | Core workflow (ase, numpy, scipy, pyyaml) — no LLM dependency |
+| `pip install -e ".[pydantic-ai]"` | + the provider-neutral PydanticAI runtime |
+| `pip install -e ".[pydantic-ai,local-openai]"` | + a local OpenAI-compatible backend (vLLM / Ollama) |
+| `pip install -e ".[pydantic-ai,anthropic]"` | + the Anthropic SDK (real Anthropic calls only) |
 
-Data Curator는 Teacher 학습 분포, 증류 dataset과 실제 적용 영역을 비교합니다.
-Teacher 학습 데이터 접근 수준은 `full`, `representative`, `unavailable` 중 하나로
-기록합니다. 비공개 foundation model처럼 학습 분포를 알 수 없으면 이를 limitation으로
-남기며 임의의 coverage 점수를 만들지 않습니다. 생성 구조, Teacher-training replay,
-기존·신규 DFT anchor와 deployment high-risk 구조의 parent/frame 수, label source,
-선택 규칙과 혼합 비율도 함께 기록합니다.
-ASE dataset 또는 검증된 JSON manifest를 evidence로 지정하면 source별 parent/frame/label
-통계를 validator가 다시 계산하여 보고값과 대조합니다.
+The PydanticAI extras are **optional**; the core workflow does not import them. Tests that need an
+optional extra skip cleanly when it is absent.
 
-진행 상황 확인:
+---
 
-```text
-/distill-status <run-name>
-```
+## Adding a new MLIP architecture
 
-새 Claude session에서 이어서 진행:
+A collaborator using a different Teacher/Student normally adds/configures only:
 
-```text
-/distill-resume <run-name>
-```
+- a **Teacher adapter/config** (`configs/teacher.<name>.yaml`)
+- a **Student adapter/config** (`configs/student.<name>.yaml`)
+- a **validation profile** (`validation_profile.yaml`)
+- a **workflow config** (`workflow.yaml`)
 
-## Dataset acquisition
+Start from [`handoff/ADAPTER_INTERFACE.md`](handoff/ADAPTER_INTERFACE.md) and the templates in
+[`handoff/templates/`](handoff/templates/).
 
-두 acquisition 방식을 config로 선택할 수 있습니다.
+A new architecture should **not** normally require modifying `workflow/controller.py`, the PC001–PC005
+semantics, gate semantics, provenance policy, or approval policy. **If it does, treat that as a
+portability issue to evaluate** — raise it rather than silently editing the core.
 
-1. `augment-atoms`: 기존 seed 주변의 distorted structure 생성
-2. `teacher-md`: foundation teacher를 이용한 ASE MD snapshot 생성
+---
 
-두 방법으로 만든 구조와 별도의 물성·결함 검증 pool을 provenance를 유지한 채 함께
-사용할 수도 있습니다. Acquisition과 teacher labeling은 분리되어 있으며, 모든
-구조는 teacher model/head, label 단위, source와 structure ID가 기록된 뒤
-dataset gate를 통과해야 합니다.
+## Data / DFT policy
 
-Teacher labeling 이후에는 `parent_structure_id` 단위로 train, validation,
-held-out test를 분리합니다. 같은 원본에서 파생된 증강 구조가 서로 다른 split에
-들어가지 않도록 split manifest와 overlap check를 기록하며, student 평가는
-training file이 아닌 held-out test에서 수행됩니다.
-Lineage key가 누락되면 기본적으로 split을 중단합니다. Teacher MD는 seed의 parent
-ID를 snapshot에 전파하고, augment-atoms 결과도 lineage completeness를 검사합니다.
+The workflow distinguishes structure categories by purpose:
 
-## 정확도 진단
-
-결과는 하나의 MAE로만 판단하지 않습니다.
-
-| 채널 | 의미 |
+| Category | Meaning |
 |---|---|
-| teacher vs DFT | teacher와 선택한 DFT reference 사이의 오차 baseline |
-| student vs teacher | 증류 과정에서 추가된 오차 |
-| student vs DFT | student의 절대 정확도 |
-| student-MD trajectory vs DFT | 실제 배포 영역의 정확도 |
+| `TEACHER_TRAINING_REFERENCE` | Structures the Teacher was trained on (coverage baseline) |
+| `DISTILLATION_CANDIDATE` | Structures labeled by the Teacher for Student training |
+| `PRODUCTION_MD` | Deployment-domain structures / trajectories |
+| `INDEPENDENT_DFT_HOLDOUT` | DFT structures reserved for validation only |
 
-Committee disagreement는 student가 teacher를 잘 재현하지 못하는 구조를 찾는
-fidelity indicator로 사용합니다. Teacher의 DFT 정확도를 직접 나타내는 calibrated
-uncertainty로 해석하지 않습니다.
-기본 정의는 Cartesian force-component 표준편차의 RMS를 atom별로 구한 뒤 atom
-평균을 취합니다. `max` 집계는 worst-atom acquisition이 필요할 때 명시적으로
-선택합니다.
+**Independent DFT validation structures must remain excluded from Student training** unless the
+researcher intentionally starts a *new* scientific iteration with a separate, explicit
+training-anchor policy. Validation data is never silently leaked into training. Splits are made on
+`parent_structure_id` so augmented children of one seed cannot straddle train/validation/test.
 
-## Validation profiles
+## Augmentation policy
 
-Validation은 특정 물성이나 EOS에 고정되지 않습니다. Orchestrator는 대상 물질과 실제
-deployment 조건에 맞춰 다음 범주에서 필요한 evidence를 구성합니다.
+Augmentation is a **Data Curator tool/policy, not a required universal step**. The `augment-atoms`
+acquisition integration generates distorted structures around existing seeds; `teacher-md` generates
+snapshots via a foundation Teacher. Conceptually augmentation scope is `NONE` / `SELECTIVE` / `BROAD`
+per the dataset policy. The historical SiO₂ augmentation recipe is a case detail and should **not**
+be copied wholesale to a new material.
 
-- 정확도: teacher/student/DFT 네 가지 error channel
-- energetics: EOS, phase, defect, surface, interface 또는 반응 에너지
-- 구조: RDF, ADF, coordination, structure factor, 결정·비정질 order
-- 동역학: MSD, diffusion, viscosity, 전이와 trajectory 안정성
-- 보존성과 안정성: NVE drift, 비정상 구조, extrapolation/committee disagreement
-- 배포성: throughput, scaling, memory와 장시간 MD 안정성
+## Recovery and iteration
 
-각 observable은 built-in 또는 외부 package의 독립 validator로 추가하며, controller는
-observable 이름을 하드코딩하지 않고 config가 지정한 callable과 manifest를
-검증합니다. 정적 surface excess-energy validator는 사례용 구현으로 포함되어
-있습니다.
-수치 threshold가 반드시 통과해야 하는 observable은
-`required_pass_observables`로 지정합니다. 기준 미달 결과도 audit artifact로
-보존되지만, 해당 결과가 PASS가 되기 전에는 Judge gate의 PASS를 기록할 수 없습니다.
+A REVISE/FAIL does not immediately re-run compute:
 
-## Audit와 gate
-
-각 주요 artifact는 세 명의 독립 Judge가 같은 공통 기준을 모두 검토하고,
-각각 evidence/provenance, scientific validity, reproducibility/deployment의
-상보적 review lens를 추가로 적용합니다. Run은 기본 lens 대신 정확히 세 개의
-domain-specific lens를 초기화 시 고정할 수 있습니다.
-
-- 세 명 모두 PASS해야 다음 단계 진행
-- 누락·중복·오배정된 review lens는 vote bundle 검증에서 차단
-- 한 명이라도 FAIL이면 전체 FAIL
-- 누락되거나 잘못된 vote는 REVISE
-- dataset, model, validation artifact와 vote는 run manifest에 기록
-
-Controller는 Orchestrator가 내부적으로 사용합니다. Stage 상태, attempt, log,
-artifact hash와 gate 결과를 `runs/<run-name>/`에 저장하고, PASS하지 않은 앞 단계가
-있으면 다음 단계를 차단합니다.
-
-PASS는 세 Judge의 vote bundle이 현재 artifact SHA-256과 run 초기화 시
-stage에 고정된 `gate.criteria`와 모두 일치할 때만 기록됩니다.
-이전 stage를 다시 실행하거나 REVISE/FAIL로 내리면 이후 stage와 artifact는 자동으로
-무효화됩니다. Run 시작 시 workflow에 선언된 config, template과 seed structure도
-복사·해시하며 원본이 이후 변경되지 않았는지도 매 stage 전에 확인합니다. 큰 model
-checkpoint는 복사하지 않고 제자리에서 file 또는 directory-tree hash로 고정할 수
-있습니다. Committee manifest와 controller는 각 checkpoint를 다시 검증한 뒤에만
-evaluation을 진행합니다. External MD는 선택 seed, checkpoint hash와 committee
-manifest를 기록해야 하며 controller가 승인된 checkpoint와 직접 대조합니다.
-MD 입력·trajectory·log 등 config에서 요구한 evidence도 파일 hash와 함께
-등록합니다.
-공통 validation report가 참조하는 evidence는 선언된 run input, 등록된 upstream
-artifact 또는 현재 stage artifact여야 합니다.
-무효화된 run-local 결과는 `stale/`로 이동합니다.
-Run manifest는 Orchestrator/controller 한 프로세스가 순차 갱신하는 single-writer
-contract를 사용합니다. Specialist와 scheduler callback은 결과 파일을 만들고,
-상태 전이는 Orchestrator가 직렬화해 기록합니다.
-REVISE 후 config를 의도적으로 바꾼 경우에는 Orchestrator가 변경 hash를 보여주고 승인을
-받은 뒤 input을 명시적으로 rebind합니다. 이전 결과는 모두 무효화되지만 audit
-event와 과거 snapshot은 유지됩니다.
-Run 초기화는 임시 디렉터리에서 완료된 뒤 확정되며, Git commit과 dirty diff hash도
-기록됩니다. 실행 중 project code가 바뀌면 새 run을 시작해야 합니다.
-
-REVISE/FAIL 뒤에는 바로 계산을 다시 돌리지 않습니다. Orchestrator가 실패 원인, 담당
-agent, 돌아갈 stage, 데이터·설정 변경, Teacher/DFT labeling, Student retraining,
-재검증 항목과 예상 비용을 `RecoveryPlan`으로 제안합니다. 연구자가 승인하면 controller가
-이 계획을 실패 당시 artifact와 Judge evidence에 결합하고 새 iteration을 시작합니다.
-새 iteration에서 실패했던 gate를 다시 PASS시키기 전에는 `RecoveryExecutionReport`가
-승인된 변경, Teacher/DFT labeling, Student retraining과 재검증에 사용된 stage를
-지정해야 합니다. Controller는 해당 stage의 등록 artifact를 이전 iteration 기준선과
-대조하며, 변경하기로 한 artifact가 동일하면 PASS를 차단합니다.
-단순 command·scheduler 실패는 설정을 바꾸지 않는 실행 재시도로 처리하며 과학적
-closed-loop iteration으로 세지 않습니다.
-
-## 현재 지원 범위
-
-### 범용 core
-
-- config-selected teacher calculator factory/class constructor
-- callable 또는 command 기반 student training/loading/deployment adapter
-- config-selected MD/reference backend callable
-- augment-atoms command adapter와 teacher-driven ASE MD
-- 복수 acquisition 결과의 lineage-preserving merge와 duplicate policy
-- teacher pseudo-labeling과 provenance manifest
-- persistent run state, artifact hashing, gate blocking과 resume
-- parent-group 기반 train/validation/held-out test split
-- upstream 재실행 시 downstream invalidation
-- 세 Judge vote와 artifact hash를 검증하는 fail-closed PASS
-- run 초기화 시 고정된 stage별 gate criteria와 vote bundle 대조
-- committee checkpoint file/tree hash와 evaluation 전 재검증
-- 원본 input–snapshot binding과 stale artifact 격리
-- atomic run initialization과 Git code-revision binding
-- lineage 누락을 차단하는 dataset split
-- teacher/student/DFT error audit와 committee fidelity ranking
-- RDF, coordination, density, MSD, NVE drift
-- external MD의 selected-checkpoint binding
-- config-selected validation manifest contract
-- Teacher applicability와 reference purpose를 구분하는 TeacherBaselineReport
-- Teacher-data access, replay/source mixture와 deployment gap을 기록하는 DataCoverageReport
-- REVISE/FAIL artifact에 결합된 RecoveryPlan, human approval와 iteration history
-- 승인 계획 대비 실제 변경 stage와 artifact delta를 검증하는 RecoveryExecutionReport
-- 공통 structure/dynamics ValidationReport와 evidence hash
-- teacher/student/acquisition/uncertainty/MD/DFT/validation/scope/dataset-policy preflight
-- 임의의 새 student/MD/reference adapter가 중앙 분기 수정 없이 연결되는 contract test
-- 외부 MLIP 없이 전체 흐름을 확인하는 mock end-to-end smoke test
-
-### Built-in recipe와 사례
-
-- Allegro/SIMPLE-NN reference recipe
-- MACE 계열 teacher construction example
-- GRACE/FS training/export/deployment example
-- LAMMPS와 VASP built-in backend
-- 정적 surface excess-energy validator 예제
-- SiO₂ 사례와 3원계 pilot 사례는 각각 `examples/` 아래에 격리
-
-새로운 architecture나 backend는 공통 callable/command contract에 맞는 adapter를
-제공해야 합니다. 이를 모든 모델이 이미 검증됐다는 의미로 해석하지 않습니다.
-각 adapter는 해당 서버에서 작은 integration pilot을 통과한 뒤 production 규모로
-확장합니다.
-
-## 개발 검증
-
-GitHub Actions 설정은 Python compile 및 unit/mock integration test를 실행합니다.
-Test suite는 controller, lineage/merge/split, arbitrary callable adapter,
-checkpoint integrity, external MD binding, validation manifest, uncertainty 정의와
-NVE log parsing을 검사합니다. 외부 모델·MD·reference package의 실제 실행은 해당
-서버의 integration pilot에서 별도로 확인합니다.
-
-## 디렉토리 구성
-
-```text
-.claude/          Claude Code용 thin wrapper와 /distill-* skills
-AGENTS.md         Codex용 thin entry point
-agents/           runtime-neutral canonical 역할 지침
-agent_specs/      역할, capability, contract와 승인 경계
-orchestration/    AgentTask/AgentResult/JudgeVote schema와 provider-neutral 교환
-runtimes/         Claude, Codex, manual/external runtime 안내
-adapters/         teacher, student, acquisition, MD, DFT adapter
-workflow/         run controller와 공통 stage 실행기
-configs/          interface 문서와 예제 config
-validation/       정확도, uncertainty, 에너지·구조·동역학 검증
-gates/            judge gate 규칙과 audit schema
-templates/        LAMMPS, DFT, student 입력 template
-tests/            adapter, controller, orchestration과 onboarding 테스트
+```
+PASS               → continue
+REVISE / FAIL      → classify root cause
+                   → assign responsible role
+                   → generate a recovery proposal (RecoveryPlan)
+                   → human approval if needed
+                   → start a new iteration
+                   → remediation
+                   → revalidation
 ```
 
-## 주의 사항
+Controller commands (verify exact syntax with `--help`): `propose-recovery`, `approve-recovery`,
+`start-iteration`, `verify-recovery`. A new iteration must re-execute the affected stage; the
+controller checks the changed artifacts against the previous iteration and blocks a PASS if what you
+promised to change is byte-identical.
 
-- Model checkpoint, production dataset와 run 결과는 저장소에 포함하지 않습니다.
-- VASP `POTCAR`는 배포하지 않습니다.
-- Teacher model/head와 DFT reference theory의 차이를 dataset manifest와 결과 해석에
-  명시해야 합니다.
-- 지원된 interface와 여러 architecture에서의 empirical validation은 구분해서
-  보고합니다.
+## Human-approval boundary
+
+Researchers must be involved for costly or irreversible actions, e.g.: new DFT, Teacher retraining,
+large new MD, a major architecture change, or expensive HPC/data-generation runs. Small, reversible
+operations inside an already-approved campaign may proceed automatically.
+
+## Provenance / reproducibility
+
+Each run binds or records: git revision, input hashes, artifact hashes, model identity + SHA, units,
+stage state, gate history, recovery history, and run attempts. Inputs are hash-bound at `init` and
+the project git revision is pinned.
+
+> **Changing tracked code or hash-bound scientific inputs may invalidate a same-run resume and
+> requires a new attempt/iteration.** A re-derived campaign is **not** a "resume" if the code/input
+> identity changed.
+
+---
+
+## Known limitations
+
+See [`handoff/CONTROLLER_LIMITATIONS.md`](handoff/CONTROLLER_LIMITATIONS.md). In brief:
+
+1. **Native posthoc supersession/adoption** of an already-computed artifact after a false-negative
+   gate is **not** currently a normal controller path.
+2. A **second real external MLIP architecture** has not yet been executed as a full scientific
+   campaign.
+3. The SiO₂ R1 development campaign used **deterministic DEV attestation**, not a live semantic LLM
+   Judge, for its DEV gate path.
+4. The SiO₂ **DEV Student was implementation-only** and is not scientifically converged.
+
+---
+
+## Repository layout
+
+```text
+workflow/        authoritative run controller + state logic + common stage steps
+orchestration/   typed agent exchange / task-result-vote contracts (provider-neutral)
+runtimes/        agent-runtime frontends (PydanticAI runtime + Claude/Codex/manual guides)
+adapters/        architecture/tool-specific execution (teacher, student, acquisition, MD, DFT)
+configs/         reusable configuration + interface docs
+validation/      accuracy / uncertainty / structure / dynamics validators
+gates/           judge-gate rules and audit schema
+agents/          runtime-neutral canonical role instructions
+agent_specs/     role capabilities, IO contracts, approval boundaries
+handoff/         external-group onboarding kit (start here to integrate a new architecture)
+examples/        lightweight, mostly network-free examples and case fixtures
+templates/       LAMMPS / DFT / student input templates
+tests/           regression / contract / onboarding tests
+```
+
+## Documentation map
+
+```text
+README.md                                    ← you are here (landing page)
+└── docs/USAGE.md                            ← detailed operator workflow
+└── handoff/HANDOFF_README.md                ← integrate a new architecture (start here)
+    ├── handoff/ADAPTER_INTERFACE.md         ← generic teacher/student/validation contracts
+    ├── handoff/templates/                   ← adapter / validation / workflow templates
+    ├── handoff/CONTROLLER_LIMITATIONS.md    ← current limitations
+    └── handoff/SIO2_IMPLEMENTATION_VALIDATION_COMPLETE.md   ← the SiO₂ reference case
+```
+
+See also [`NOTICE.md`](NOTICE.md) (assets you must supply yourself) and
+[`runtimes/README.md`](runtimes/README.md) (agent-runtime frontends).
+
+---
+
+## Testing
+
+```bash
+python -m unittest discover -s tests -v
+```
+
+The regression suite runs the controller, lineage/merge/split logic, arbitrary callable/command
+adapters, checkpoint integrity, external-MD binding, validation manifests, uncertainty definitions,
+and the mock end-to-end smoke test. Some tests **legitimately skip** when an optional extra or an
+external scientific environment/model is unavailable — a skip is not a failure.
+
+## License and citation
+
+- **License:** no `LICENSE` file is present yet. Usage/redistribution terms are a decision for the
+  repository owners; see [`NOTICE.md`](NOTICE.md) for assets that are intentionally not distributed.
+- **Citation:** citation information will be added with the associated methodology/software
+  publication.
+
+## Notes
+
+- Model checkpoints, production datasets, and run outputs are not committed to this repository.
+- VASP `POTCAR` files are never distributed.
+- The Teacher model/head and the DFT reference theory can differ; that difference is recorded in the
+  dataset manifest and carried into result interpretation.
+- Supported *interfaces* and empirically *validated architectures* are reported separately.
