@@ -1,3 +1,0 @@
-scope,n,mean_abs,median,p95,max,note
-in_scope_raw,727,9.6033,5.457,34.1599,102.9643,meV/atom raw
-in_scope_shift,727,18.7615,18.7256,34.3841,119.0099,meV/atom shift-corrected (offset -16.046)

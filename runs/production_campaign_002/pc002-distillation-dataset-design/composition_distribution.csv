@@ -1,5 +1,0 @@
-source,composition,vacancy_x_range,atoms
-12288_glass,SiO2 stoichiometric,0,12288
-random_sweep,SiO2-x random vacancy,0.03-0.24,~11.3-11.9k
-anneal_calib_clustered,SiO2-x clustered vacancy/void,~0.06-0.12 (global),12288
-carved_defect_cells,SiO2-x local defect,"local_x [-0.088, 0.6]",36-132

@@ -41,6 +41,7 @@ configs/*.local.yaml
 # Per-user run configs and generated run artifacts
 configs/runs/
 runs/
+work/devv6_smoke/
 
 # Maintainer handoff guides are shared separately
 MANUAL.md

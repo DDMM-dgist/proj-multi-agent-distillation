@@ -1,8 +1,0 @@
-{
-  "density_g_cm3": 2.2,
-  "temperatures_K": [
-    300,
-    4000
-  ],
-  "note": "production density 2.2; ambient 300K + 4000K melt available"
-}

@@ -1,7 +1,0 @@
-subregion,n_frames,teacher_force_mae_eV_A,flagged_conditional
-bulk_amorphous_quench,152,0.202,False
-SiOx_defect_dilute,145,0.228,True
-SiOx_defect_clustered,44,0.351,True
-surfaces,69,0.216,False
-liquid,34,0.211,False
-bulk_crystal_ambient,283,0.032,False

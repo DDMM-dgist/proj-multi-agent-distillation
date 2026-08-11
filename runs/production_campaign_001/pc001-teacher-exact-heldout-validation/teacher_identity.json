@@ -1,9 +1,0 @@
-{
-  "accepted_teacher_sha256": "b56e20ffc31da601feed8411c92675bdae9eb886db153ff67dd37dea161b1c57",
-  "deployed_path": "materials-ml-kit/teacher/model.nequip.pth",
-  "training_output_compiled": "03_allegro_train/outputs/2025-11-13/12-39-46/compiled_model.nequip.pth",
-  "training_output_sha256": "b56e20ffc31da601feed8411c92675bdae9eb886db153ff67dd37dea161b1c57",
-  "byte_identical": true,
-  "conclusion": "The accepted teacher b56e20ff IS byte-identical to the 03_allegro_train compiled/deployed output; identity CLOSED.",
-  "architecture": "Allegro cutoff 5.0, l_max 2, 4 layers, 256/128 features, float32, ZBL; nequip 0.15.0 / allegro 0.7.1"
-}

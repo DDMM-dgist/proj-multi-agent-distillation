@@ -1,6 +1,0 @@
-{
-  "source": "error_a (NequIPCalculator forces+energy vs DFT)",
-  "n": 1155,
-  "force_metric": "per-frame force COMPONENT MAE",
-  "energy_metric": "per-atom dE (raw + shift-corrected)"
-}

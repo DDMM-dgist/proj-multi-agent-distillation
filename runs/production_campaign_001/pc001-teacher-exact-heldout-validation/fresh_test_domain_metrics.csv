@@ -1,9 +1,0 @@
-domain,n,force_MAE,force_RMSE,force_median,force_p95,force_max,energy_MAE_meV
-amorphous_SiO2,140,0.1838,0.1953,0.1942,0.2779,0.4142,5.29
-SiO2x_dilute_vacancy,149,0.2314,0.2502,0.2292,0.3916,0.4741,10.85
-SiO2x_clustered_vacancy_voidsurface,84,0.3475,0.3588,0.3454,0.48,0.6668,21.13
-surfaces,82,0.2015,0.2216,0.1802,0.355,0.5708,23.56
-ambient_crystalline_SiO2,250,0.0392,0.0569,0.0271,0.1517,0.2309,4.96
-OUT_elemental_Si,273,0.0675,0.0868,0.0532,0.1689,0.2945,13.82
-OUT_high_pressure,93,0.1284,0.1609,0.1668,0.2725,0.37,5.39
-OUT_cluster,71,1.1958,6.7412,0.3505,1.0589,56.652,89.97
