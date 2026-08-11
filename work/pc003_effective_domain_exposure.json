@@ -1,0 +1,109 @@
+{
+  "n_structures": 5552,
+  "total_atoms": 1020697,
+  "frame_exposure_by_domain": {
+    "AMBIENT_CRYSTAL": 0.1081,
+    "HIGH_T_LIQUID": 0.0564,
+    "STOICHIOMETRIC_AMORPHOUS": 0.1153,
+    "CLUSTERED_VOID": 0.2709,
+    "DILUTE_OXYGEN_DEFICIENT": 0.3489,
+    "SURFACE": 0.0811,
+    "OTHER_RELEVANT_SIO": 0.0195
+  },
+  "atom_exposure_by_domain": {
+    "AMBIENT_CRYSTAL": 0.0846,
+    "HIGH_T_LIQUID": 0.0589,
+    "STOICHIOMETRIC_AMORPHOUS": 0.1644,
+    "CLUSTERED_VOID": 0.2574,
+    "DILUTE_OXYGEN_DEFICIENT": 0.3885,
+    "SURFACE": 0.0312,
+    "OTHER_RELEVANT_SIO": 0.0151
+  },
+  "source_frame_fraction": {
+    "corpus": 0.9798,
+    "production": 0.0202
+  },
+  "source_atom_fraction": {
+    "corpus": 0.6793,
+    "production": 0.3207
+  },
+  "policies": {
+    "A_HISTORICAL_UNWEIGHTED": {
+      "force_exposure_by_domain": {
+        "AMBIENT_CRYSTAL": 0.0846,
+        "HIGH_T_LIQUID": 0.0589,
+        "STOICHIOMETRIC_AMORPHOUS": 0.1644,
+        "CLUSTERED_VOID": 0.2574,
+        "DILUTE_OXYGEN_DEFICIENT": 0.3885,
+        "SURFACE": 0.0312,
+        "OTHER_RELEVANT_SIO": 0.0151
+      },
+      "energy_exposure_by_domain": {
+        "AMBIENT_CRYSTAL": 0.1081,
+        "HIGH_T_LIQUID": 0.0564,
+        "STOICHIOMETRIC_AMORPHOUS": 0.1153,
+        "CLUSTERED_VOID": 0.2709,
+        "DILUTE_OXYGEN_DEFICIENT": 0.3489,
+        "SURFACE": 0.0811,
+        "OTHER_RELEVANT_SIO": 0.0195
+      },
+      "force_exposure_by_source": {
+        "corpus": 0.6793,
+        "production": 0.3207
+      }
+    },
+    "B_SIZE_NORMALIZED_PURE": {
+      "force_exposure_by_domain": {
+        "AMBIENT_CRYSTAL": 0.1081,
+        "HIGH_T_LIQUID": 0.0564,
+        "STOICHIOMETRIC_AMORPHOUS": 0.1153,
+        "CLUSTERED_VOID": 0.2709,
+        "DILUTE_OXYGEN_DEFICIENT": 0.3489,
+        "SURFACE": 0.0811,
+        "OTHER_RELEVANT_SIO": 0.0195
+      },
+      "energy_exposure_by_domain": {
+        "AMBIENT_CRYSTAL": 0.1428,
+        "HIGH_T_LIQUID": 0.012,
+        "STOICHIOMETRIC_AMORPHOUS": 0.024,
+        "CLUSTERED_VOID": 0.6133,
+        "DILUTE_OXYGEN_DEFICIENT": 0.0922,
+        "SURFACE": 0.1091,
+        "OTHER_RELEVANT_SIO": 0.0066
+      },
+      "force_exposure_by_source": {
+        "corpus": 0.9798,
+        "production": 0.0202
+      }
+    },
+    "C_SIZE_NORMALIZED_BOUNDED": {
+      "force_exposure_by_domain": {
+        "AMBIENT_CRYSTAL": 0.0816,
+        "HIGH_T_LIQUID": 0.0503,
+        "STOICHIOMETRIC_AMORPHOUS": 0.1276,
+        "CLUSTERED_VOID": 0.2986,
+        "DILUTE_OXYGEN_DEFICIENT": 0.3592,
+        "SURFACE": 0.0653,
+        "OTHER_RELEVANT_SIO": 0.0174
+      },
+      "energy_exposure_by_domain": {
+        "AMBIENT_CRYSTAL": 0.1259,
+        "HIGH_T_LIQUID": 0.0251,
+        "STOICHIOMETRIC_AMORPHOUS": 0.0509,
+        "CLUSTERED_VOID": 0.4687,
+        "DILUTE_OXYGEN_DEFICIENT": 0.1941,
+        "SURFACE": 0.1217,
+        "OTHER_RELEVANT_SIO": 0.0137
+      },
+      "force_exposure_by_source": {
+        "corpus": 0.8136,
+        "production": 0.1864
+      }
+    }
+  },
+  "policyB_weight_norm_mean1": {
+    "min_weight_(largest_cell)": 0.0136,
+    "max_weight_(smallest_cell)": 20.4545,
+    "ratio": 1500.0
+  }
+}

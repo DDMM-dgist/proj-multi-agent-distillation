@@ -29,12 +29,28 @@ pydantic-ai = [
     "pydantic-ai-slim>=0.8,<0.9",
     "opentelemetry-api>=1.26,<1.44",
 ]
+# Provider SDK for a real Anthropic call (manual smoke / shadow / authoritative run only).
+# NOT needed for the network-free runtime tests. The upper bound is a tested-compatibility pin
+# (0.65 relocated a symbol pydantic-ai-slim 0.8.x imports); revisit when the slim pin moves.
+#   pip install -e ".[pydantic-ai,anthropic]"
+anthropic = [
+    "anthropic>=0.61,<0.65",
+]
+# Local, OpenAI-compatible inference backend (vLLM first; also Ollama and any OpenAI-compatible
+# server). Pulls in the `openai` SDK that pydantic_ai's OpenAI/Ollama providers require. NO
+# provider API key and NO Anthropic credential are needed for a locally served model — the
+# providers inject a non-secret placeholder key. Connects over a base URL (PYDANTIC_AI_BASE_URL).
+#   pip install -e ".[pydantic-ai,local-openai]"
+local-openai = [
+    "pydantic-ai-slim[openai]>=0.8,<0.9",
+]
 
 [project.scripts]
 distill-run = "workflow.controller:main"
 distill-acquire = "adapters.acquisition:main"
 distill-step = "workflow.steps:main"
 distill-agent = "orchestration.cli:main"
+distill-agent-run = "runtimes.pydantic_ai.cli:main"
 
 [tool.setuptools]
 packages = ["adapters", "orchestration", "validation", "workflow", "runtimes.pydantic_ai"]

@@ -1,6 +1,7 @@
 # Model weights — never commit (see NOTICE.md)
 *.pth
 *.pt
+*.ckpt
 potential_saved_bestmodel
 params_Si
 params_O
@@ -40,6 +41,7 @@ configs/*.local.yaml
 # Per-user run configs and generated run artifacts
 configs/runs/
 runs/
+work/devv6_smoke/
 
 # Maintainer handoff guides are shared separately
 MANUAL.md
@@ -48,3 +50,8 @@ output/
 
 # License decision is intentionally deferred by the maintainers
 LICENSE
+work/l4b_gpu2_report.txt
+work/l4b_gpu2_vllm_help.txt
+examples/stage_b_smoke/out/
+examples/stage_c_golden/out/
+examples/stage_d1_replay/out/

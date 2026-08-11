@@ -305,7 +305,8 @@ class ToolSecurityTests(unittest.TestCase):
 
     def test_manifest_lists_exactly_the_exposed_read_tools(self):
         from runtimes.pydantic_ai.tool_registry import EXPOSED_READ_TOOLS
-        self.assertEqual(EXPOSED_READ_TOOLS, ("read_text", "read_json"))
+        self.assertEqual(EXPOSED_READ_TOOLS,
+                         ("read_text", "read_json", "read_csv_summary", "read_artifact_manifest"))
 
 
 @unittest.skipUnless(_HAS_PYDANTIC_AI, "pydantic_ai not installed (optional [pydantic-ai] extra)")

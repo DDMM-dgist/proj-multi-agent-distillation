@@ -75,12 +75,23 @@ def git_revision(project_dir):
             "diff_sha256": hashlib.sha256(payload).hexdigest() if dirty else None}
 
 
+# Durable-state schema version. v7 adds ADDITIVE operational metadata only (runtime attempt
+# references, action idempotency, stale-running runner metadata). It does NOT change any
+# stage/gate/retry/recovery scientific semantics. v6 manifests remain readable as-is; a v6 run
+# is never version-bumped in place — migration happens only on a copy (workflow.manifest_migration)
+# or when a fresh run is initialized. See MIGRATION.md / the schema-bump report.
+SCHEMA_VERSION = 7
+
+
 class RunController:
     def __init__(self, run_dir):
         self.run_dir = Path(run_dir).resolve()
         self.state_path = self.run_dir / "manifest.json"
         if not self.state_path.exists():
             raise FileNotFoundError(f"run is not initialized: {self.run_dir}")
+        # Read the manifest EXACTLY as written (no auto-migration): a v6 manifest stays v6 on
+        # disk. v7 accessor helpers default the additive fields when absent, so v7 code operates
+        # on a v6 manifest in memory without modifying its on-disk schema_version.
         self.state = json.loads(self.state_path.read_text())
 
     @classmethod
@@ -208,13 +219,17 @@ class RunController:
                                       "sha256": source_integrity["sha256"],
                                       "source_sha256": source_integrity["sha256"]})
             created_at = now()
-            state = {"schema_version": 6, "run_id": cfg["run_id"], "created_at": created_at,
+            state = {"schema_version": SCHEMA_VERSION, "run_id": cfg["run_id"],
+                     "created_at": created_at,
                      "updated_at": created_at, "workflow_config": str(run_dir / "workflow.yaml"),
                      "artifacts": [], "project_dir": str(project_dir), "inputs": input_records,
                      "code_revision": git_revision(project_dir), "events": [], "stages": stages,
                      "iterations": [{"id": 1, "parent_iteration": None, "status": "active",
                                      "started_at": created_at, "trigger": None}],
-                     "recoveries": [], "pending_recovery": None}
+                     "recoveries": [], "pending_recovery": None,
+                     # v7 additive operational metadata (safe empty defaults):
+                     "runtime_attempts": [], "idempotency": {}, "action_approvals": {},
+                     "scheduler_jobs": {}}
             (temporary / "manifest.json").write_text(json.dumps(state, indent=2) + "\n")
             temporary.rename(run_dir)
         except Exception:
@@ -227,6 +242,123 @@ class RunController:
         tmp = self.state_path.with_suffix(".json.tmp")
         tmp.write_text(json.dumps(self.state, indent=2) + "\n")
         tmp.replace(self.state_path)
+
+    # --- v7 additive operational metadata (NO change to gate/retry/recovery semantics) --------
+    def record_runtime_attempt(self, *, task_id, attempt_id, provenance_path, role="",
+                               stage="", correlation_id="", failure_category=""):
+        """Record a REFERENCE to a runtime invocation attempt (the provenance itself lives in the
+        exchange). Additive: never touches stage/gate/artifact state."""
+        entry = {"task_id": task_id, "attempt_id": attempt_id,
+                 "provenance_path": str(provenance_path), "role": role, "stage": stage,
+                 "correlation_id": correlation_id, "failure_category": failure_category,
+                 "recorded_at": now()}
+        self.state.setdefault("runtime_attempts", []).append(entry)
+        self.save()
+        return entry
+
+    def action_seen(self, idempotency_key):
+        """True if an action with this idempotency key was already recorded (duplicate guard)."""
+        return idempotency_key in self.state.get("idempotency", {})
+
+    def grant_action_approval(self, boundary, *, scope="run", note=""):
+        """Record a human approval for an approval boundary (e.g. costly_teacher_labeling). This
+        is the durable approval record the action dispatcher checks before a costly/side-effecting
+        action may execute. Additive; independent of the recovery human-approval state machine."""
+        self.state.setdefault("action_approvals", {})[boundary] = {
+            "granted": True, "scope": scope, "note": note, "at": now()}
+        self.save()
+
+    def has_action_approval(self, boundary):
+        return bool(self.state.get("action_approvals", {}).get(boundary, {}).get("granted"))
+
+    # --- v7 additive: scheduler job lifecycle (pending -> collect -> resume) ------------------
+    def record_scheduler_submission(self, job):
+        """Record a submitted (external) scheduler job as PENDING. ``job`` is a dict with at least
+        external_job_id, backend, idempotency_key, protocol_hash. Additive; no scientific
+        semantics. The controller never waits on the job; a later collect resumes the stage."""
+        jid = job["external_job_id"]
+        rec = dict(job)
+        rec.setdefault("state", "PENDING")
+        rec["submitted_at"] = now()
+        self.state.setdefault("scheduler_jobs", {})[jid] = rec
+        self.save()
+        return rec
+
+    def get_scheduler_job(self, external_job_id):
+        return self.state.get("scheduler_jobs", {}).get(external_job_id)
+
+    def record_scheduler_collection(self, external_job_id, *, artifact_ref, artifact_sha256=""):
+        """Record collected artifacts for a job and mark it COLLECTED (enables stage resume)."""
+        jobs = self.state.get("scheduler_jobs", {})
+        if external_job_id not in jobs:
+            raise KeyError(f"unknown scheduler job: {external_job_id}")
+        jobs[external_job_id]["state"] = "COLLECTED"
+        jobs[external_job_id]["artifact_ref"] = artifact_ref
+        jobs[external_job_id]["artifact_sha256"] = artifact_sha256
+        jobs[external_job_id]["collected_at"] = now()
+        self.save()
+        return jobs[external_job_id]
+
+    def record_action(self, idempotency_key, *, action_type="", status="", artifact_ref=""):
+        if not idempotency_key:
+            raise ValueError("idempotency_key is required to record an action")
+        self.state.setdefault("idempotency", {})[idempotency_key] = {
+            "action_type": action_type, "status": status, "artifact_ref": artifact_ref,
+            "recorded_at": now()}
+        self.save()
+
+    def begin_stage_execution(self, name, *, pid=None, runner_id=""):
+        """Mark a (typically external/long) stage running WITH runner metadata so a killed run
+        can later be detected as stale. Operational only."""
+        stage = self.stage(name)
+        ts = now()
+        stage["status"] = "running"
+        stage["runner"] = {"pid": pid, "runner_id": runner_id, "started_at": ts, "last_update": ts}
+        self.save()
+
+    def heartbeat_stage(self, name):
+        stage = self.stage(name)
+        runner = stage.get("runner")
+        if runner is not None:
+            runner["last_update"] = now()
+            self.save()
+
+    def reconcile_stale_stages(self, *, threshold_s, current_time=None, is_pid_alive=None):
+        """Clear stages stuck in 'running' after an external kill. A running stage whose runner
+        heartbeat is older than ``threshold_s`` (or whose pid is not alive) is set to
+        'interrupted' and a ``stale_running_recovered`` event is recorded. This is OPERATIONAL
+        retry, DISTINCT from scientific recovery: it never marks a stage PASS and never touches
+        artifacts, gate results, or recovery state. Stages without runner metadata are untouched.
+        Returns the list of reconciled stage names."""
+        now_dt = current_time or dt.datetime.now(dt.timezone.utc)
+        is_pid_alive = is_pid_alive or (lambda pid: False)
+        reconciled = []
+        for stage in self.state["stages"]:
+            if stage.get("status") != "running":
+                continue
+            runner = stage.get("runner")
+            if not runner:
+                continue
+            stale = False
+            last = runner.get("last_update")
+            if last:
+                try:
+                    stale = (now_dt - dt.datetime.fromisoformat(last)).total_seconds() > threshold_s
+                except ValueError:
+                    stale = False
+            pid = runner.get("pid")
+            if pid is not None and not is_pid_alive(pid):
+                stale = True
+            if stale:
+                stage["status"] = "interrupted"
+                runner["interrupted_at"] = now_dt.isoformat()
+                self.state.setdefault("events", []).append(
+                    {"type": "stale_running_recovered", "stage": stage["name"],
+                     "at": now_dt.isoformat()})
+                reconciled.append(stage["name"])
+        if reconciled:
+            self.save()
+        return reconciled
 
     def stage(self, name):
         for stage in self.state["stages"]:

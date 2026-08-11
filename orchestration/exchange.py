@@ -120,8 +120,55 @@ def validate_result(payload: Mapping[str, Any], spec: AgentSpec, *, task_id: str
     return dict(payload)
 
 
+def _enforce_deterministic(payload: Mapping[str, Any], checked: list[dict],
+                           criteria: list[str], deterministic: Mapping[str, Any]) -> None:
+    """Structurally bind a JudgeVote to the authoritative deterministic criterion block that was
+    attached to the task context (runtimes.pydantic_ai.criterion_eval.attach_to_task). The LLM may
+    interpret, but it may NOT reverse a computed boolean, drop or duplicate a deterministic
+    criterion, or — for a fully deterministic gate — return a verdict that contradicts the
+    deterministic severity. General: keyed by criterion order + identity, never by task id.
+
+    ``checked`` is already verified (upstream) to equal ``criteria`` in order and identity, so
+    ``checked[i]`` <-> ``criteria[i]`` <-> ``results[i]``.
+
+    Mode is explicit in the block: a fully deterministic gate (``authoritative`` true — every
+    criterion is a numeric/physical/boolean predicate, as with the Stage D-1 gates) is binding; an
+    advisory block (``authoritative`` false — a gate with genuinely semantic criteria) is reference
+    only and is not enforced here, leaving the semantic verdict to the Judge."""
+    if not deterministic.get("authoritative"):
+        return
+    results = deterministic.get("results") or []
+    # every ordered criterion must have a deterministic result: a dropped/extra criterion (so a
+    # missing or surplus deterministic result) is a contract mismatch -> reject.
+    if len(results) != len(criteria):
+        raise ValueError(
+            "deterministic criterion block does not cover every task criterion "
+            f"({len(results)} results for {len(criteria)} criteria)")
+    for i, det in enumerate(results):
+        det_name = det.get("criterion")
+        if det_name is not None and det_name != criteria[i]:
+            raise ValueError(
+                f"deterministic criterion[{i}] identity {det_name!r} does not match task "
+                f"criterion {criteria[i]!r}")
+        det_ok = bool(det["result"])
+        vote_ok = bool(checked[i]["ok"])
+        # a deterministic boolean (incl. a missing-value -> False) may not be reversed by the LLM,
+        # in either direction.
+        if vote_ok != det_ok:
+            raise ValueError(
+                f"criteria_checked[{i}].ok={vote_ok} contradicts the authoritative deterministic "
+                f"result {det_ok} :: {det.get('provenance', '')}")
+    # fully deterministic gate: the verdict must equal the deterministically derived severity.
+    expected = deterministic.get("suggested_severity")
+    if expected and payload["verdict"] != expected:
+        raise ValueError(
+            f"judge verdict {payload['verdict']!r} contradicts the authoritative deterministic "
+            f"severity {expected!r} for a fully deterministic gate")
+
+
 def validate_judge_vote(payload: Mapping[str, Any], criteria: list[str],
-                        review_lens: str | None = None) -> dict[str, Any]:
+                        review_lens: str | None = None,
+                        deterministic: Mapping[str, Any] | None = None) -> dict[str, Any]:
     required = {"review_lens", "verdict", "criteria_checked", "rationale", "required_fix"}
     missing = required - set(payload)
     if missing:
@@ -147,6 +194,8 @@ def validate_judge_vote(payload: Mapping[str, Any], criteria: list[str],
         checked_names.append(item["criterion"])
     if checked_names != criteria:
         raise ValueError("judge vote criteria do not match the ordered task criteria")
+    if deterministic is not None:
+        _enforce_deterministic(payload, checked, criteria, deterministic)
     if not isinstance(payload["rationale"], str) or not payload["rationale"].strip():
         raise ValueError("judge vote rationale must be a non-empty string")
     if not isinstance(payload["required_fix"], str):
@@ -158,13 +207,81 @@ def validate_judge_vote(payload: Mapping[str, Any], criteria: list[str],
     return dict(payload)
 
 
+def _authoritative_context(task: Mapping[str, Any]):
+    """Return (block, suggested_severity) if the task carries a FULLY DETERMINISTIC (authoritative)
+    criterion block, else None. Advisory blocks and unblocked tasks return None here."""
+    ctx = task.get("context") or {}
+    block = ctx.get("deterministic_criterion_results")
+    if block is not None and bool(ctx.get("deterministic_authoritative", False)):
+        return block, ctx.get("deterministic_suggested_severity")
+    return None
+
+
+def bind_authoritative_judge_vote(payload: Mapping[str, Any],
+                                  task: Mapping[str, Any]) -> tuple[dict[str, Any], dict[str, Any]]:
+    """Deterministic-verdict OWNERSHIP: for a fully deterministic gate, trusted code sets the accepted
+    verdict + per-criterion booleans from the deterministic policy — the LLM never owns or regenerates
+    them (this removes the Stage D-1 verdict-regeneration liveness failure). The LLM's rationale /
+    required_fix are kept as interpretation; its proposed verdict and any criterion-fact contradiction
+    are recorded (flagged) but are NOT authoritative. Returns ``(bound_vote, binding_record)``.
+
+    General: keyed by ordered criterion + the attached block, never by task id. Only applies when the
+    gate is authoritative; callers use the advisory path unchanged otherwise."""
+    auth = _authoritative_context(task)
+    if auth is None:                      # advisory / non-deterministic gate: LLM verdict stands
+        return dict(payload), {"authoritative": False}
+    block, severity = auth
+    criteria = list(task.get("criteria") or [])
+    llm_cc = payload.get("criteria_checked") or []
+    llm_ok = {c.get("criterion"): c.get("ok") for c in llm_cc if isinstance(c, dict)}
+    llm_val = {c.get("criterion"): c.get("value_read") for c in llm_cc if isinstance(c, dict)}
+    checked, contradictions = [], []
+    for i, crit in enumerate(criteria):
+        det_ok = bool(block[i]["result"]) if i < len(block) else False
+        if crit in llm_ok and bool(llm_ok[crit]) != det_ok:
+            contradictions.append(crit)      # LLM commentary contradicted a deterministic fact: flag
+        checked.append({"criterion": crit,
+                        "value_read": llm_val.get(crit, "see deterministic results"),
+                        "ok": det_ok})
+    bound = dict(payload)
+    llm_verdict = bound.get("verdict")
+    bound["verdict"] = severity                          # verdict OWNED by deterministic policy
+    bound["criteria_checked"] = checked                  # booleans OWNED by deterministic policy
+    if not isinstance(bound.get("rationale"), str) or not bound["rationale"].strip():
+        bound["rationale"] = "Verdict set by deterministic policy from the criterion results."
+    if severity != "PASS" and not str(bound.get("required_fix", "")).strip():
+        bound["required_fix"] = "Address the unmet criteria (see the deterministic criterion results)."
+    if severity == "PASS":
+        bound["required_fix"] = bound.get("required_fix") if isinstance(bound.get("required_fix"), str) else ""
+    record = {"authoritative": True, "llm_proposed_verdict": llm_verdict,
+              "authoritative_verdict": severity,
+              "verdict_overridden": llm_verdict != severity,
+              "criterion_contradictions": contradictions}
+    return bound, record
+
+
 def validate_agent_response(payload: Mapping[str, Any], spec: AgentSpec,
                             task: Mapping[str, Any]) -> dict[str, Any]:
-    """Validate a response according to the contract selected by the role spec."""
+    """Validate a response according to the contract selected by the role spec.
+
+    For a JudgeVote on a fully deterministic (authoritative) gate the accepted verdict + booleans are
+    BOUND from the deterministic policy first (bind_authoritative_judge_vote) and then validated, so
+    the LLM can neither set nor contradict the authoritative decision — and a mere verdict-wording
+    difference no longer fails the case. Advisory gates keep the semantic Judge verdict path."""
     validate_task(task, spec)
     if spec.result_contract == "JudgeVote":
+        ctx = task.get("context") or {}
+        auth = _authoritative_context(task)
+        if auth is not None:
+            block, severity = auth
+            payload, _record = bind_authoritative_judge_vote(payload, task)
+            deterministic = {"results": block, "suggested_severity": severity, "authoritative": True}
+        else:
+            block = ctx.get("deterministic_criterion_results")
+            deterministic = ({"results": block, "suggested_severity": None, "authoritative": False}
+                             if block is not None else None)
         return validate_judge_vote(
-            payload, list(task["criteria"]), task["context"]["review_lens"]
+            payload, list(task["criteria"]), ctx["review_lens"], deterministic=deterministic
         )
     return validate_result(payload, spec, task_id=task["task_id"])
 

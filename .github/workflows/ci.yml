@@ -69,3 +69,56 @@ jobs:
               raise SystemExit("pydantic-ai runtime tests failed")
           print(f"ran={result.testsRun} skipped={len(result.skipped)}")
           PY
+
+  # Full PydanticAI network-free suite with the extra installed: schema/contract, role/tool
+  # security, action dispatch, controller integration, deterministic + HPC executor checks,
+  # scheduler interface, root-cause reasoning, golden-shadow harness, and the seven-role E2E
+  # dry-run ALL execute here (they skip in the core `test` job). No provider/API key; TestModel
+  # only. Fails if the whole pydantic-ai module set skipped.
+  pydantic-ai-full:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.10"
+          cache: pip
+      - run: python -m pip install --upgrade pip
+      # local-openai pulls in the `openai` SDK so the LOCAL provider constructibility/preflight
+      # tests EXECUTE here (network-free: no server is launched, no inference runs). No API key.
+      - run: python -m pip install -e ".[pydantic-ai,local-openai]"
+      - name: Assert the local backend SDK is importable
+        run: python -c "import openai; print('openai', openai.__version__)"
+      - name: Run the full suite with the extra and fail if pydantic-ai tests all skipped
+        run: |
+          python - <<'PY'
+          import unittest
+          suite = unittest.TestLoader().discover("tests")
+          result = unittest.TextTestRunner(verbosity=1).run(suite)
+          if not result.wasSuccessful():
+              raise SystemExit("full pydantic-ai suite failed")
+          pai = unittest.TestLoader().loadTestsFromName("tests.test_pydantic_ai_seven_role_e2e")
+          r2 = unittest.TextTestRunner(verbosity=2).run(pai)
+          if r2.testsRun == 0 or len(r2.skipped) == r2.testsRun:
+              raise SystemExit("seven-role E2E did not execute (extra missing?)")
+          print("full pydantic-ai suite OK")
+          PY
+
+  # Maximum tested dependency: latest ASE in the tested range with the extra installed.
+  max-ase:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - run: python -m pip install --upgrade pip
+      - run: python -m pip install -e ".[pydantic-ai]"
+      - run: python -m pip install "ase==3.29.0"
+      - run: python -m pip check
+      - run: python -m unittest discover -s tests -v
+
+  # NOTE: an actual-provider smoke / golden-shadow provider run is intentionally NOT a CI job.
+  # It costs a real API call and requires a credential; it is run manually via
+  # examples/pydantic_ai_provider_smoke.py (credential- AND approval-gated).

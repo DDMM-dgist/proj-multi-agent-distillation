@@ -1,0 +1,23 @@
+{
+  "source_dataset": {
+    "path": "/home/hyunjin/CLADE/SiO2-x_distillatio/materials-ml-kit/research-sio2-allegro-simplenn-distillation/03_allegro_train/dataset.xyz",
+    "sha256_prefix32": "382d0b2b35ed9c571314ff59df71e9c9",
+    "original_pool_frames": 11424,
+    "note": "first 11424 frames = original training pool; exact reproduction of NequIP test metrics confirmed. Extra appended frames excluded."
+  },
+  "split": {
+    "mechanism": "torch.utils.data.random_split(range(11424),[0.8,0.1,0.1], Generator.manual_seed(123))",
+    "sizes": {
+      "train": 9140,
+      "val": 1142,
+      "test": 1142
+    },
+    "note": "identical to the original tutorial_Allegro.yaml data.seed=123 split"
+  },
+  "base_teacher_warm_start": {
+    "lightning_best_ckpt_sha16": "51342b332ba04287",
+    "compiled_model_sha256": "b56e20ffc31da601feed8411c92675bdae9eb886db153ff67dd37dea161b1c57",
+    "source": "03_allegro_train/outputs/2025-11-13/12-39-46/best.ckpt"
+  },
+  "leakage_guard": "corpus disjoint from original VAL and TEST (asserted at build time)"
+}

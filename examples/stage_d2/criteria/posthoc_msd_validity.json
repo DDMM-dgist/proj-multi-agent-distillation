@@ -1,0 +1,183 @@
+[
+  {
+    "criterion": "input trajectory exists",
+    "operator": "eq",
+    "lhs": {
+      "field": "input_exists"
+    },
+    "rhs": {
+      "const": true
+    },
+    "invalidating": true
+  },
+  {
+    "criterion": "input SHA256 matches the proposal",
+    "operator": "eq",
+    "lhs": {
+      "field": "input_sha256_matches"
+    },
+    "rhs": {
+      "const": true
+    },
+    "invalidating": true
+  },
+  {
+    "criterion": "trajectory parsed successfully",
+    "operator": "eq",
+    "lhs": {
+      "field": "parsed_ok"
+    },
+    "rhs": {
+      "const": true
+    },
+    "invalidating": true
+  },
+  {
+    "criterion": "PBC continuity precondition holds (max min-image step < 0.25*L)",
+    "operator": "eq",
+    "lhs": {
+      "field": "pbc_precondition_ok"
+    },
+    "rhs": {
+      "const": true
+    },
+    "invalidating": true
+  },
+  {
+    "criterion": "atom count constant across selected frames",
+    "operator": "eq",
+    "lhs": {
+      "field": "atom_count_constant"
+    },
+    "rhs": {
+      "const": true
+    },
+    "invalidating": true
+  },
+  {
+    "criterion": "timesteps strictly increasing",
+    "operator": "eq",
+    "lhs": {
+      "field": "timesteps_increasing"
+    },
+    "rhs": {
+      "const": true
+    },
+    "invalidating": true
+  },
+  {
+    "criterion": "MSD values finite",
+    "operator": "eq",
+    "lhs": {
+      "field": "msd_all_finite"
+    },
+    "rhs": {
+      "const": true
+    },
+    "invalidating": true
+  },
+  {
+    "criterion": "MSD values non-negative",
+    "operator": "eq",
+    "lhs": {
+      "field": "msd_all_nonneg"
+    },
+    "rhs": {
+      "const": true
+    },
+    "invalidating": true
+  },
+  {
+    "criterion": "initial MSD approximately zero",
+    "operator": "le",
+    "lhs": {
+      "field": "msd_initial_abs"
+    },
+    "rhs": {
+      "const": 1e-06
+    },
+    "invalidating": true
+  },
+  {
+    "criterion": "source trajectory byte-identical after run",
+    "operator": "eq",
+    "lhs": {
+      "field": "source_byte_identical_after"
+    },
+    "rhs": {
+      "const": true
+    },
+    "invalidating": true
+  },
+  {
+    "criterion": "writes occur only under the fresh run directory",
+    "operator": "eq",
+    "lhs": {
+      "field": "writes_under_run_dir_only"
+    },
+    "rhs": {
+      "const": true
+    },
+    "invalidating": true
+  },
+  {
+    "criterion": "selected frame count <= 200",
+    "operator": "le",
+    "lhs": {
+      "field": "selected_frame_count"
+    },
+    "rhs": {
+      "const": 200
+    }
+  },
+  {
+    "criterion": "selected frame count >= predeclared minimum",
+    "operator": "ge",
+    "lhs": {
+      "field": "selected_frame_count"
+    },
+    "rhs": {
+      "const": 10
+    }
+  },
+  {
+    "criterion": "output row count matches selected-frame count",
+    "operator": "eq",
+    "lhs": {
+      "field": "output_row_count_matches"
+    },
+    "rhs": {
+      "const": true
+    }
+  },
+  {
+    "criterion": "all required summary fields exist",
+    "operator": "eq",
+    "lhs": {
+      "field": "summary_fields_present"
+    },
+    "rhs": {
+      "const": true
+    }
+  },
+  {
+    "criterion": "output SHA256 recorded",
+    "operator": "eq",
+    "lhs": {
+      "field": "output_sha256_present"
+    },
+    "rhs": {
+      "const": true
+    }
+  },
+  {
+    "criterion": "runtime within the 5-minute ceiling",
+    "operator": "eq",
+    "lhs": {
+      "field": "runtime_ok"
+    },
+    "rhs": {
+      "const": true
+    }
+  }
+]

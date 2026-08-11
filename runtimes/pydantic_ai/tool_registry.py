@@ -50,8 +50,17 @@ DEFAULT_INVOCATION_BYTE_BUDGET = 4_000_000  # 4 MB total per agent invocation
 
 # The read-only tools this toolset exposes. This defines the EXPECTED and MANIFESTED tool
 # surface; the real Agent registers its tools explicitly, and a network-free integration
-# test verifies that the Agent's actual registration matches this tuple.
-EXPOSED_READ_TOOLS = ("read_text", "read_json")
+# test verifies that the Agent's actual registration matches this tuple. Every tool is
+# read-only and bounded (path/secret/type/size/budget), so the surface is uniform across
+# roles; per-role differences (read roots, proposable actions, approval, side effects) live
+# in runtimes/pydantic_ai/tool_manifests.py, NOT in extra tools.
+EXPOSED_READ_TOOLS = ("read_text", "read_json", "read_csv_summary", "read_artifact_manifest")
+
+# Manifest-like top-level keys that mark a JSON file as an artifact/run manifest.
+_MANIFEST_MARKERS = frozenset({
+    "schema_version", "sha256", "integrity", "artifacts", "manifest_version", "artifact_digest",
+})
+DEFAULT_CSV_SUMMARY_ROWS = 20
 
 
 class ToolAccessError(Exception):
@@ -85,6 +94,8 @@ class ReadOnlyToolset:
         self._budget = int(invocation_byte_budget)
         self._spent = 0
         self.invocations: list[ToolInvocationRecord] = []
+        # (tool, resolved-path) that already succeeded THIS invocation — the duplicate-read guard.
+        self._succeeded_reads: set = set()
 
     # -- guards ------------------------------------------------------------------
 
@@ -117,6 +128,30 @@ class ReadOnlyToolset:
         self.invocations.append(ToolInvocationRecord(
             tool=tool, argument=str(argument), ok=ok, detail=detail))
 
+    @staticmethod
+    def _fingerprint(tool: str, path: str, extra) -> tuple:
+        """A semantic call fingerprint: (tool, CANONICAL resolved path, normalized result-changing
+        arguments). Only ``read_csv_summary`` has a result-changing argument beyond the path
+        (``max_rows``); the other three read tools are path-only, so ``extra`` is empty for them.
+        Same path with semantically DIFFERENT arguments => different fingerprint => allowed."""
+        return (tool, _real(path), tuple(sorted(extra)))
+
+    def _guard_no_duplicate(self, tool: str, path: str, extra=()) -> None:
+        """Fail-closed duplicate-read guard (general liveness/safety): if this exact SEMANTIC call
+        (tool, resolved-path, result-changing args) already SUCCEEDED in THIS agent run, refuse the
+        repeat instead of re-serving identical content. The refusal is recorded (provenance-visible)
+        and nudges the agent to consume the earlier result and produce its typed output. Call BEFORE
+        the read so the refusal is recorded exactly once. A call that never succeeded (or that
+        differs semantically) is never a duplicate."""
+        if self._fingerprint(tool, path, extra) in self._succeeded_reads:
+            detail = (f"DUPLICATE_READ: '{tool}' already returned this exact request earlier in "
+                      "this run; use that result and produce your typed output — do not read it again.")
+            self._record(tool, path, ok=False, detail=detail)
+            raise ToolAccessError(detail)
+
+    def _mark_succeeded(self, tool: str, path: str, extra=()) -> None:
+        self._succeeded_reads.add(self._fingerprint(tool, path, extra))
+
     # -- tools -------------------------------------------------------------------
 
     def _read_text_unrecorded(self, path: str) -> str:
@@ -135,6 +170,7 @@ class ReadOnlyToolset:
     def read_text(self, path: str) -> str:
         """Read a UTF-8 text file inside the allow-list. One invocation is recorded; ``ok``
         is False on any access, size/budget, or decoding failure."""
+        self._guard_no_duplicate("read_text", path)
         try:
             text = self._read_text_unrecorded(path)
         except (ToolAccessError, OSError, UnicodeError) as error:
@@ -142,6 +178,7 @@ class ReadOnlyToolset:
                          detail=f"{type(error).__name__}: {error}")
             raise
         self._record("read_text", path, ok=True, detail=f"{len(text)} chars")
+        self._mark_succeeded("read_text", path)
         return text
 
     def read_json(self, path: str):
@@ -149,6 +186,7 @@ class ReadOnlyToolset:
         invocation is recorded, and ``ok`` is True ONLY when file access, UTF-8 decoding,
         AND JSON parsing all succeed. Access, decoding, and parsing failures are recorded
         as ``ok=False`` and re-raised (the real Agent wrapper turns them into a refusal)."""
+        self._guard_no_duplicate("read_json", path)
         try:
             text = self._read_text_unrecorded(path)
             value = json.loads(text)
@@ -157,6 +195,58 @@ class ReadOnlyToolset:
                          detail=f"{type(error).__name__}: {error}")
             raise
         self._record("read_json", path, ok=True, detail=f"{len(text)} chars; valid JSON")
+        self._mark_succeeded("read_json", path)
+        return value
+
+    def read_csv_summary(self, path: str, max_rows: int = DEFAULT_CSV_SUMMARY_ROWS):
+        """Read a CSV inside the allow-list and return a BOUNDED summary (columns, row count,
+        first ``max_rows`` data rows) — never the whole file into context. One invocation is
+        recorded; ``ok`` is True only when access + decode + parse all succeed."""
+        import csv
+        import io
+        # max_rows is result-changing, so it is part of the semantic fingerprint (same path with a
+        # different max_rows is a different call and must be allowed).
+        csv_extra = (("max_rows", int(max_rows)),)
+        self._guard_no_duplicate("read_csv_summary", path, csv_extra)
+        try:
+            text = self._read_text_unrecorded(path)
+            rows = list(csv.reader(io.StringIO(text)))
+        except (ToolAccessError, OSError, UnicodeError, csv.Error) as error:
+            self._record("read_csv_summary", path, ok=False,
+                         detail=f"{type(error).__name__}: {error}")
+            raise
+        header = rows[0] if rows else []
+        data = rows[1:]
+        summary = {
+            "columns": header,
+            "n_columns": len(header),
+            "n_rows": len(data),
+            "head": data[:max_rows],
+            "truncated": len(data) > max_rows,
+        }
+        self._record("read_csv_summary", path, ok=True,
+                     detail=f"{len(data)} rows x {len(header)} cols")
+        self._mark_succeeded("read_csv_summary", path, csv_extra)
+        return summary
+
+    def read_artifact_manifest(self, path: str):
+        """Read + parse a JSON file inside the allow-list AND require it to look like an
+        artifact/run manifest (a top-level manifest marker key). One invocation is recorded;
+        a non-manifest JSON is refused (``ok=False``) rather than returned as arbitrary data."""
+        self._guard_no_duplicate("read_artifact_manifest", path)
+        try:
+            text = self._read_text_unrecorded(path)
+            value = json.loads(text)
+            if not isinstance(value, dict) or not (_MANIFEST_MARKERS & set(value)):
+                raise ToolAccessError(
+                    "not an artifact manifest (missing a manifest marker key such as "
+                    "schema_version/sha256/integrity/artifacts)")
+        except (ToolAccessError, OSError, UnicodeError, json.JSONDecodeError) as error:
+            self._record("read_artifact_manifest", path, ok=False,
+                         detail=f"{type(error).__name__}: {error}")
+            raise
+        self._record("read_artifact_manifest", path, ok=True, detail="valid manifest")
+        self._mark_succeeded("read_artifact_manifest", path)
         return value
 
     def context_note(self) -> str:

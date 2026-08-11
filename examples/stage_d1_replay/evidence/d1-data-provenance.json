@@ -1,0 +1,8 @@
+{
+  "gate": "data-provenance",
+  "split_manifest_committed": false,
+  "held_out_identity_confirmed": true,
+  "leakage_duplicates_found": 1,
+  "leakage_resolved": true,
+  "note": "training split resides on KISTI only; not committed"
+}

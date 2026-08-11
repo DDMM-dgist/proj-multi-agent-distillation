@@ -1,0 +1,159 @@
+{
+  "candidate_total": 12481,
+  "by_provenance": {
+    "ORIGINAL_TEACHER_CORPUS": 11424,
+    "POST_ORIGINAL_TRAINING_DATA": 0,
+    "PRODUCTION_MD": 1057
+  },
+  "appended_2474": {
+    "n": 0,
+    "by_domain": {},
+    "by_disposition": {},
+    "all_DFT_labeled": true
+  },
+  "selected_total": 5552,
+  "selected_by_domain": {
+    "AMBIENT_CRYSTAL": 600,
+    "CLUSTERED_VOID": 1504,
+    "DILUTE_OXYGEN_DEFICIENT": 1937,
+    "HIGH_T_LIQUID": 313,
+    "OTHER_RELEVANT_SIO": 108,
+    "STOICHIOMETRIC_AMORPHOUS": 640,
+    "SURFACE": 450
+  },
+  "selected_by_source_frames": {
+    "corpus": 5440,
+    "production": 112
+  },
+  "selected_by_source_atoms": {
+    "corpus": 693337,
+    "production": 327360
+  },
+  "exposure_by_domain": {
+    "AMBIENT_CRYSTAL": {
+      "N_frames": 600,
+      "N_atoms": 86382,
+      "force_components": 259146,
+      "frac_frames": 0.1081,
+      "frac_atoms": 0.0846
+    },
+    "CLUSTERED_VOID": {
+      "N_frames": 1504,
+      "N_atoms": 262740,
+      "force_components": 788220,
+      "frac_frames": 0.2709,
+      "frac_atoms": 0.2574
+    },
+    "DILUTE_OXYGEN_DEFICIENT": {
+      "N_frames": 1937,
+      "N_atoms": 396505,
+      "force_components": 1189515,
+      "frac_frames": 0.3489,
+      "frac_atoms": 0.3885
+    },
+    "HIGH_T_LIQUID": {
+      "N_frames": 313,
+      "N_atoms": 60096,
+      "force_components": 180288,
+      "frac_frames": 0.0564,
+      "frac_atoms": 0.0589
+    },
+    "OTHER_RELEVANT_SIO": {
+      "N_frames": 108,
+      "N_atoms": 15368,
+      "force_components": 46104,
+      "frac_frames": 0.0195,
+      "frac_atoms": 0.0151
+    },
+    "STOICHIOMETRIC_AMORPHOUS": {
+      "N_frames": 640,
+      "N_atoms": 167808,
+      "force_components": 503424,
+      "frac_frames": 0.1153,
+      "frac_atoms": 0.1644
+    },
+    "SURFACE": {
+      "N_frames": 450,
+      "N_atoms": 31798,
+      "force_components": 95394,
+      "frac_frames": 0.0811,
+      "frac_atoms": 0.0312
+    }
+  },
+  "total_frames": 5552,
+  "total_atoms": 1020697,
+  "total_force_components": 3062091,
+  "atom_weight_note": "SIMPLE-NN force loss (F_loss_type=1) is atom-weighted (mean over all force components); energy loss (E_loss_type=1) is per-atom then per-structure mean. So atom fractions \u2248 force-training exposure; frame fractions \u2248 energy-training exposure.",
+  "production_atom_share": 0.3207,
+  "train_val": {
+    "train": 4987,
+    "val": 558,
+    "buffer_dropped": 7,
+    "train_by_domain": {
+      "AMBIENT_CRYSTAL": 540,
+      "CLUSTERED_VOID": 1348,
+      "DILUTE_OXYGEN_DEFICIENT": 1740,
+      "HIGH_T_LIQUID": 282,
+      "OTHER_RELEVANT_SIO": 97,
+      "STOICHIOMETRIC_AMORPHOUS": 575,
+      "SURFACE": 405
+    },
+    "val_by_domain": {
+      "AMBIENT_CRYSTAL": 60,
+      "CLUSTERED_VOID": 152,
+      "DILUTE_OXYGEN_DEFICIENT": 195,
+      "HIGH_T_LIQUID": 31,
+      "OTHER_RELEVANT_SIO": 11,
+      "STOICHIOMETRIC_AMORPHOUS": 64,
+      "SURFACE": 45
+    },
+    "train_source_groups_per_domain": {
+      "AMBIENT_CRYSTAL": 4,
+      "CLUSTERED_VOID": 8,
+      "DILUTE_OXYGEN_DEFICIENT": 6,
+      "HIGH_T_LIQUID": 1,
+      "OTHER_RELEVANT_SIO": 1,
+      "STOICHIOMETRIC_AMORPHOUS": 3,
+      "SURFACE": 2
+    },
+    "val_source_groups_per_domain": {
+      "AMBIENT_CRYSTAL": 4,
+      "CLUSTERED_VOID": 8,
+      "DILUTE_OXYGEN_DEFICIENT": 6,
+      "HIGH_T_LIQUID": 1,
+      "OTHER_RELEVANT_SIO": 1,
+      "STOICHIOMETRIC_AMORPHOUS": 3,
+      "SURFACE": 2
+    },
+    "split_rule": "production: blocked temporal split with 1-frame BUFFER gap per trajectory (no adjacent straddle); corpus: per-family hash-ordered 90/10 (independent DFT structures, decorrelated)"
+  },
+  "pc004_dft_references": {
+    "scan_cells_frozen_external": 11,
+    "note": "the 11 SCAN DFT cells are the frozen PC004 reference set (in pc004_dft_exclusion_manifest.csv); they are EXTERNAL to this candidate inventory (dataset.xyz+production), so 0 appear inside it and 0 new independent DFT were found among candidates",
+    "new_independent_dft_in_candidate_space": 0
+  },
+  "labeling_cost": {
+    "total_frames": 5552,
+    "total_atoms": 1020697,
+    "corpus_frames": 5440,
+    "corpus_atoms": 693337,
+    "production_frames": 112,
+    "production_atoms": 327360,
+    "note": "teacher (Allegro) inference cost ~ N_atoms; no labeling performed"
+  },
+  "crystalline_trim": {
+    "before_AMBIENT_CRYSTAL": 1366,
+    "caps_applied": {
+      "bulk_cryst": 300,
+      "bulk_cryst_hp": 100,
+      "highpressure_int_AL": 100,
+      "highpressure_max_AL": 100,
+      "surfaces": 300,
+      "surfaces_int_AL": 150,
+      "SiOx_crystal_amorphous_interfaces": 108,
+      "liquid": 9999,
+      "liq": 9999
+    },
+    "rationale": "high-pressure crystalline (bulk_cryst_hp/highpressure_*) is off-deployment (ambient amorphous/SiOx) and internally redundant; trimmed hard, ambient bulk_cryst kept at 300"
+  }
+}

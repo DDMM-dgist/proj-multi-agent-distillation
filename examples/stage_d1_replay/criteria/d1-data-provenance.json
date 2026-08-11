@@ -1,0 +1,22 @@
+[
+  {
+    "operator": "eq",
+    "lhs": {
+      "field": "split_manifest_committed"
+    },
+    "rhs": {
+      "const": true
+    },
+    "criterion": "training/held-out split manifest is committed and available for cross-check"
+  },
+  {
+    "operator": "eq",
+    "lhs": {
+      "field": "leakage_resolved"
+    },
+    "rhs": {
+      "const": true
+    },
+    "criterion": "leakage cross-check is complete with zero unresolved train/held-out duplicates"
+  }
+]

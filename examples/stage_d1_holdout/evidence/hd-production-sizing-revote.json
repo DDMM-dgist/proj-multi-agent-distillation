@@ -1,0 +1,9 @@
+{
+  "gate": "production-sizing-revote",
+  "intended_cooling_rate_K_per_ps": 1.0,
+  "effective_cooling_rate_K_per_ps": 2.0,
+  "intended_total_quench_ns": 4.75,
+  "effective_total_quench_ns": 2.9,
+  "formula_pinned": false,
+  "note": "quenching.in coolingSteps formula has an extra factor of 2"
+}

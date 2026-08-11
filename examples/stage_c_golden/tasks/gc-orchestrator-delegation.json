@@ -1,0 +1,13 @@
+{
+  "schema_version": 1,
+  "task_id": "gc-orchestrator-delegation",
+  "agent": "orchestrator",
+  "created_at": "2026-08-08T00:00:00Z",
+  "instruction": "You are the Orchestrator. PLAN-ONLY: call NO tools. Produce ONLY a typed OrchestratorPlan for run_id 'stageC-golden', current_stage 'seed_selection'. In proposed_tasks, delegate exactly ONE next task to the 'data-curator' role (agent='data-curator') to inspect the dataset, with a one-line instruction and rationale. Give an overall rationale and summary. Do not execute anything and do not mutate state.",
+  "inputs": [],
+  "criteria": [],
+  "constraints": [
+    "plan-only: call NO tools; delegation is a proposal, not an execution"
+  ],
+  "context": {}
+}

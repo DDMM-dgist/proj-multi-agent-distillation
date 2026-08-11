@@ -1,0 +1,26 @@
+{
+  "_status": "TEMPLATE — NOT ACTIVE. To authorize, a human copies this to runs/stage_d2_c3/d2c3-teacher-sp-mini216/approval.json with approved=true + approver set. Preparing/committing this template is NOT approval.",
+  "approved": false,
+  "approver": "",
+  "granted_at": "",
+  "action": "label_with_teacher",
+  "subtype": "teacher_single_point",
+  "structure": "mini216_nvt_fixed.data",
+  "structure_sha256": "3d2dd2464d83ca144e2c6d51382b83546b1152da06a386bfe3672550f4348364",
+  "teacher_sha256": "b56e20ffc31da601feed8411c92675bdae9eb886db153ff67dd37dea161b1c57",
+  "limits": {
+    "structures": 1,
+    "forward_passes": 1,
+    "gpus": 1,
+    "scientific_inference_wall_time_s_max": 60,
+    "no_scheduler": true,
+    "no_md": true,
+    "no_dft": true,
+    "no_training": true,
+    "no_additional_teacher_labeling": true,
+    "no_paid_api": true,
+    "no_external_network": true,
+    "no_overwrite": true
+  },
+  "authorizes_subsequent_actions": false
+}

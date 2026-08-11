@@ -1,0 +1,136 @@
+{
+  "deterministic_authoritative": true,
+  "authoritative_verdict": "FAIL",
+  "criterion_results": [
+    {
+      "criterion": "input structure SHA256 matches the proposal",
+      "operator": "eq",
+      "lhs": true,
+      "rhs": true,
+      "result": true,
+      "invalidating": true,
+      "provenance": "True == True => True"
+    },
+    {
+      "criterion": "teacher model SHA256 matches the proposal",
+      "operator": "eq",
+      "lhs": true,
+      "rhs": true,
+      "result": true,
+      "invalidating": true,
+      "provenance": "True == True => True"
+    },
+    {
+      "criterion": "structure parsed successfully",
+      "operator": "eq",
+      "lhs": true,
+      "rhs": true,
+      "result": true,
+      "invalidating": true,
+      "provenance": "True == True => True"
+    },
+    {
+      "criterion": "expected atom count preserved (216)",
+      "operator": "eq",
+      "lhs": true,
+      "rhs": true,
+      "result": true,
+      "invalidating": true,
+      "provenance": "True == True => True"
+    },
+    {
+      "criterion": "total energy finite",
+      "operator": "eq",
+      "lhs": true,
+      "rhs": true,
+      "result": true,
+      "invalidating": true,
+      "provenance": "True == True => True"
+    },
+    {
+      "criterion": "energy per atom finite",
+      "operator": "eq",
+      "lhs": true,
+      "rhs": true,
+      "result": true,
+      "invalidating": true,
+      "provenance": "True == True => True"
+    },
+    {
+      "criterion": "forces finite",
+      "operator": "eq",
+      "lhs": true,
+      "rhs": true,
+      "result": true,
+      "invalidating": true,
+      "provenance": "True == True => True"
+    },
+    {
+      "criterion": "force array shape is N x 3",
+      "operator": "eq",
+      "lhs": true,
+      "rhs": true,
+      "result": true,
+      "invalidating": true,
+      "provenance": "True == True => True"
+    },
+    {
+      "criterion": "max |F| finite",
+      "operator": "eq",
+      "lhs": true,
+      "rhs": true,
+      "result": true,
+      "invalidating": true,
+      "provenance": "True == True => True"
+    },
+    {
+      "criterion": "source structure + teacher model unchanged after run",
+      "operator": "eq",
+      "lhs": true,
+      "rhs": true,
+      "result": true,
+      "invalidating": true,
+      "provenance": "True == True => True"
+    },
+    {
+      "criterion": "writes occur only under the fresh C3 run directory",
+      "operator": "eq",
+      "lhs": true,
+      "rhs": true,
+      "result": true,
+      "invalidating": true,
+      "provenance": "True == True => True"
+    },
+    {
+      "criterion": "artifact hashes recorded",
+      "operator": "eq",
+      "lhs": true,
+      "rhs": true,
+      "result": true,
+      "invalidating": false,
+      "provenance": "True == True => True"
+    },
+    {
+      "criterion": "energy per atom is physical (between -11 and -8 eV/atom; reused frozen SiO2 DFT-scale range)",
+      "operator": "in_range",
+      "lhs": -7.5393886141807,
+      "rhs": [
+        -11.0,
+        -8.0
+      ],
+      "result": false,
+      "invalidating": true,
+      "provenance": "-11.0 <= -7.5393886141807 <= -8.0 => False"
+    },
+    {
+      "criterion": "max |F| is physical (<= 50 eV/Angstrom; reused frozen SiO2 sanity bound)",
+      "operator": "le",
+      "lhs": 17.08609595225839,
+      "rhs": 50.0,
+      "result": true,
+      "invalidating": true,
+      "provenance": "17.08609595225839 <= 50.0 => True"
+    }
+  ],
+  "provenance_block": "DETERMINISTIC_CRITERION_RESULTS (authoritative; do NOT recompute or reverse):\n- [PASS] input structure SHA256 matches the proposal :: True == True => True (invalidating)\n- [PASS] teacher model SHA256 matches the proposal :: True == True => True (invalidating)\n- [PASS] structure parsed successfully :: True == True => True (invalidating)\n- [PASS] expected atom count preserved (216) :: True == True => True (invalidating)\n- [PASS] total energy finite :: True == True => True (invalidating)\n- [PASS] energy per atom finite :: True == True => True (invalidating)\n- [PASS] forces finite :: True == True => True (invalidating)\n- [PASS] force array shape is N x 3 :: True == True => True (invalidating)\n- [PASS] max |F| finite :: True == True => True (invalidating)\n- [PASS] source structure + teacher model unchanged after run :: True == True => True (invalidating)\n- [PASS] writes occur only under the fresh C3 run directory :: True == True => True (invalidating)\n- [PASS] artifact hashes recorded :: True == True => True\n- [FAIL] energy per atom is physical (between -11 and -8 eV/atom; reused frozen SiO2 DFT-scale range) :: -11.0 <= -7.5393886141807 <= -8.0 => False (invalidating)\n- [PASS] max |F| is physical (<= 50 eV/Angstrom; reused frozen SiO2 sanity bound) :: 17.08609595225839 <= 50.0 => True (invalidating)\nsuggested_severity = FAIL"
+}

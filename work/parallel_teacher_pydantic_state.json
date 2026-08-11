@@ -1,0 +1,68 @@
+{
+  "TRACK_A": "EXTERNAL_GPU_TRAINING_PREPARED",
+  "TRACK_B": "CPU_PYDANTIC_WORKFLOW_ACTIVE",
+  "join_condition": "FINAL_TEACHER_IDENTITY_RESOLVED_AND_PC002_DATASET_STRUCTURE_RESOLVED",
+  "teacher_status": {
+    "existing_teacher_screen": "NO_EXISTING_TEACHER_IMPROVES_TARGET_HELDOUT_FIDELITY",
+    "candidates": {"base_b56e20ff": "baseline", "teacher_finetuned_v2": "DO_NOT_ADVANCE", "teacher_v6_finetuned": "DO_NOT_ADVANCE"},
+    "root_cause": "A_MODEL_TRAINING_UNDERFIT",
+    "full_1142_validation_for_v2_v6": "NOT_RUN (per instruction)"
+  },
+  "dataset_provenance": {
+    "file": "03_allegro_train/dataset.xyz", "sha256_prefix32": "382d0b2b35ed9c571314ff59df71e9c9",
+    "true_total": 11424,
+    "CORRECTION": "prior '13898 total / 2474 appended' RETRACTED as false — grep -o token artifact (2474 headers have config_type= twice). ASE + Lattice= counts = 11424. NO appended frames.",
+    "ORIGINAL_TEACHER_CORPUS": {"frames": [0, 11423], "N": 11424},
+    "POST_ORIGINAL_TRAINING_DATA": {"N": 0, "status": "does_not_exist"},
+    "frozen": "work/dataset_provenance_split_fact.json"
+  },
+  "track_a": {
+    "state": "EXTERNAL_GPU_TRAINING_PREPARED",
+    "cpu_role": "DATA/PROVENANCE_SUPPORT_ONLY",
+    "training_config_status": "CPU_PREP_DRAFT_ONLY (GPU branch owns LR/loss/arch/epochs/sampling/ckpt-policy)",
+    "authoritative_cpu_outputs": ["source dataset", "split identities", "target/replay frame identities",
+                                  "base checkpoint", "provenance", "SHA256s", "portable manifests"],
+    "package_dir": "work/external_gpu_teacher_package",
+    "corpus_frames": 3766, "core_target": 2966, "replay": 800,
+    "corpus_sha256_prefix32": "46433913d71d174efa4df010956c1c6a",
+    "warm_start_ckpt_sha16": "51342b332ba04287",
+    "new_dft": false, "sweep": false, "executed_here": false,
+    "fallback_A6": "target-focused higher-capacity Allegro (documented only, not prepared)"
+  },
+  "track_b": {
+    "PC002_SOURCE_STRUCTURE_INVENTORY": "COMPLETE",
+    "PC002_DATASET_STRUCTURE_RESOLVED": true,
+    "PC002_correction_pass": "applied (crystalline trim, corrected leakage-safe split, atom-weight exposure, dataset-count correction)",
+    "PC002_selected_frames": 5552, "PC002_train": 4987, "PC002_val": 558, "PC002_candidates": 12481,
+    "PC002_total_atoms": 1020697, "PC002_production_atom_share": 0.3207,
+    "PC002_selected_by_domain": {"DILUTE_OXYGEN_DEFICIENT": 1937, "CLUSTERED_VOID": 1504, "AMBIENT_CRYSTAL": 600,
+                                 "STOICHIOMETRIC_AMORPHOUS": 640, "SURFACE": 450, "HIGH_T_LIQUID": 313, "OTHER_RELEVANT_SIO": 108},
+    "PC002_TEACHER_LABELING": "WAIT_FINAL_TEACHER",
+    "PC003": "CONFIG_AND_POLICY_RESOLVED_FROZEN", "PC003_TRAINING": "WAIT_FINAL_TEACHER_LABELS",
+    "NEW_PIPELINE_CURRENT_STUDENT": "NONE",
+    "PC003_final_corrections": {
+      "validation_force_loss": "RAW_SIMPLE_NN_VALIDATION_FORCE_LOSS = ATOM_OR_FORCE_COMPONENT_WEIGHTED (not structure-balanced; EarlyStopping monitor only; PC004 must report global + per-structure-avg + domain-resolved separately)",
+      "u_alpha_code_vs_manuscript": "CODE u=sqrt(sum_xyz Var_members); MANUSCRIPT u=sqrt((1/3)sum Var)=code/sqrt(3); DIFF=sqrt(3); CODE is source of truth (ranking-invariant, paper r/enrichment unaffected)"
+    },
+    "PC003_weighting_cap_class": "INITIAL_CONTROLLED_WEIGHTING_POLICY (8x cap, not an optimized universal value)",
+    "PC003_weighting_policy": "C_SIZE_NORMALIZED_BOUNDED (clip geo-norm 1/N_atoms to 8x; production force 32.1%->18.6%; defects 65.8%)",
+    "PC003_architecture": "HISTORICAL_BASELINE_REUSED_FOR_CONTROLLED_FIRST_STUDENT",
+    "PC003_committee_seeds": [234, 345, 555, 777], "PC003_seed_777": "VERIFIED",
+    "PC003_batch_size": 4, "PC003_uncertainty_gate": "INITIAL_REFERENCE (u_max; 0.15 coded exceedance, 0.30 NOT a gate)",
+    "PC003_loss_verified": "energy per-structure/per-atom; force ATOM-WEIGHTED (independently confirmed)",
+    "PC004": "PREPARED", "PC004_DFT_exclusions": 11, "PC004_leakage_overlap": 0,
+    "PC004_valid_set": "558 within-distribution (shares lineages; NOT independent generalization)",
+    "PC005": "PREPARED"
+  },
+  "join_sequence": [
+    "register candidate model + SHA256",
+    "screen on exact 373-frame target held-out",
+    "if improved: full 1142 held-out validation + select",
+    "if not: retain b56e20ff (TEACHER_LIMITATION_ACCEPTED_FOR_RESOURCE_CONSTRAINED_INITIAL_PIPELINE)",
+    "final PC002 labeling with FINAL teacher",
+    "PC003 student training", "PC004 validation", "PC005 physical validation"
+  ],
+  "cpu_hard_rules": ["no Allegro training", "no teacher fine-tuning", "no DFT", "no new long MD",
+                     "no final student training pre-final-teacher", "no mass teacher-labeling yet",
+                     "no touching VASP", "no architecture change", "no provenance re-audit", "no push/PR"]
+}

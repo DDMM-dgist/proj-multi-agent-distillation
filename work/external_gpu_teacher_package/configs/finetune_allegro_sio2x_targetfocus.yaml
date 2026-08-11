@@ -1,0 +1,195 @@
+# =============================================================================
+# !!! CPU_PREP_DRAFT_ONLY — NOT the authoritative GPU training configuration !!!
+# The external GPU server owns the authoritative Teacher-remediation training recipe
+# (learning rate, force/energy loss weights, Allegro architecture, epoch cap, sampling
+# hyperparameters, checkpoint-selection policy). The values in this file are a DRAFT for
+# reference only and must NOT be treated as the GPU training config. The authoritative
+# CPU-side Track-A outputs are the DATA artifacts only: exact source dataset, split
+# identities, target/replay frame identities, base checkpoint, provenance, SHA256s,
+# portable manifests. Do not tune this YAML further on the CPU side.
+# =============================================================================
+# TRACK A — Target-focused WARM-START fine-tune of the SiO2 Allegro teacher (DRAFT)
+# =============================================================================
+# Experiment identity : PC-A1  (ONE controlled first experiment; NOT a sweep)
+# Goal                : lower the HELD-OUT oxygen-deficient (dilute + clustered)
+#                       force-fidelity floor WITHOUT degrading amorphous, while
+#                       preventing catastrophic forgetting of the broad base.
+# Mechanism           : warm-start from the base teacher's Lightning checkpoint,
+#                       KEEP the architecture unchanged, change ONLY the training
+#                       emphasis (target-enriched data, force-weighted loss,
+#                       reduced LR, early stopping). Existing DFT labels only —
+#                       NO new DFT.
+#
+# Base teacher (warm-start source):
+#   Lightning best.ckpt  sha256[:16] = 51342b332ba04287   (17,806,168 B)
+#   compiled .nequip.pth sha256      = b56e20ffc31da601feed8411c92675bdae9eb886db153ff67dd37dea161b1c57
+#   origin: 03_allegro_train/outputs/2025-11-13/12-39-46/best.ckpt
+#
+# Architecture below is COPIED EXACTLY from the original tutorial_Allegro.yaml
+# (verified against the base run) so the warm-started weights load cleanly.
+#
+# >>> RESOLVE BEFORE RUNNING (GPU operator) — see README.md §Resolve-first: <<<
+#   (1) Env must match the base TRAINING stack: nequip 0.15.0 / allegro 0.7.1 /
+#       torch 2.6.0+cu124 / matching lightning+e3nn.  (0.16.x will NOT load a
+#       0.15 checkpoint cleanly.)
+#   (2) Confirm the warm-start mechanism name in your installed nequip:
+#       nequip.model.ModelFromCheckpoint (used below). If unavailable, fall back
+#       to CLI  `... fit.ckpt_path=<best.ckpt>` (note: that also restores optimizer
+#       state — set the LR explicitly if you use it).
+#   (3) With ModelFromCheckpoint the per_type shifts/scales + architecture are
+#       READ FROM THE CHECKPOINT; the model: block below is the reference spec
+#       used to instantiate before loading weights. Do NOT recompute energy
+#       shifts on the fine-tune corpus (would break the warm-started head).
+# =============================================================================
+
+run: [train, test]
+
+cutoff_radius: 5.0
+chemical_symbols: [O, Si]           # species ordering — identical to base
+model_type_names: ${chemical_symbols}
+monitored_metric: val0_epoch/weighted_sum
+
+# ---------------------------------------------------------------------------
+# DATA — target-focused fine-tune corpus (deterministic seed-123 internal split)
+#   fine_tune_corpus.xyz = core (all central-domain seed-123 TRAIN frames:
+#   amorphous + dilute + clustered) + sqrt-stratified replay from the remaining
+#   TRAIN families. NO original val/test frames (leakage-guarded at build time).
+#   See manifests/frame_manifest.csv for per-frame identity + role + ft_split.
+# ---------------------------------------------------------------------------
+data:
+  _target_: nequip.data.datamodule.ASEDataModule
+  seed: 123                          # deterministic internal train/val split
+  split_dataset:
+    file_path: ../dataset/fine_tune_corpus.xyz
+    train: 0.9
+    val: 0.1
+    test: 0.0
+  transforms:
+    - _target_: nequip.data.transforms.NeighborListTransform
+      r_max: ${cutoff_radius}
+    - _target_: nequip.data.transforms.ChemicalSpeciesToAtomTypeMapper
+      chemical_symbols: ${chemical_symbols}
+  train_dataloader:
+    _target_: torch.utils.data.DataLoader
+    batch_size: 4
+    num_workers: 4
+    shuffle: true
+  val_dataloader:
+    _target_: torch.utils.data.DataLoader
+    batch_size: 4
+    num_workers: ${data.train_dataloader.num_workers}
+  test_dataloader: ${data.val_dataloader}
+  stats_manager:
+    _target_: nequip.data.CommonDataStatisticsManager
+    dataloader_kwargs:
+      batch_size: 4
+    type_names: ${model_type_names}
+
+# ---------------------------------------------------------------------------
+# TRAINER — short fine-tune horizon, early stopping to protect the base
+# ---------------------------------------------------------------------------
+trainer:
+  _target_: lightning.Trainer
+  accelerator: gpu
+  devices: 1
+  enable_checkpointing: true
+  max_epochs: 400                    # cap; expected to early-stop well before
+  max_time: 01:00:00:00              # hard wall 1 day (fine-tune is short)
+  check_val_every_n_epoch: 1
+  log_every_n_steps: 20
+  logger:
+    _target_: lightning.pytorch.loggers.wandb.WandbLogger
+    project: nequipv7_Si_allegro_v2
+    name: "targetfocus_ft_PC-A1"
+    save_dir: ${hydra:runtime.output_dir}
+  callbacks:
+    - _target_: lightning.pytorch.callbacks.EarlyStopping
+      monitor: ${monitored_metric}
+      min_delta: 1e-4
+      patience: 40
+    - _target_: lightning.pytorch.callbacks.ModelCheckpoint
+      monitor: ${monitored_metric}
+      dirpath: ${hydra:runtime.output_dir}
+      filename: best
+      save_last: true
+    - _target_: lightning.pytorch.callbacks.LearningRateMonitor
+      logging_interval: epoch
+
+# ---------------------------------------------------------------------------
+# TRAINING MODULE — warm-start; lower LR; STRONGER FORCE EMPHASIS
+# ---------------------------------------------------------------------------
+training_module:
+  _target_: nequip.train.EMALightningModule
+  ema_decay: 0.999
+  loss:
+    _target_: nequip.train.EnergyForceLoss
+    per_atom_energy: true
+    coeffs:
+      total_energy: 1.0
+      forces: 4.0                    # DELIBERATE CHANGE: base was 1.0 — stronger
+                                     # force emphasis, targeting force fidelity on
+                                     # oxygen-deficient environments.
+  val_metrics:
+    _target_: nequip.train.EnergyForceMetrics
+    coeffs:
+      total_energy_mae: 1.0
+      forces_mae: 1.0                # report both unweighted for comparability
+  train_metrics: ${training_module.val_metrics}
+  test_metrics: ${training_module.val_metrics}
+  optimizer:
+    _target_: torch.optim.Adam
+    lr: 0.001                        # DELIBERATE CHANGE: 10x lower than base 0.01
+  lr_scheduler:
+    scheduler:
+      _target_: torch.optim.lr_scheduler.ReduceLROnPlateau
+      factor: 0.5
+      patience: 10
+      threshold: 1e-3
+      min_lr: 1e-6
+    monitor: ${monitored_metric}
+    interval: epoch
+    frequency: 1
+
+  # ---- WARM START (primary mechanism): load base teacher weights ----
+  model:
+    _target_: nequip.model.ModelFromCheckpoint
+    checkpoint_path: ../base_teacher/best.ckpt   # base Lightning ckpt (51342b33)
+    # The wrapped model spec below MUST match the checkpoint exactly. With
+    # ModelFromCheckpoint these are used to instantiate the architecture before
+    # loading the checkpoint's weights + baked per-type stats.
+    model:
+      _target_: allegro.model.AllegroModel
+      seed: 123
+      model_dtype: float32
+      type_names: ${model_type_names}
+      r_max: ${cutoff_radius}
+      radial_chemical_embed:
+        _target_: allegro.nn.TwoBodyBesselScalarEmbed
+        num_bessels: 32
+        bessel_trainable: false
+        polynomial_cutoff_p: 6
+      radial_chemical_embed_dim: 256
+      l_max: 2
+      parity: true
+      num_layers: 4
+      num_scalar_features: 256
+      num_tensor_features: 128
+      tp_path_channel_coupling: false
+      allegro_mlp_hidden_layers_depth: 2
+      allegro_mlp_hidden_layers_width: 128
+      allegro_mlp_nonlinearity: silu
+      readout_mlp_hidden_layers_depth: 1
+      readout_mlp_hidden_layers_width: 32
+      readout_mlp_nonlinearity: null
+      avg_num_neighbors: ${training_data_stats:num_neighbors_mean}
+      per_type_energy_shifts: ${training_data_stats:per_atom_energy_mean}
+      per_type_energy_scales: ${training_data_stats:forces_rms}
+      per_type_energy_scales_trainable: false
+      per_type_energy_shifts_trainable: false
+      pair_potential:
+        _target_: nequip.nn.pair_potential.ZBL
+        units: real
+        chemical_species: ${chemical_symbols}
+
+global_options:
+  allow_tf32: false

@@ -1,0 +1,39 @@
+{
+  "n_frames": 151,
+  "n_atoms": 2940,
+  "box_L": 35.49749412495787,
+  "dt_ps": 0.001,
+  "species_counts": {
+    "1": 1940,
+    "2": 1000
+  },
+  "late_window_frames": 46,
+  "late_window_frac": 0.3,
+  "late_mean_msd": 0.0922300971743136,
+  "late_std_msd": 0.0036764341060835145,
+  "late_slope": 5.7427346054064235e-06,
+  "late_fit_r2": 0.00043004415121494777,
+  "diffusion_estimate": 9.571224342344038e-07,
+  "pbc": {
+    "pbc_method": "minimum_image_continuity",
+    "pbc_hard_guarantee": false,
+    "pbc_assumption": "no atom undergoes a true inter-frame displacement >= L/2",
+    "trajectory_unwrapped_coordinates_available": false,
+    "trajectory_image_flags_available": false,
+    "max_min_image_step_A": 1.6553000000000004,
+    "continuity_safe_bound_A": 8.874373531239467,
+    "max_step_over_L": 0.04663146063699687,
+    "proxy_gate": "plausibility/sanity only; NOT proof of the assumption",
+    "pbc_precondition_ok": true
+  },
+  "apparent_D": {
+    "apparent_D_estimate_under_continuity_assumption": 9.571224342344038e-07,
+    "units": "Angstrom^2 / ps (slope/6, 3D Einstein)",
+    "fit_window_frames": 46,
+    "fit_window_frac": 0.3,
+    "late_slope": 5.7427346054064235e-06,
+    "late_fit_r2": 0.00043004415121494777,
+    "trajectory_duration_ps": 150.0,
+    "caveat": "apparent only; finite 150-ps window + wrapped-coordinate continuity assumption; NOT a rigorous diffusion coefficient"
+  }
+}

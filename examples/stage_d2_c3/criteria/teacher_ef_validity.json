@@ -1,0 +1,156 @@
+[
+  {
+    "criterion": "input structure SHA256 matches the proposal",
+    "operator": "eq",
+    "lhs": {
+      "field": "input_sha256_matches"
+    },
+    "rhs": {
+      "const": true
+    },
+    "invalidating": true
+  },
+  {
+    "criterion": "teacher model SHA256 matches the proposal",
+    "operator": "eq",
+    "lhs": {
+      "field": "model_sha256_matches"
+    },
+    "rhs": {
+      "const": true
+    },
+    "invalidating": true
+  },
+  {
+    "criterion": "structure parsed successfully",
+    "operator": "eq",
+    "lhs": {
+      "field": "structure_parsed"
+    },
+    "rhs": {
+      "const": true
+    },
+    "invalidating": true
+  },
+  {
+    "criterion": "expected atom count preserved (216)",
+    "operator": "eq",
+    "lhs": {
+      "field": "atom_count_preserved"
+    },
+    "rhs": {
+      "const": true
+    },
+    "invalidating": true
+  },
+  {
+    "criterion": "total energy finite",
+    "operator": "eq",
+    "lhs": {
+      "field": "energy_finite"
+    },
+    "rhs": {
+      "const": true
+    },
+    "invalidating": true
+  },
+  {
+    "criterion": "energy per atom finite",
+    "operator": "eq",
+    "lhs": {
+      "field": "energy_per_atom_finite"
+    },
+    "rhs": {
+      "const": true
+    },
+    "invalidating": true
+  },
+  {
+    "criterion": "forces finite",
+    "operator": "eq",
+    "lhs": {
+      "field": "forces_finite"
+    },
+    "rhs": {
+      "const": true
+    },
+    "invalidating": true
+  },
+  {
+    "criterion": "force array shape is N x 3",
+    "operator": "eq",
+    "lhs": {
+      "field": "force_shape_is_Nx3"
+    },
+    "rhs": {
+      "const": true
+    },
+    "invalidating": true
+  },
+  {
+    "criterion": "max |F| finite",
+    "operator": "eq",
+    "lhs": {
+      "field": "max_force_finite"
+    },
+    "rhs": {
+      "const": true
+    },
+    "invalidating": true
+  },
+  {
+    "criterion": "source structure + teacher model unchanged after run",
+    "operator": "eq",
+    "lhs": {
+      "field": "source_model_unchanged"
+    },
+    "rhs": {
+      "const": true
+    },
+    "invalidating": true
+  },
+  {
+    "criterion": "writes occur only under the fresh C3 run directory",
+    "operator": "eq",
+    "lhs": {
+      "field": "writes_under_run_dir_only"
+    },
+    "rhs": {
+      "const": true
+    },
+    "invalidating": true
+  },
+  {
+    "criterion": "artifact hashes recorded",
+    "operator": "eq",
+    "lhs": {
+      "field": "artifact_hashes_recorded"
+    },
+    "rhs": {
+      "const": true
+    }
+  },
+  {
+    "criterion": "energy per atom is physical (between -11 and -8 eV/atom; reused frozen SiO2 DFT-scale range)",
+    "operator": "in_range",
+    "lhs": {
+      "field": "E_per_atom_eV"
+    },
+    "rhs": {
+      "low": -11.0,
+      "high": -8.0
+    },
+    "invalidating": true
+  },
+  {
+    "criterion": "max |F| is physical (<= 50 eV/Angstrom; reused frozen SiO2 sanity bound)",
+    "operator": "le",
+    "lhs": {
+      "field": "max_force_eV_A"
+    },
+    "rhs": {
+      "const": 50.0
+    },
+    "invalidating": true
+  }
+]

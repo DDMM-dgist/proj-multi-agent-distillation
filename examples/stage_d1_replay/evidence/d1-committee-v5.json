@@ -1,0 +1,23 @@
+{
+  "committee": "v5",
+  "u_max_mean_deploy_by_x": [
+    0.286,
+    0.295,
+    0.349,
+    0.393,
+    0.373
+  ],
+  "original_u_max_mean_deploy_by_x": [
+    0.303,
+    0.358,
+    0.377,
+    0.421,
+    0.419
+  ],
+  "u_max_mean_deploy": 0.339,
+  "original_u_max_mean_deploy": 0.376,
+  "error_c_eV_A": 0.337,
+  "F_RMSE_eV_A": 0.285,
+  "original_error_c_eV_A": 0.368,
+  "original_F_RMSE_eV_A": 0.309
+}

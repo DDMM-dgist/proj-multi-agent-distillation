@@ -10,9 +10,12 @@ Requires ``pydantic`` (optional dependency). Not imported by any core package.
 """
 from __future__ import annotations
 
-from typing import Any, Literal, Optional
+from typing import Annotated, Any, Literal, Optional
 
 from pydantic import BaseModel, Field
+
+# A non-empty string, mirroring the JSON Schema ``{"type": "string", "minLength": 1}``.
+NonEmptyStr = Annotated[str, Field(min_length=1)]
 
 
 # --- Contract mirrors (typed output for the LLM) --------------------------------
@@ -23,6 +26,32 @@ class EvidenceReference(BaseModel):
     role: str = Field(min_length=1)
     path: str = Field(min_length=1)
     integrity: Optional[dict[str, Any]] = None
+
+
+# --- Typed input mirror (Phase 2 / D1) ------------------------------------------
+
+class AgentTaskModel(BaseModel):
+    """Typed mirror of ``orchestration/schema/agent_task.schema.json``.
+
+    NOT authoritative. Parsing a task as this model does NOT make it valid: the canonical
+    ``orchestration.exchange.validate_task`` MUST still run (it also enforces spec-specific
+    rules the JSON Schema cannot express, e.g. a Judge task requiring ``context.review_lens``
+    and ``context.review_focus``). This model exists only so a runtime can carry a task with
+    typed field access and reject obviously-malformed packets early. Required/optional and
+    ``extra='forbid'`` are kept in lockstep with the canonical schema by
+    ``tests/test_pydantic_ai_schema_drift.py``.
+    """
+    model_config = {"extra": "forbid"}
+    schema_version: Literal[1]
+    task_id: NonEmptyStr
+    agent: NonEmptyStr
+    run_id: Optional[str] = None
+    created_at: NonEmptyStr
+    instruction: NonEmptyStr
+    inputs: list[EvidenceReference]
+    criteria: list[NonEmptyStr]
+    constraints: list[NonEmptyStr]
+    context: dict[str, Any]
 
 
 class CriterionCheck(BaseModel):
@@ -91,6 +120,40 @@ class RuntimeContext(BaseModel):
     max_retries: int = 1
     # A read-only allow-list: absolute path prefixes the agent's tools may read.
     read_allow_prefixes: list[str] = Field(default_factory=list)
+    # Bounded-retry policy (Phase 2/D5). provider_retries = extra attempts after the first on a
+    # RETRYABLE failure; max_total_calls caps total provider calls (cost guard); backoff is
+    # exponential with jitter between attempts.
+    provider_retries: int = 0
+    structured_output_retries: int = 0
+    backoff_base_s: float = 0.5
+    backoff_max_s: float = 8.0
+    max_total_calls: int = 1
+    # Deterministic per-invocation bound on the number of MODEL REQUESTS (pydantic_ai
+    # UsageLimits.request_limit). Each tool round-trip consumes one request, so this fails a
+    # runaway tool loop closed BEFORE the context window is exhausted. Legitimate current tasks
+    # need <=2 requests (e.g. Judge: read_json + final vote); 6 leaves headroom for a few tool
+    # round-trips while stopping a loop like Stage B attempt-1's 20x read_artifact_manifest.
+    request_limit: int = 6
+    correlation_id: str = ""
+
+
+class ProviderConfiguration(BaseModel):
+    """Typed provider/runtime configuration (Phase 2/D3), assembled by the CLI from env + flags.
+
+    ``model_id`` and any credential come from the ENVIRONMENT, never from a committed config.
+    """
+    model_config = {"extra": "forbid"}
+    provider: NonEmptyStr
+    model_id: NonEmptyStr
+    provider_sdk_version: str = ""
+    timeout_s: float = 120.0
+    provider_retries: int = 2
+    structured_output_retries: int = 1
+    backoff_base_s: float = 0.5
+    backoff_max_s: float = 8.0
+    max_total_calls: int = 3
+    usage_source: Literal["mock", "test-model", "provider", "estimated", "unavailable"] = "provider"
+    correlation_id: str = ""
 
 
 class RuntimeInvocationRecord(BaseModel):
@@ -128,8 +191,30 @@ class RuntimeInvocationRecord(BaseModel):
     usage_source: Literal["mock", "test-model", "provider", "estimated", "unavailable"] = "unavailable"
     prompt_tokens: int = 0
     completion_tokens: int = 0
-    # UTC ISO-8601 time the provenance record was built. Per-call start/end timing (to
-    # measure provider latency) arrives with the real provider path (P4); this PoC records
-    # only the record-build time.
+    # UTC ISO-8601 time the provenance record was built.
     recorded_at: str = ""
     accepted: bool = False
+    # --- Phase 2/D4-D5 additive failure + timing + mode fields --------------------
+    # A provider exception is recorded here (not lost): exception_message is ALWAYS redacted.
+    failure_category: str = ""          # "" on success; else a failures.FailureCategory value
+    exception_class: str = ""
+    exception_message: str = ""         # redacted before storage
+    retryable: bool = False
+    started_at: str = ""
+    finished_at: str = ""
+    latency_s: float = 0.0
+    correlation_id: str = ""
+    # Execution mode + whether this attempt mutated controller-visible state.
+    mode: Literal["", "primary", "shadow", "dry_run", "validate_only"] = ""
+    controller_mutated: bool = False
+    estimated_cost: Optional[float] = None
+    # --- Deterministic-verdict ownership (Stage D-1 refactor) ----------------------
+    # For an authoritative (fully deterministic) judge gate the ACCEPTED verdict is owned by the
+    # deterministic policy and bound by trusted code; the LLM's proposed verdict is preserved for
+    # audit but is not authoritative. accepted_verdict is the verdict actually accepted for the gate
+    # (deterministic for authoritative gates; the LLM's verdict for advisory gates). Absent (None) on
+    # older provenance -> consumers fall back to parsed_result.verdict.
+    accepted_verdict: Optional[str] = None
+    llm_proposed_verdict: Optional[str] = None
+    verdict_overridden: bool = False
+    criterion_contradictions: list[str] = Field(default_factory=list)

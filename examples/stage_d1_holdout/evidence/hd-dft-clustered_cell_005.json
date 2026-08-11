@@ -1,0 +1,8 @@
+{
+  "cell_id": "clustered_cell_005",
+  "set": "iter2_clustered",
+  "n_atoms": 61,
+  "E_per_atom_eV": -9.783143,
+  "max_force_eV_A": 4.9955,
+  "scf_converged": true
+}

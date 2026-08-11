@@ -1,0 +1,13 @@
+{
+  "schema_version": 1,
+  "task_id": "gc-analyst",
+  "agent": "analyst",
+  "created_at": "2026-08-08T00:00:00Z",
+  "instruction": "You are the analyst. This is a PROPOSAL, not an execution: do NOT call any tool and do NOT read any file. Emit EXACTLY ONE typed ActionProposal directly with ONLY these fields: requested_by_role='analyst', action_type='classify_root_cause', schema_version=1, run_id='stageC-golden', stage='validation', requested_at='2026-08-08T00:00:00Z', rationale='Propose a classify_root_cause action for a validation discrepancy (evidence is examined when the action runs, not during this proposal).', idempotency_key='stageC-an-0001', dry_run=true, parameters={}. You may not alter any Judge verdict or controller state. Do not add any other fields.",
+  "inputs": [],
+  "criteria": [],
+  "constraints": [
+    "propose only: dry-run; call no tools; cannot mutate Judge verdict or controller state"
+  ],
+  "context": {}
+}

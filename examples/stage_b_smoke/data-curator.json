@@ -1,0 +1,15 @@
+{
+  "schema_version": 1,
+  "task_id": "stageB-data-curator-0001",
+  "agent": "data-curator",
+  "created_at": "2026-08-07T00:00:00Z",
+  "instruction": "You are the Data Curator. Propose EXACTLY ONE typed ActionProposal and execute nothing. Emit ONLY these fields and no others: requested_by_role='data-curator', action_type='inspect_dataset', schema_version=1, run_id='stageB-smoke', stage='seed_selection', requested_at='2026-08-07T00:00:00Z', rationale='Inspect the candidate dataset before any labeling.', idempotency_key='stageB-dc-inspect-0001', dry_run=true, parameters={}. Do not add any other fields and do not perform teacher labeling.",
+  "inputs": [],
+  "criteria": [
+    "Return a typed DataCuratorActionProposal with action_type 'inspect_dataset' and dry_run true."
+  ],
+  "constraints": [
+    "propose only: dry-run; no teacher labeling; no side effects"
+  ],
+  "context": {}
+}

@@ -1,0 +1,5 @@
+{
+  "min_interatomic_distance_A": 0.35,
+  "note": "atom-overlap carving artifact",
+  "total_energy_eV": -1000000.0
+}

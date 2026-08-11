@@ -1,0 +1,41 @@
+{
+  "campaign": "production_campaign_003",
+  "state": "PREPARED",
+  "NEW_PIPELINE_CURRENT_STUDENT": "NONE",
+  "config_authority": "HISTORICAL_BASELINE_CONFIG (recovered from gpu2 SIMPLE-NN bundles); NOT FINAL_PC003_CONFIG until the new workflow independently adopts each value",
+  "gate_authority": "u_max<0.30 is HISTORICAL_REFERENCE_GATE, not a current source-grounded pipeline rule",
+  "loss_normalization_verified": {
+    "source": "simple_nn/models/loss.py (v2.0.0)",
+    "energy_E_loss_type_1": "criterion(E_/n_atoms, E_target/n_atoms) then mean over batch => PER-ATOM energy, PER-STRUCTURE averaged (each structure equal weight regardless of size)",
+    "force_F_loss_type_1": "criterion(F_,F) reduced by torch.mean over ALL force components in batch => ATOM-WEIGHTED (large cells dominate force training)",
+    "lever": "item['struct_weight'] (weighted flag) can re-weight per structure; recommended to offset the large-production-cell atom-weight skew",
+    "implication": "frame fractions ~ energy-training exposure; ATOM fractions ~ force-training exposure -> see pc002_domain_counts.json exposure_by_domain"
+  },
+  "student_software": {"name": "SIMPLE-NN", "version": "v2.0.0", "commit": "d69dc23", "backend": "PyTorch"},
+  "preprocessing_schema": {
+    "data_type": "symmetry_function",
+    "input": "str_list of structures -> per-structure pickled symmetry-function feature files",
+    "train_val_input": "train_list / valid_list text files pointing at feature pickles",
+    "scaling": {"use_scale": true, "scale_factor_file": "scale_factor"},
+    "pca": {"use_pca": true, "pca_file": "pca"},
+    "double_precision": true
+  },
+  "descriptor_config": {
+    "symmetry_functions_per_element": 70, "G2_radial_type2": 16, "G4_angular_type4": 54,
+    "cutoff_A": 5.0, "params_files": ["params_Si", "params_O"], "element_ordering": "O Si"
+  },
+  "network": {"nodes": "30-30", "activation": "sigmoid"},
+  "label_schema": {"energy": "eV total", "forces": "eV/Angstrom", "stress": "NOT used (read_stress False, use_stress False)",
+                   "source": "TEACHER (final teacher at join); this is exactly what PC002 final labeling must emit"},
+  "training": {"optimizer": "Adam", "learning_rate": 1e-4, "batch_size": 32, "total_epoch": 2000,
+               "l2_regularization": 1e-6, "energy_coeff": 1.0, "force_coeff": 0.1,
+               "E_loss_type": 1, "F_loss_type": 1, "use_gpu": true},
+  "committee": {"n_members": 4, "random_seeds": [234, 345, 555, 777], "seed_verification": "all four VERIFIED (see pc003_seed_verification.json)"},
+  "artifacts_expected": ["potential_saved_bestmodel (per seed, ~330 KB)", "LOG_seed0N", "scale_factor", "pca"],
+  "lammps_deployment": {"pair_style": "nn", "pair_coeff": "* * potential_saved_bestmodel O Si", "units": "metal", "timestep_ps": 0.001},
+  "resource_estimate": {"per_seed_walltime_h": "37-89 (historical, 2000 epochs)", "committee": "afterok SLURM chain", "gpu": "1 per seed"},
+  "deterministic_validation_hook": "committee u-disagreement eval_committee_umax_v{5,6}.py; u_alpha=sqrt(sum_xyz Var(F over members)); gate u_max_mean<0.30 eV/A on sphere_x012",
+  "blocked_on": ["final teacher labels of the frozen PC002 ensemble", "feature generation on those labels"],
+  "not_local_flag": "GPU-side train command + str_list + feature pickles live in gpu2 distillation_runs/.../05_TRAINING_v6/; input.yaml is the config SIMPLE-NN reads",
+  "historical_students_status": "BASELINE/REFERENCE only; none adopted as NEW_PIPELINE_CURRENT_STUDENT"
+}

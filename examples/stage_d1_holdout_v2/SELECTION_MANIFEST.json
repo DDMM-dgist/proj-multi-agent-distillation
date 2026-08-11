@@ -1,0 +1,58 @@
+[
+  {
+    "target": "teacher-ER-finetune-AB",
+    "gate": "er-finetune-gate",
+    "gate_family": "committee-model-selection",
+    "selection_hash": "03ae2a5ae4e31057d914f69cd0578f0c99342702391634bab3be0530d48d44d5",
+    "selection_rank": 0,
+    "source": "coordination_log.csv"
+  },
+  {
+    "target": "clustered_cell_003",
+    "gate": "judge-gate-clustered",
+    "gate_family": "dft-physical",
+    "selection_hash": "1d1680674dd06f49d38bcdffbbe413620407dfdb8dcf6a27e9edd4467928981f",
+    "selection_rank": 0,
+    "source": "scan_labeled_structures/manifest.csv"
+  },
+  {
+    "target": "cell_009",
+    "gate": "dft-label-judge-gate",
+    "gate_family": "dft-physical",
+    "selection_hash": "4ec6181a4ebb4983e4d7d39c4bd435c3d974fde072d34c9d9b020df9eaee5d9b",
+    "selection_rank": 1,
+    "source": "scan_labeled_structures/manifest.csv"
+  },
+  {
+    "target": "production_12288-meltquench-protocol",
+    "gate": "meltquench-protocol-gate",
+    "gate_family": "production-protocol",
+    "selection_hash": "6ff30384f354166401633f146b3ff04909cd9cbfd01c82c4425e8724ed5ae19a",
+    "selection_rank": 0,
+    "source": "coordination_log.csv"
+  },
+  {
+    "target": "cristobalite-12288-seed",
+    "gate": "cristobalite-build-gate",
+    "gate_family": "production-protocol",
+    "selection_hash": "7915e89b271f5d77667a4d7c46935dbb2bf723483fa68ddedd4bdeb4b567be49",
+    "selection_rank": 1,
+    "source": "coordination_log.csv"
+  },
+  {
+    "target": "persistent-homology-pipeline",
+    "gate": "ph-pipeline-gate",
+    "gate_family": "science-analysis",
+    "selection_hash": "5f8cf20914c74fef51e5906c98efc76e4f3db55313319b765d022b185971820c",
+    "selection_rank": 0,
+    "source": "coordination_log.csv"
+  },
+  {
+    "target": "paper2-production-findings",
+    "gate": "production-science-gate",
+    "gate_family": "science-analysis",
+    "selection_hash": "b9d9376e7704a61f16fe471c9648c7f0af9374475e75b14232df2ac5cc798016",
+    "selection_rank": 1,
+    "source": "coordination_log.csv"
+  }
+]

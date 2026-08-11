@@ -1,0 +1,32 @@
+[
+  {
+    "operator": "le",
+    "lhs": {
+      "field": "u_max_mean_deploy"
+    },
+    "rhs": {
+      "field": "original_u_max_mean_deploy"
+    },
+    "criterion": "committee does NOT regress vs the original student on the deployment u_max (u_max_mean_deploy <= original_u_max_mean_deploy)"
+  },
+  {
+    "operator": "le",
+    "lhs": {
+      "field": "error_c_eV_A"
+    },
+    "rhs": {
+      "const": 0.368
+    },
+    "criterion": "committee error(c) <= 0.368 eV/Angstrom (teacher-vs-DFT baseline)"
+  },
+  {
+    "operator": "le",
+    "lhs": {
+      "field": "F_RMSE_eV_A"
+    },
+    "rhs": {
+      "field": "original_F_RMSE_eV_A"
+    },
+    "criterion": "committee F_RMSE <= original student F_RMSE"
+  }
+]

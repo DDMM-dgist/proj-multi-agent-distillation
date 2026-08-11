@@ -1,0 +1,32 @@
+[
+  {
+    "operator": "eq",
+    "lhs": {
+      "field": "eval_log_uses_selected_checkpoint"
+    },
+    "rhs": {
+      "const": true
+    },
+    "criterion": "committed eval logs use the selected checkpoint (Run3 ep118)"
+  },
+  {
+    "operator": "eq",
+    "lhs": {
+      "field": "naive_baseline_eval_log_present"
+    },
+    "rhs": {
+      "const": true
+    },
+    "criterion": "the naive fine-tune baseline has a committed eval log"
+  },
+  {
+    "operator": "eq",
+    "lhs": {
+      "field": "e_mae_offset_demonstrated"
+    },
+    "rhs": {
+      "const": true
+    },
+    "criterion": "the E-MAE offset is demonstrated to be a benign constant shift"
+  }
+]

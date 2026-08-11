@@ -31,6 +31,7 @@ Design constraints:
 from __future__ import annotations
 
 import argparse
+import json
 import math
 import os
 from pathlib import Path
@@ -56,6 +57,10 @@ def _parse_args(argv=None):
     p.add_argument("--batch-size", type=int, required=True)
     p.add_argument("--use-stress", action="store_true")
     p.add_argument("--stress-loss-weight", type=float, default=0.0)
+    p.add_argument("--struct-weight-policy", default="none",
+                   choices=("none", "c_size_normalized_bounded"),
+                   help="per-structure SIMPLE-NN struct_weight: none=uniform 1.0; "
+                        "c_size_normalized_bounded=clip((1/N)/geomean(1/N),1/sqrt8,sqrt8) [training only]")
     return p.parse_args(argv)
 
 
@@ -114,11 +119,23 @@ def _dataset_to_extxyz_with_ref_labels(source_path: Path, target_path: Path,
     return len(materialized), stress_count == len(materialized)
 
 
-def _write_structure_list(struct_list_path: Path, dataset_path: Path, tag: str):
-    """Write a SIMPLE-NN structure_list file (single tag, all frames)."""
-    struct_list_path.write_text(
-        f"[{tag}]\n{dataset_path.resolve()} :\n"
-    )
+def _write_structure_list(struct_list_path: Path, dataset_path: Path, tag: str, weights=None):
+    """Write a SIMPLE-NN structure_list file.
+
+    weights=None -> single tag over all frames (SIMPLE-NN default weight 1.0).
+    weights=[w0,w1,...] -> ONE weighted tag PER FRAME ([tag-i : w_i] + '<dataset> i') so a
+    per-structure struct_weight (e.g. C_SIZE_NORMALIZED_BOUNDED) actually reaches SIMPLE-NN's
+    structure_weights mechanism instead of silently defaulting to 1.0.
+    """
+    d = dataset_path.resolve()
+    if not weights:
+        struct_list_path.write_text(f"[{tag}]\n{d} :\n")
+        return
+    # NOTE: use a SLICE 'i:i+1' (not bare 'i') so SIMPLE-NN's ase.io.read returns a LIST of one
+    # Atoms; a bare integer index yields a single Atoms which SIMPLE-NN iterates into Atom objects
+    # (AttributeError: 'Atom' has no 'cell').
+    lines = [f"[{tag}-{i:06d} : {float(w):.6f}]\n{d} {i}:{i+1}\n" for i, w in enumerate(weights)]
+    struct_list_path.write_text("".join(lines))
 
 
 def _build_input_yaml(rendered: dict, args, descriptor_params: dict,
@@ -219,10 +236,24 @@ def main(argv=None):
     if n_frames == 0:
         raise RuntimeError("no frames were materialized for SIMPLE-NN training")
 
-    # 4. Write structure_list pointing at the labeled dataset.
+    # 4. Write structure_list pointing at the labeled dataset. Apply the per-structure
+    #    struct_weight policy so it actually reaches SIMPLE-NN (not a silent 1.0 fallback).
     struct_list_path = out_dir / "structure_list"
+    weights = None
+    if args.struct_weight_policy == "c_size_normalized_bounded":
+        import math
+        from ase.io import read as _read
+        _lab = _read(str(labeled_dataset), index=":")
+        natoms = [len(a) for a in _lab]
+        geo = math.exp(sum(math.log(1.0 / n) for n in natoms) / len(natoms))
+        cap = math.sqrt(8.0)
+        weights = [min(max((1.0 / n) / geo, 1.0 / cap), cap) for n in natoms]
+        (out_dir / "struct_weights.json").write_text(json.dumps(
+            {"policy": "c_size_normalized_bounded", "n": len(weights),
+             "min": min(weights), "max": max(weights), "ratio": max(weights) / min(weights),
+             "weights": [round(w, 6) for w in weights]}, indent=2) + "\n")
     _write_structure_list(struct_list_path, labeled_dataset,
-                           tag=f"student-train-seed-{args.seed}")
+                           tag=f"student-train-seed-{args.seed}", weights=weights)
 
     # 5. Compose the final SIMPLE-NN input.yaml with CLI-derived overrides.
     payload = _build_input_yaml(rendered, args, descriptor_params,

@@ -1,0 +1,22 @@
+[
+  {
+    "operator": "eq",
+    "lhs": {
+      "field": "broad_alcell_distinguished"
+    },
+    "rhs": {
+      "const": true
+    },
+    "criterion": "error channels are reported with explicit scope labels (broad held-out vs AL-cell not conflated)"
+  },
+  {
+    "operator": "eq",
+    "lhs": {
+      "field": "aggregation_labels_present"
+    },
+    "rhs": {
+      "const": true
+    },
+    "criterion": "aggregation convention (frame-mean vs atom-weighted) is labeled for each channel"
+  }
+]

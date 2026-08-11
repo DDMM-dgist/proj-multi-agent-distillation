@@ -1,0 +1,23 @@
+{
+  "_record": "Stage D-2 C3 EXECUTION-LAUNCH failure (environment dependency). NOT a teacher-inference attempt. The committed wrapper failed at Python import time before any approval validation, run-dir creation, model load, structure conversion, forward, or E/F generation.",
+  "STAGE_D2_C3_EXECUTION_LAUNCH_ATTEMPT_1": "INCOMPLETE_PRE_EXECUTION_ENV_DEPENDENCY",
+  "ROOT_CAUSE": "ALLEGRO_ENV_MISSING_PYDANTIC",
+  "failure_stage": "PRE_EXECUTION_IMPORT",
+  "failure": "ModuleNotFoundError: No module named 'pydantic' (while importing runtimes/pydantic_ai/criterion_eval.py)",
+  "scientific_forward_started": false,
+  "scientific_forward_completed": false,
+  "scientific_forward_count": 0,
+  "teacher_ef_generated": false,
+  "run_dir_created": false,
+  "is_teacher_inference_attempt": false,
+  "head": "1dd14f0e2e1674ea886c2efa64b6a1be9aaf093c",
+  "device_requested": "cuda:1",
+  "external_approval_sha256": "1aa886092e0871340206f0e9823bace964c62ce7aa0f7d6f4bf32659d81a7e68",
+  "axis_a_b_scientific_status": "UNCHANGED (no scientific artifact exists)",
+  "resolution": {
+    "root_cause": "the GPU conda env 'allegro' lacked pydantic; the repo requires pydantic>=2.0 (pyproject.toml) which runtimes/pydantic_ai/criterion_eval.py imports.",
+    "fix": "conda run -n allegro pip install \"pydantic>=2.0\"  (validated env pin: pydantic==2.13.4)",
+    "torch_nequip_cuda_teacher": "unchanged by the fix",
+    "guard_added": "work/stage_d2_c3_env_preflight.py (import/load contract; fails closed before run-dir creation), wired into work/stage_d2_c3_execute.py as step 0."
+  }
+}

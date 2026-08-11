@@ -1,0 +1,9 @@
+{
+  "gate": "ph-pipeline",
+  "r_o_A": 1.275,
+  "r_si_A": 0.375,
+  "n_pd_dims": 3,
+  "void_radius_A": 1.74,
+  "periodic": true,
+  "calibrated": true
+}

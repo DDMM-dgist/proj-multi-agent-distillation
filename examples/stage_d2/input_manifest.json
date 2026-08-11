@@ -1,0 +1,33 @@
+{
+  "source_trajectory": "/home/hyunjin/CLADE/SiO2-x_distillatio/materials-ml-kit/research-sio2-allegro-simplenn-distillation/sio2x_production/random_x006/traj.dump",
+  "source_sha256": "53ddba6a02747efb9d545415ec6468ff41c76c5a845f7afdf4cc7e71c3067591",
+  "size_bytes": 25856871,
+  "n_frames": 151,
+  "n_atoms": 2940,
+  "box_L_A": 35.49749412495787,
+  "ensemble": "NVT 300 K, 150 ps",
+  "timestep_ps": 0.001,
+  "dump_interval_steps": 1000,
+  "frame_spacing_ps": 1.0,
+  "columns": [
+    "id",
+    "type",
+    "x",
+    "y",
+    "z",
+    "fx",
+    "fy",
+    "fz"
+  ],
+  "coordinates": "WRAPPED (no unwrapped xu/yu/zu, no image flags)",
+  "type_species_map": {
+    "1": "O",
+    "2": "Si"
+  },
+  "species_counts": {
+    "1": 1940,
+    "2": 1000
+  },
+  "pbc_reconstruction": "minimum-image continuity (proxy-gated; wrapped-only assumption documented)",
+  "d2_c1_input_insufficient_for_valid_msd": false
+}

@@ -1,0 +1,57 @@
+{
+  "schema_version": 1,
+  "requested_by_role": "data-curator",
+  "action_type": "label_with_teacher",
+  "approval_boundary": "costly_teacher_labeling",
+  "run_id": "pc002-label-clustered-void-gap",
+  "stage": "production_campaign_002",
+  "requested_at": "2026-08-10T00:00:00Z",
+  "rationale": "PC002 = DISTILLATION_DATASET_REVISE: the only target-domain LABEL gap is clustered-vacancy/void-surface. Candidate structures exist locally (production_12288/anneal_calib_clustered {T1000,plane_T1000} 102 frames + 8 carved clustered cells, local_x 0.11-0.60), but they are UNLABELED and the historical teacher-labeled set (KISTI) under-covers clustered production motifs. This ONE bounded action labels a targeted clustered-vacancy/void-surface set (+ a small dilute/amorphous balancing subset) with the ACCEPTED teacher b56e20ff to close the coverage gap before student training. Approval-gated; prepared, NOT executed.",
+  "active_config_refs": [],
+  "active_config_hashes": {},
+  "input_artifacts": [
+    {"role": "ml-trainer", "path": "materials-ml-kit/teacher/model.nequip.pth", "integrity": {"sha256": "b56e20ffc31da601feed8411c92675bdae9eb886db153ff67dd37dea161b1c57", "note": "ACCEPTED teacher (PC001); the ONLY labeling model"}},
+    {"role": "data-curator", "path": "research-sio2-allegro-simplenn-distillation/production_12288/anneal_calib_clustered/T1000/prod.dump", "integrity": {"note": "clustered/void candidate frames (51)", "sha256": "COMPUTED_AT_EXECUTION"}},
+    {"role": "data-curator", "path": "research-sio2-allegro-simplenn-distillation/production_12288/anneal_calib_clustered/plane_T1000/prod.dump", "integrity": {"note": "plane clustered candidate frames (51)", "sha256": "COMPUTED_AT_EXECUTION"}},
+    {"role": "data-curator", "path": "research-sio2-allegro-simplenn-distillation/embedding_clustered/anneal_runs/", "integrity": {"note": "8 carved clustered cells (input.data/out.data)", "sha256": "PER_CELL_COMPUTED_AT_EXECUTION"}},
+    {"role": "data-curator", "path": "research-sio2-allegro-simplenn-distillation/production_12288/random_sweep/x012/prod.dump", "integrity": {"note": "dilute-vacancy balancing subset", "sha256": "COMPUTED_AT_EXECUTION"}}
+  ],
+  "input_artifact_hashes": {
+    "materials-ml-kit/teacher/model.nequip.pth": "b56e20ffc31da601feed8411c92675bdae9eb886db153ff67dd37dea161b1c57"
+  },
+  "parameters": {
+    "subtype": "clustered_voidsurface_coverage_labeling",
+    "teacher_sha256": "b56e20ffc31da601feed8411c92675bdae9eb886db153ff67dd37dea161b1c57",
+    "labeling_target": "clustered-vacancy/void-surface coverage gap (PC002 label_gap)",
+    "bounded_selection": {
+      "clustered_frames": "sub-sample anneal_calib_clustered T1000 + plane_T1000 at >=5-frame (25 ps) spacing -> ~20 frames (avoid correlated-frame redundancy)",
+      "carved_clustered_cells": "8 embedding_clustered cells (input.data/out.data)",
+      "dilute_balancing": "random_sweep x012 sub-sample ~10 frames",
+      "estimated_total_structures": "~38 (bounded; NOT the full 452-frame dump pool)"
+    },
+    "outputs_per_structure": ["energy_eV", "forces_eV_A (N x 3)"],
+    "energy_convention_note": "label with the SAME evaluation path as error_a (NequIPCalculator), NOT the raw-torch total_energy path (C3), to keep the label energy convention valid",
+    "preserve_dft_test_assets": "the 42 SCAN cells remain PRESERVED for PC004 (NOT labeled/used as training here)",
+    "no_student_inference": true,
+    "no_dft": true,
+    "no_md": true,
+    "no_training": true,
+    "no_scheduler": true,
+    "no_external_network": true,
+    "no_overwrite": true,
+    "no_automatic_downstream_action": true
+  },
+  "expected_outputs": [
+    "runs/production_campaign_002/pc002-label-clustered-void-gap/labeled_clustered_void.xyz (teacher energy+forces)",
+    "runs/production_campaign_002/pc002-label-clustered-void-gap/label_manifest.json",
+    "runs/production_campaign_002/pc002-label-clustered-void-gap/criterion_results.json",
+    "runs/production_campaign_002/pc002-label-clustered-void-gap/provenance.json",
+    "runs/production_campaign_002/pc002-label-clustered-void-gap/run_manifest.json"
+  ],
+  "estimated_cost": "moderate: ~38 teacher single-points on ~12k-atom cells (GPU); minutes-to-~1h; one GPU; NO DFT/MD/training/scheduler",
+  "estimated_runtime": "minutes to ~1 hour (GPU)",
+  "idempotency_key": "pc002-label-clustered-void-gap-v1",
+  "dry_run": true,
+  "required_validator": "deterministic label validity (teacher SHA match, finite E/F, N x 3 shape, composition preserved, writes under run dir); + coverage check that the clustered label_gap is filled",
+  "rollback_or_cleanup_policy": "teacher labeling only (accepted teacher b56e20ff); writes only under the run dir; source structures + the 42 DFT cells read-only/preserved; requires explicit human approval (costly_teacher_labeling); no downstream chain; NOT executed here"
+}

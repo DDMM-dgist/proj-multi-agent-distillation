@@ -1,0 +1,15 @@
+{
+  "schema_version": 1,
+  "task_id": "stageB-ml-trainer-0001",
+  "agent": "ml-trainer",
+  "created_at": "2026-08-07T00:00:00Z",
+  "instruction": "You are the ML Trainer. Propose EXACTLY ONE typed ActionProposal and execute nothing. Emit ONLY these fields and no others: requested_by_role='ml-trainer', action_type='compute_committee_disagreement', schema_version=1, run_id='stageB-smoke', stage='student_training', requested_at='2026-08-07T00:00:00Z', rationale='Quantify committee force disagreement as a training-diagnostic; no training run.', idempotency_key='stageB-mlt-cd-0001', dry_run=true, parameters={}. Do not add any other fields and do not start any training.",
+  "inputs": [],
+  "criteria": [
+    "Return a typed MLTrainerActionProposal with action_type 'compute_committee_disagreement' and dry_run true."
+  ],
+  "constraints": [
+    "propose only: dry-run; no training; no side effects"
+  ],
+  "context": {}
+}

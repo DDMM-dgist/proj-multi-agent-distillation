@@ -1,0 +1,8 @@
+{
+  "cell_id": "cell_009",
+  "set": "iter1_dilute",
+  "n_atoms": 78,
+  "E_per_atom_eV": -9.870455,
+  "max_force_eV_A": 5.8906,
+  "scf_converged": true
+}

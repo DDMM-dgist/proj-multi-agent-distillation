@@ -1,0 +1,20 @@
+{
+  "campaign": "production_campaign_005",
+  "state": "PREPARED",
+  "new_production_execution": "BLOCKED_ON_FINAL_STUDENT",
+  "observables_and_scripts": {
+    "RDF_ADF_coordination_density_SQ_FSDP": "production_12288/validation_out/validate_glass.py",
+    "MSD_diffusion": "production_12288/melt_msd/compute_melt_msd.py",
+    "NVE_energy_drift_and_stability": "teacher_diag/nve_drift/analyze_nve.py",
+    "defect_specific_SiO2x": "sio2x_production/analysis_out/04_analyze.py (per-config npz)",
+    "persistent_homology_voids": "ph_analysis/run_ph.py",
+    "mechanics_softness": "sio2x_production/mechanics_out/run_aqs_softness.py"
+  },
+  "md_settings": {"engine": "LAMMPS", "pair_style": "nn (O Si)", "units": "metal", "timestep_ps": 0.001,
+                  "glass": "NPT melt-quench 1 K/ps; RDF ~101 frames, ADF ~11", "nve_drift": "NVT 300K 10ps -> NVE 100ps dt 1fs"},
+  "reuse_vs_recompute": {
+    "reusable_scripts": "all of the above (in-repo)",
+    "recompute_for_new_student": "every LAMMPS observable is potential-dependent -> re-run against the new committee once a student exists (join + PC003 done). NOT on this CPU server."
+  },
+  "no_new_MD_here": true
+}

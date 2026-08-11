@@ -1,0 +1,21 @@
+{
+  "active_dev_campaign": "SIO2_DISTILLATION_DEV_V6_SMALL_002",
+  "campaign_type": "DEVELOPMENT", "final_scientific_result": false,
+  "teacher": {"id": "teacher_v6_finetuned", "sha256": "277262dc2d47124748d885a9f26b1f7a1697066183c624188826ff787a501dd5",
+              "role": "PROVISIONAL_DEVELOPMENT_TEACHER", "PC001_scientific": "REVISE", "PC001_development_override": "PROCEED_WITH_KNOWN_LIMITATION"},
+  "dataset": {"dev_subset_of": "PC002_FULL_DATASET(5552, frozen)", "n": 400, "train": 360, "valid": 40,
+              "augmentation_status": "BYPASSED_FOR_SMALL_DEVELOPMENT_CAMPAIGN", "dft_cells_excluded": 11},
+  "controller_progress": {"teacher_labeling": "PASS", "label_validation": "PASS", "dataset_split": "PASS",
+                          "training": "FAILED", "evaluation": "pending", "physical_validation": "pending"},
+  "gate_mode": "DEV_DETERMINISTIC_ATTESTATION (no LLM provider; real LLM judge committee reserved for final campaign)",
+  "runner": "work/devv6_campaign_runner.py (minimal resumable; composes controller commands only)",
+  "success_criteria": {"CLAUDE_CODE_IS_NOT_THE_CAMPAIGN_ORCHESTRATOR": true,
+                       "CONTROLLER_OWNS_STAGE_PROGRESSION": true, "CAMPAIGN_IS_RESUMABLE": true},
+  "training_failure": {"category": "other", "label": "TRAINING_CONFIG_INCOMPLETE",
+                       "responsible_agent": "ml-trainer", "boundary": "WAIT_ML_TRAINER",
+                       "record": "runs/SIO2_DISTILLATION_DEV_V6_SMALL_002/recovery/training_failure_routing.json"},
+  "superseded": ["SIO2_DISTILLATION_DEV_V6_001 (full v6 labeling; SUPERSEDED_BY_SMALL)",
+                 "SIO2_DISTILLATION_DEV_V6_SMALL_001 (git-guard re-init -> _002)"],
+  "untouched": ["full PC002 5552 frozen", "11 SCAN DFT cells", "GPU Allegro T1 branch", "64 VASP jobs"],
+  "docs": ["work/DEVV6_SMALL_CAMPAIGN_SUMMARY.md", "work/PC002_AUGMENTATION_POLICY.md", "work/DEVV6_CAMPAIGN_EVENTLOG.md"]
+}

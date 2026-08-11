@@ -1,0 +1,18 @@
+{
+  "campaign": "production_campaign_003_to_004",
+  "pc003_outputs_feeding_pc004": {
+    "student_committee": "4 x potential_saved_bestmodel (+ scale_factor, pca, params_Si, params_O)",
+    "per_seed_logs": "LOG_seed01..04 (E/F RMSE curves)",
+    "within_distribution_valid_metrics": "student-vs-teacher on the 558 PC002 valid set (per-domain)"
+  },
+  "pc004_axes": {
+    "A_student_vs_final_teacher": {"set": "558 within-distribution valid structures", "role": "PC003_WITHIN_DISTRIBUTION_VALIDATION / interpolation + fidelity (NOT an independent generalization benchmark — shares lineages with train)"},
+    "B_student_vs_independent_DFT": {"set": "11 protected SCAN DFT cells", "role": "INDEPENDENT scientific benchmark; leakage-safe (never in train/val)"}
+  },
+  "kept_conceptually_distinct": true,
+  "metrics": ["energy MAE/RMSE", "force component MAE/RMSE", "per-atom vector error", "normalized force error",
+              "domain-resolved (amorphous/dilute/clustered)", "outlier/tail analysis"],
+  "manifests": {"valid": "work/pc002_student_valid_structure_manifest.csv (558)",
+                "dft": "work/pc004_dft_exclusion_manifest.csv (11)"},
+  "status": "interface defined; PC004 numeric execution WAIT_FINAL_STUDENT"
+}

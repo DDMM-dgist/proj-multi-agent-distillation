@@ -1,0 +1,9 @@
+{
+  "gate": "er-finetune",
+  "reported_al_fmae_change_pct": -3.3,
+  "reported_base_fmae_change_pct": -2.0,
+  "eval_log_uses_selected_checkpoint": false,
+  "naive_baseline_eval_log_present": false,
+  "e_mae_offset_demonstrated": false,
+  "note": "eval logs use Run2 ckpt not selected Run3 ep118; naive +11% has no eval log; E-MAE +75% offset unproven"
+}

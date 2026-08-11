@@ -1,0 +1,60 @@
+{
+  "run_id": "d2c3-teacher-sp-mini216-attempt3",
+  "attempt": 3,
+  "supersedes": {
+    "attempt1_run": "d2c3-teacher-sp-mini216",
+    "attempt1_status": "EXECUTION_FAILED_BEFORE_FORWARD (immutable; NEQUIP_0_16_1_ATOMICDATADICT_API_MISMATCH)",
+    "attempt2_run": "d2c3-teacher-sp-mini216-attempt2",
+    "attempt2_status": "EXECUTION_FAILED_DURING_FORWARD (immutable; MODEL_INPUT_OR_BUFFER_DEVICE_MISMATCH_CPU_VS_CUDA1)"
+  },
+  "model_forward_invoked": true,
+  "model_forward_completed": true,
+  "valid_prediction_generated": true,
+  "stage": "stage_d2_c3",
+  "action": "label_with_teacher",
+  "subtype": "teacher_single_point",
+  "package_head": "8d043c6c6a99c8e0e51b5183d2c9522d621597c0",
+  "adapter": "TrustedAllegroAdapter (committed; no arbitrary forward_fn)",
+  "model_identity": "base/pre-fine-tune KISTI Allegro, compiled TorchScript deploy-only",
+  "model_sha256": "b56e20ffc31da601feed8411c92675bdae9eb886db153ff67dd37dea161b1c57",
+  "structure_sha256": "3d2dd2464d83ca144e2c6d51382b83546b1152da06a386bfe3672550f4348364",
+  "source_approval": {
+    "external_approval_path": "/home/hyunjin/c3_approvals/d2c3-teacher-sp-mini216-attempt3.approval.json",
+    "external_approval_sha256": "0328b1902b5c429719dfbc5ff53ee5c1a85fc0ee24b9ad9fd8ba926e4272faf6"
+  },
+  "load_provenance": {
+    "model_sha256": "b56e20ffc31da601feed8411c92675bdae9eb886db153ff67dd37dea161b1c57",
+    "python": "3.10.19",
+    "torch": "2.6.0",
+    "cuda_available": true,
+    "nequip": "0.16.1",
+    "allegro": "?",
+    "device": "cuda:1",
+    "type_names": [
+      "O",
+      "Si"
+    ],
+    "r_max": 5.0,
+    "model_dtype": "float32",
+    "required_input_fields": [
+      "pos",
+      "cell",
+      "pbc",
+      "atom_types",
+      "edge_index"
+    ]
+  },
+  "device": "cuda:1",
+  "authoritative_verdict": "FAIL",
+  "source_model_unchanged": true,
+  "clean_unload": true,
+  "semantic_judge": "NOT run (separate later approval)",
+  "artifacts_sha256": {
+    "approval.json": "0328b1902b5c429719dfbc5ff53ee5c1a85fc0ee24b9ad9fd8ba926e4272faf6",
+    "input_manifest.json": "c1c909d5076ca8f62aa655ba9a8f75ce3677ed194e0c7a57a02f86b64c5296ca",
+    "model_manifest.json": "bf7b612ccc9fd3a68b926329e604f8a656566b2f4e13c22ebd08c612db42e653",
+    "teacher_ef.json": "d280da21189476d0f0dcd656808942217c6741f9cca287a6f29354d09c5900fc",
+    "forces.csv": "749adf40e09511f1aa6e631d4cd6a2508071510c05b4aa2de121398c5066643a",
+    "criterion_results.json": "1a99c11cd61cecd01ad298031f2e669f0df3de8017ef5643b0eba5b20191cf65"
+  }
+}
