@@ -89,7 +89,12 @@ class ArchitectureFreezeTests(unittest.TestCase):
 
     def test_request_limit_default_is_six(self):
         # request_limit=6 is part of the freeze; assert the default constant is intact.
-        from runtimes.pydantic_ai.models import RuntimeContext
+        # pydantic is an optional runtime dep; on the core-only install skip (like every other
+        # pydantic-ai test) instead of erroring — the assertion still runs in the pydantic-ai jobs.
+        try:
+            from runtimes.pydantic_ai.models import RuntimeContext
+        except ModuleNotFoundError:
+            self.skipTest("pydantic (optional runtime dep) not installed")
         self.assertEqual(RuntimeContext.model_fields["request_limit"].default, 6)
 
 
