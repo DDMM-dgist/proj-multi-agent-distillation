@@ -48,10 +48,24 @@ def load_teacher(cfg):
     model_arg = calc_cfg.get("model_arg", "model")
     model = teacher_model_reference(cfg)
     if model_arg == "__positional__":
-        return constructor(model, **kwargs)
+        try:
+            return constructor(model, **kwargs)
+        except ValueError as exc:
+            if "chemical_symbols" not in kwargs or "chemical_species_to_atom_type_map" not in str(exc):
+                raise
+            symbols = list(kwargs.pop("chemical_symbols"))
+            kwargs["chemical_species_to_atom_type_map"] = {symbol: symbol for symbol in symbols}
+            return constructor(model, **kwargs)
     if model_arg:
         kwargs[model_arg] = model
-    return constructor(**kwargs)
+    try:
+        return constructor(**kwargs)
+    except ValueError as exc:
+        if "chemical_symbols" not in kwargs or "chemical_species_to_atom_type_map" not in str(exc):
+            raise
+        symbols = list(kwargs.pop("chemical_symbols"))
+        kwargs["chemical_species_to_atom_type_map"] = {symbol: symbol for symbol in symbols}
+        return constructor(**kwargs)
 
 
 def check_stress_support(cfg, test_atoms):

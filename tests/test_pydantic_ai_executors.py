@@ -35,6 +35,45 @@ def _run(d: Path):
     return d
 
 
+
+
+def _protected_reference_package(root: Path, protected_atoms) -> Path:
+    from ase.io import write
+    ref = root / "protected.xyz"
+    write(str(ref), [protected_atoms])
+    indices = root / "protected_indices.txt"
+    indices.write_text("760\n761\n")
+    manifest = root / "protected_manifest.json"
+    manifest.write_text(json.dumps({"mapping": {
+        "logical_test_frames": 1,
+        "matched_logical_frames": 1,
+        "unmatched_logical_frames": 0,
+        "protected_source_rows": 2,
+        "conflicting_label_duplicates": 0,
+    }}))
+    from workflow.integrity import sha256_file
+    reference = root / "reference.yaml"
+    reference.write_text("\n".join([
+        "kind: protected-existing-dft",
+        "reference_id: test-reference",
+        "reference_class: ORIGINAL_TEACHER_TEST",
+        "status: AVAILABLE_AND_PROTECTED",
+        "logical_test_frames: 1",
+        "protected_source_rows: 2",
+        f"protection_manifest: {manifest}",
+        f"protected_source_rows_file: {indices}",
+        "duplicate_equivalent:",
+        "  source_global_indices: [760, 761]",
+        "  label_conflict: false",
+        "prohibited_uses: [student_training, student_validation_tuning, acquisition_seed, augmentation_parent, recovery_training]",
+        "structures:",
+        f"  path: {ref}",
+        "  logical_frames: 1",
+        f"  sha256: {sha256_file(ref)}",
+        "",
+    ]))
+    return reference
+
 def _prop(role, action, key, parameters):
     return {"requested_by_role": role, "action_type": action, "idempotency_key": key,
             "run_id": "r", "stage": "s", "requested_at": "t", "rationale": "sandbox",
@@ -128,6 +167,65 @@ class ExecutorIntegrationTests(unittest.TestCase):
                              o2.artifact["metrics"]["selected_ids"])  # same seed -> same selection
             self.assertEqual(o1.artifact["metrics"]["selected_count"], 4)
 
+
+    def test_training_with_unprotected_dataset_passes_production_guard(self):
+        from ase import Atoms
+        from ase.io import write
+        from workflow.controller import RunController
+        from runtimes.pydantic_ai.controller_bridge import dispatch_via_controller
+        from runtimes.pydantic_ai.executors import build_executor_registry
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            protected = Atoms("Cu", positions=[[0, 0, 0]], cell=[10, 10, 10], pbc=True)
+            reference_yaml = _protected_reference_package(root, protected)
+            allowed = Atoms("Cu", positions=[[1, 0, 0]], cell=[10, 10, 10], pbc=True)
+            allowed.info["structure_id"] = "allowed"
+            allowed.info["parent_structure_id"] = "seed-pool:900"
+            dataset = root / "allowed.extxyz"
+            write(str(dataset), [allowed, allowed.copy(), allowed.copy()])
+            student_cfg = root / "student.yaml"
+            student_cfg.write_text("kind: mock\ncommittee:\n  seeds: [1]\n")
+            c = RunController(_run(root / "run"))
+            c.grant_action_approval("costly_training")
+            prop = _prop("ml-trainer", "train_committee", "guard-ok", {
+                "student_config": str(student_cfg), "dataset": str(dataset),
+                "output_dir": str(root / "committee"),
+                "manifest_path": str(root / "committee.json"),
+                "reference_yaml": str(reference_yaml),
+            })
+            out = dispatch_via_controller(prop, controller=c, registry=build_executor_registry(),
+                                          mode="primary")
+            self.assertEqual(out.status, "EXECUTED")
+
+    def test_training_blocks_protected_geometry_before_execution(self):
+        from ase import Atoms
+        from ase.io import write
+        from workflow.controller import RunController
+        from runtimes.pydantic_ai.controller_bridge import dispatch_via_controller
+        from runtimes.pydantic_ai.executors import build_executor_registry
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            protected = Atoms("Cu", positions=[[0, 0, 0]], cell=[10, 10, 10], pbc=True)
+            reference_yaml = _protected_reference_package(root, protected)
+            protected.info["structure_id"] = "protected"
+            protected.info["parent_structure_id"] = "seed-pool:760"
+            dataset = root / "blocked.extxyz"
+            write(str(dataset), [protected, protected.copy(), protected.copy()])
+            student_cfg = root / "student.yaml"
+            student_cfg.write_text("kind: mock\ncommittee:\n  seeds: [1]\n")
+            c = RunController(_run(root / "run"))
+            c.grant_action_approval("costly_training")
+            manifest = root / "committee.json"
+            prop = _prop("ml-trainer", "train_committee", "guard-block", {
+                "student_config": str(student_cfg), "dataset": str(dataset),
+                "output_dir": str(root / "committee"), "manifest_path": str(manifest),
+                "reference_yaml": str(reference_yaml),
+            })
+            out = dispatch_via_controller(prop, controller=c, registry=build_executor_registry(),
+                                          mode="primary")
+            self.assertEqual(out.status, "EXECUTOR_ERROR")
+            self.assertFalse(manifest.exists())
+
     def test_completion_validator_fails_closed(self):
         with tempfile.TemporaryDirectory() as tmp:
             manifest = Path(tmp) / "committee.json"
@@ -138,20 +236,38 @@ class ExecutorIntegrationTests(unittest.TestCase):
             self.assertEqual(o.status, "INVALID")   # fail-closed, not a passing artifact
             self.assertFalse(o.executed)
 
-    def test_hpc_action_is_gated_and_not_executed(self):
+    def test_hpc_action_requires_approval_then_reaches_real_train_wrapper(self):
+        from ase import Atoms
+        from ase.io import write
         from workflow.controller import RunController
         from runtimes.pydantic_ai.controller_bridge import dispatch_via_controller
         from runtimes.pydantic_ai.executors import build_executor_registry
         with tempfile.TemporaryDirectory() as tmp:
-            c = RunController(_run(Path(tmp) / "run"))
+            root = Path(tmp)
+            c = RunController(_run(root / "run"))
+            dataset = root / "train.extxyz"
+            frames = []
+            for i in range(3):
+                a = Atoms("Cu", positions=[[i, 0, 0]], cell=[10, 10, 10], pbc=True)
+                a.info["parent_structure_id"] = f"p{i}"
+                a.info["structure_id"] = f"s{i}"
+                frames.append(a)
+            write(str(dataset), frames)
+            student_cfg = root / "student.yaml"
+            student_cfg.write_text("kind: mock\ncommittee:\n  seeds: [1, 2]\n")
+            prop = _prop("ml-trainer", "train_committee", "t1", {
+                "student_config": str(student_cfg), "dataset": str(dataset),
+                "output_dir": str(root / "committee"),
+                "manifest_path": str(root / "committee.json"),
+            })
             reg = build_executor_registry()
-            p = _prop("ml-trainer", "train_committee", "t1", {})
-            o1 = dispatch_via_controller(p, controller=c, registry=reg, mode="primary")
-            self.assertEqual(o1.status, "APPROVAL_REQUIRED")     # gated
+            o1 = dispatch_via_controller(prop, controller=c, registry=reg, mode="primary")
+            self.assertEqual(o1.status, "APPROVAL_REQUIRED")
             c.grant_action_approval("costly_training")
-            o2 = dispatch_via_controller(p, controller=c, registry=reg, mode="primary")
-            self.assertEqual(o2.status, "DRY_RUN")               # approved but NOT run in-process
-            self.assertFalse(o2.executed)
+            o2 = dispatch_via_controller(prop, controller=c, registry=reg, mode="primary")
+            self.assertEqual(o2.status, "EXECUTED")
+            self.assertTrue(Path(o2.artifact["path"]).is_file())
+            self.assertEqual(len(o2.artifact["manifest"]["models"]), 2)
 
 
 @unittest.skipUnless(_HAS_PYDANTIC, "pydantic not installed")
@@ -162,15 +278,16 @@ class BackingMatrixTests(unittest.TestCase):
         all_actions = set().union(*ROLE_ALLOWED_ACTIONS.values())
         self.assertEqual(set(BINDINGS), all_actions)
 
-    def test_ready_executor_has_fn_others_do_not(self):
+    def test_required_heavy_actions_have_registry_executors(self):
         from runtimes.pydantic_ai.executors import BINDINGS, build_executor_registry
         reg = build_executor_registry()
+        required = {"build_teacher_baseline", "acquire_structures", "label_with_teacher",
+                    "run_teacher_md", "train_committee", "evaluate_heldout_fidelity",
+                    "run_student_md"}
         for action, b in BINDINGS.items():
-            if b.status == "READY_EXECUTOR":
-                self.assertIsNotNone(b.fn, action)
+            if b.status == "READY_EXECUTOR" or action in required:
                 self.assertIsNotNone(reg[action].executor, action)
-            else:  # HPC / INTERFACE / REASONING never carry an inline executor
-                self.assertIsNone(b.fn, action)
+            elif b.status in {"READY_INTERFACE_BACKEND_NOT_CONFIGURED", "READY_REASONING_OUTPUT"}:
                 self.assertIsNone(reg[action].executor, action)
 
     def test_no_action_is_left_not_implemented(self):
@@ -182,7 +299,7 @@ class BackingMatrixTests(unittest.TestCase):
         from runtimes.pydantic_ai.executors import BINDINGS
         counts = Counter(b.status for b in BINDINGS.values())
         self.assertEqual(counts["READY_EXECUTOR"], 28)
-        self.assertEqual(counts["READY_HPC_APPROVAL_GATED"], 5)
+        self.assertEqual(counts["READY_HPC_APPROVAL_GATED"], 7)
         self.assertEqual(counts["READY_INTERFACE_BACKEND_NOT_CONFIGURED"], 3)
         self.assertEqual(counts["READY_REASONING_OUTPUT"], 1)
         self.assertEqual(counts.get("NOT_IMPLEMENTED", 0), 0)

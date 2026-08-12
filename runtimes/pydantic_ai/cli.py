@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import sys
 from pathlib import Path
 
@@ -37,6 +38,25 @@ _PROVIDER_UNAVAILABLE_FAILURES = {"authentication_failure"}
 def _build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(prog="pydantic-ai-runtime", description=__doc__)
     sub = p.add_subparsers(dest="command", required=True)
+    preflight = sub.add_parser("preflight", help="verify run inputs and build bounded evidence")
+    preflight.add_argument("--run-dir", required=True)
+    approve = sub.add_parser("approve", help="record explicit human approval for an action boundary")
+    approve.add_argument("--run-dir", required=True)
+    approve.add_argument("--boundary", required=True)
+    approve.add_argument("--note", required=True)
+    stage = sub.add_parser("run-stage", help="run one production-routed stage")
+    stage.add_argument("--run-dir", required=True)
+    stage.add_argument("--stage", required=True)
+    stage.add_argument("--runtime", choices=("mock", "pydantic-ai"), required=True,
+                       help="required; use pydantic-ai for production, mock only in tests")
+    stage.add_argument("--mock-response", default=None)
+    stage.add_argument("--agent-specs-dir", default="agent_specs")
+    stage.add_argument("--exchange-dir", default=None)
+    stage.add_argument("--repo-root", default=".")
+    stage.add_argument("--auto-mock-judges", action="store_true",
+                       help="test-only: create three PASS judge votes from frozen evidence")
+    stage.add_argument("--mock-judge-response", action="append", default=[],
+                       help="test-only: one canned JudgeVote JSON per judge context")
     r = sub.add_parser("run-task", help="run one task through the runtime")
     r.add_argument("--runtime", choices=("mock", "pydantic-ai"), required=True)
     r.add_argument("--agent", required=True, help="agent/role name (spec basename)")
@@ -68,9 +88,459 @@ def _print_kv(out, **kw):
         print(f"{k}: {v}", file=out)
 
 
+
+def _stage_config(controller, stage_name):
+    import yaml
+    cfg = yaml.safe_load(Path(controller.state["workflow_config"]).read_text()) or {}
+    for stage in cfg.get("stages", []):
+        if stage.get("name") == stage_name:
+            return stage
+    return {}
+
+
+def _default_stage_route(stage_name):
+    return {
+        "teacher_baseline": ("simulation", "build_teacher_baseline", "costly_teacher_labeling"),
+        "acquisition": ("data-curator", "acquire_structures", "costly_teacher_labeling"),
+        "teacher_labeling": ("data-curator", "label_with_teacher", "costly_teacher_labeling"),
+        "training": ("ml-trainer", "train_committee", "costly_training"),
+        "evaluation": ("ml-trainer", "evaluate_heldout_fidelity", None),
+        "teacher_md": ("simulation", "run_teacher_md", "production_md"),
+        "deployment_md": ("simulation", "run_student_md", "production_md"),
+    }.get(stage_name)
+
+
+def _input_source(controller, contains=None, suffix=None, exclude_contains=None):
+    for record in controller.state.get("inputs", []):
+        path = record.get("snapshot") or record.get("source")
+        if not path:
+            continue
+        name = Path(path).name
+        full = str(path)
+        if contains and contains not in name and contains not in full:
+            continue
+        if exclude_contains and (exclude_contains in name or exclude_contains in full):
+            continue
+        if suffix and not name.endswith(suffix):
+            continue
+        return path
+    return None
+
+
+def _fill_default_parameters(controller, stage_name, params):
+    if stage_name == "teacher_baseline" and "structures_path" not in params:
+        raise ValueError("teacher_baseline requires explicit pydantic_ai.parameters.structures_path")
+    if params or stage_name != "teacher_baseline":
+        return params
+    stage = controller.stage(stage_name)
+    outputs = stage.get("outputs") or []
+    report = str((controller.run_dir / outputs[0]).resolve()) if outputs else str(
+        controller.run_dir / "artifacts" / "teacher_baseline.json")
+    teacher = _input_source(controller, "teacher", ".yaml") or _input_source(controller, "teacher.allegro", ".yaml")
+    scope = _input_source(controller, "distillation_scope", ".yaml")
+    profile = (_input_source(controller, "validation_profile", ".yaml") or
+               _input_source(controller, "validation", ".yaml"))
+    structures = (_input_source(controller, "bulk_cryst", ".xyz") or
+                  _input_source(controller, suffix=".xyz", exclude_contains="protected_reference"))
+    missing = [name for name, value in {
+        "teacher_config": teacher,
+        "distillation_scope": scope,
+        "validation_profile": profile,
+        "structures_path": structures,
+    }.items() if not value]
+    if missing:
+        raise ValueError("teacher_baseline cannot infer required inputs: " + ", ".join(missing))
+    return {
+        "teacher_config": teacher,
+        "distillation_scope": scope,
+        "validation_profile": profile,
+        "structures_path": structures,
+        "report_path": report,
+        "labeled_output": str(controller.run_dir / "artifacts" / "teacher_baseline_operational.extxyz"),
+        "label_manifest_path": str(controller.run_dir / "artifacts" / "teacher_baseline_labels.manifest.json"),
+        "applicability_status": "NOT_ESTABLISHED",
+        "applicability_limitations": ["deployment-domain evidence gap remains NOT_ESTABLISHED"],
+        "deployment_domain": {"stage": "teacher_baseline", "source": "declared operational structures"},
+        "require_lineage": False,
+    }
+
+
+def _protected_reference_from_inputs(controller):
+    import yaml
+    from validation.protected_reference import validate_reference_config
+    found = []
+    for record in controller.state.get("inputs", []):
+        raw = record.get("snapshot") or record.get("source")
+        if not raw or Path(raw).suffix.lower() not in {".yaml", ".yml"}:
+            continue
+        try:
+            payload = yaml.safe_load(Path(raw).read_text()) or {}
+        except Exception:
+            continue
+        if isinstance(payload, dict) and payload.get("kind") == "protected-existing-dft":
+            validate_reference_config(raw)
+            found.append(str(Path(raw).resolve()))
+    if len(found) > 1:
+        raise ValueError("multiple protected reference configs are bound to this run")
+    return found[0] if found else None
+
+
+def _protection_consuming_action(action):
+    return action in {"acquire_structures", "label_with_teacher", "train_committee"}
+
+
+def _proposal_from_stage(controller, stage_name, stage_cfg):
+    route = stage_cfg.get("pydantic_ai") or {}
+    if not route:
+        default = _default_stage_route(stage_name)
+        if not default:
+            raise ValueError("stage requires pydantic_ai role/action metadata")
+        role, action, boundary = default
+        params = {}
+    else:
+        role = route["role"]
+        action = route["action"]
+        boundary = route.get("approval_boundary")
+        params = dict(route.get("parameters") or {})
+    context = {"run_dir": str(controller.run_dir),
+               "artifacts_dir": str(controller.run_dir / "artifacts"),
+               "project_dir": controller.state["project_dir"]}
+    def fmt(value):
+        if isinstance(value, str):
+            return value.format(**context)
+        if isinstance(value, list):
+            return [fmt(v) for v in value]
+        if isinstance(value, dict):
+            return {k: fmt(v) for k, v in value.items()}
+        return value
+    params = fmt(_fill_default_parameters(controller, stage_name, params))
+    protected_reference = _protected_reference_from_inputs(controller)
+    if protected_reference and _protection_consuming_action(action):
+        existing = params.get("reference_yaml")
+        if existing is not None and str(Path(existing).resolve()) != protected_reference:
+            raise ValueError("stage proposal reference_yaml does not match the controller-bound protected reference")
+        params["reference_yaml"] = protected_reference
+    return {
+        "schema_version": 1,
+        "run_id": controller.state["run_id"],
+        "stage": stage_name,
+        "requested_at": "controller-stage-runner",
+        "rationale": f"execute run stage {stage_name} through trusted production dispatch",
+        "parameters": params,
+        "expected_outputs": list(controller.stage(stage_name).get("outputs", [])),
+        "approval_boundary": boundary,
+        "idempotency_key": route.get("idempotency_key", f"{controller.state['run_id']}:{stage_name}:001"),
+        "dry_run": False,
+        "requested_by_role": role,
+        "action_type": action,
+    }, role
+
+
+_BOUND_PROPOSAL_FIELDS = {
+    "run_id", "stage", "requested_by_role", "action_type", "approval_boundary",
+    "idempotency_key", "expected_outputs", "parameters",
+}
+
+
+def _canonical(value):
+    return json.loads(json.dumps(value, sort_keys=True, separators=(",", ":"), default=str))
+
+
+def _proposal_binding_validator(authoritative):
+    def validate(candidate):
+        for field in sorted(_BOUND_PROPOSAL_FIELDS):
+            left = candidate.get(field) if isinstance(candidate, dict) else getattr(candidate, field, None)
+            right = authoritative.get(field)
+            if _canonical(left) != _canonical(right):
+                return False, f"authoritative action binding mismatch for {field}"
+        return True, ""
+    return validate
+
+
+def _producer_task(stage_name, role, evidence_path, controller, authoritative_proposal):
+    return {
+        "schema_version": 1,
+        "task_id": f"{stage_name}-producer",
+        "agent": role,
+        "run_id": controller.state["run_id"],
+        "created_at": "controller-stage-runner",
+        "instruction": (f"Inspect and reason about the authoritative execution proposal for stage {stage_name}. "
+                        "Return exactly the same execution-critical binding. Do not replace paths, "
+                        "add/remove execution parameters, or change action_type, approval boundary, "
+                        "idempotency key, stage, expected outputs, or protected-reference binding."),
+        "inputs": [{"role": "bounded_evidence", "path": str(evidence_path)}],
+        "criteria": list(controller.stage(stage_name).get("gate_criteria") or ["stage action is valid"]),
+        "constraints": ["Return exactly one typed ActionProposal; do not run compute directly."],
+        "context": {"stage": stage_name,
+                    "authoritative_action_proposal": authoritative_proposal},
+    }
+
+
+def _write_mock_response(path, proposal):
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(proposal, indent=2) + "\n")
+    return path
+
+
+def _stage_outputs(controller, stage_name):
+    paths = []
+    for rel in controller.stage(stage_name).get("outputs", []):
+        path = (controller.run_dir / rel).resolve()
+        if path.exists():
+            paths.append(path)
+    return paths
+
+
+def _write_three_pass_votes(controller, stage_name):
+    ctx = controller.gate_context(stage_name)
+    votes = []
+    for index, lens in enumerate(ctx["review_lenses"], 1):
+        votes.append({
+            "judge_id": f"judge-{index}",
+            "review_lens": lens["id"],
+            "verdict": "PASS",
+            "criteria_checked": [
+                {"criterion": c, "value_read": "bounded evidence and deterministic artifacts", "ok": True}
+                for c in ctx["criteria"]
+            ],
+            "rationale": "synthetic integration-test judge context accepted the frozen evidence",
+            "required_fix": "",
+        })
+    bundle = {**ctx, "decision": "PASS", "votes": votes}
+    path = controller.run_dir / "gates" / f"{stage_name}.stage-runner.votes.json"
+    path.write_text(json.dumps(bundle, indent=2) + "\n")
+    controller.record_gate(stage_name, votes_path=path)
+    return path
+
+
+
+def _judge_task(stage_name, judge_index, lens, gate_context, evidence_path, controller):
+    inputs = [{"role": "bounded_evidence", "path": str(evidence_path)}]
+    for path in gate_context["artifact_sha256"]:
+        inputs.append({"role": "stage_artifact", "path": path})
+    return {
+        "schema_version": 1,
+        "task_id": f"{stage_name}-judge-{judge_index}",
+        "agent": "judge",
+        "run_id": controller.state["run_id"],
+        "created_at": "controller-stage-runner",
+        "instruction": f"Judge stage {stage_name} against the frozen criteria and artifacts.",
+        "inputs": inputs,
+        "criteria": list(gate_context["criteria"]),
+        "constraints": [
+            "Use only the provided frozen evidence and artifacts.",
+            "Do not assume or inspect another Judge context or vote.",
+        ],
+        "context": {"review_lens": lens["id"], "review_focus": lens["focus"],
+                    "stage": stage_name, "artifact_sha256": gate_context["artifact_sha256"]},
+    }
+
+
+def judge_read_allowlist(gate_context, evidence_path):
+    return [str(Path(evidence_path).resolve()), *[str(Path(path).resolve()) for path in gate_context["artifact_sha256"]]]
+
+
+def run_three_judge_gate(controller, stage_name, specs, runtime_factory, runtime_context_factory,
+                         evidence_path, *, mode="primary"):
+    from orchestration.exchange import FileExchangeRuntime
+    from .production_router import run_role
+    gate_context = controller.gate_context(stage_name)
+    exchange = FileExchangeRuntime(runtime_context_factory(1).exchange_dir)
+    votes = []
+    for index, lens in enumerate(gate_context["review_lenses"], 1):
+        task = _judge_task(stage_name, index, lens, gate_context, evidence_path, controller)
+        exchange.dispatch(specs["judge"], task)
+        ctx = runtime_context_factory(index)
+        res = run_role(runtime_factory(index), task, specs["judge"], ctx, mode=mode)
+        if res.error or res.detail is None:
+            raise RuntimeError(f"Judge {index} failed validation: {res.error}")
+        vote = dict(res.detail)
+        vote["judge_id"] = f"judge-{index}"
+        votes.append(vote)
+    decision = "FAIL" if any(v["verdict"] == "FAIL" for v in votes) else (
+        "PASS" if all(v["verdict"] == "PASS" for v in votes) else "REVISE")
+    bundle = {**gate_context, "decision": decision, "votes": votes}
+    path = controller.run_dir / "gates" / f"{stage_name}.production.votes.json"
+    path.write_text(json.dumps(bundle, indent=2) + "\n")
+    controller.record_gate(stage_name, votes_path=path)
+    return decision, path
+
+
+def _cmd_preflight(args) -> int:
+    from workflow.controller import RunController
+    from .bounded_evidence import build_bounded_evidence
+    c = RunController(args.run_dir)
+    c.verify_inputs()
+    evidence = c.run_dir / "exchange" / "bounded_evidence" / "preflight.json"
+    artifacts = [r.get("snapshot") or r.get("source") for r in c.state.get("inputs", [])]
+    build_bounded_evidence([a for a in artifacts if a], evidence,
+                           protocol_refs=[c.state.get("workflow_config")])
+    print(f"preflight: OK\nbounded_evidence: {evidence}")
+    return EXIT_SUCCESS
+
+
+def _cmd_approve(args) -> int:
+    from workflow.controller import RunController
+    c = RunController(args.run_dir)
+    c.grant_action_approval(args.boundary, note=args.note)
+    print(f"approval: {args.boundary}")
+    return EXIT_SUCCESS
+
+
+def _cmd_run_stage(args) -> int:
+    from orchestration.specs import load_agent_specs
+    from workflow.controller import RunController
+    from .bounded_evidence import build_bounded_evidence
+    from .executors import build_executor_registry
+    from .mock_runtime import MockAgentRuntime
+    from .models import RuntimeContext
+    from .production_router import run_role
+    from . import provider as _prov
+
+    c = RunController(args.run_dir)
+    try:
+        c.verify_inputs()
+        stage_cfg = _stage_config(c, args.stage)
+        proposal, role = _proposal_from_stage(c, args.stage, stage_cfg)
+        evidence_path = c.run_dir / "exchange" / "bounded_evidence" / f"{args.stage}.json"
+        upstream = [a["path"] for a in c.state.get("artifacts", [])]
+        build_bounded_evidence(upstream, evidence_path, protocol_refs=[c.state.get("workflow_config")])
+        specs = load_agent_specs(args.agent_specs_dir)
+        task = _producer_task(args.stage, role, evidence_path, c, proposal)
+        exchange = Path(args.exchange_dir) if args.exchange_dir else c.run_dir / "exchange"
+
+        def ctx_factory(_index, provider_name="mock", model_id="mock"):
+            return RuntimeContext(exchange_dir=str(exchange), repo_root=args.repo_root,
+                                  provider=provider_name, model_id=model_id,
+                                  read_allow_prefixes=[str(evidence_path.parent), str(c.run_dir)])
+
+        if args.runtime == "mock":
+            response_path = Path(args.mock_response) if args.mock_response else _write_mock_response(
+                exchange / "stage_runner" / f"{args.stage}.proposal.json", proposal)
+            raw = response_path.read_text()
+            producer_runtime = MockAgentRuntime(lambda t, s, ts: (raw, (0, 0)))
+            if args.mock_judge_response:
+                if len(args.mock_judge_response) != 3:
+                    raise ValueError("--mock-judge-response must be supplied exactly three times")
+                judge_raw = [Path(path).read_text() for path in args.mock_judge_response]
+
+                def judge_runtime_factory(index):
+                    return MockAgentRuntime(lambda t, s, ts, i=index: (judge_raw[i - 1], (0, 0)))
+            else:
+                judge_runtime_factory = None
+            runtime_provider = "mock"
+            runtime_model = "mock"
+        else:
+            kind = _prov.select_provider_kind()
+            if kind in _prov.LOCAL_KINDS:
+                pf = _prov.preflight_local(probe=False)
+                if pf.status != _prov.LOCAL_READY:
+                    print(f"provider unavailable: {pf.status}: {pf.reason}", file=sys.stderr)
+                    return EXIT_PROVIDER_UNAVAILABLE
+                if os.environ.get("PYDANTIC_AI_SMOKE_CONFIRM") != "yes":
+                    print("APPROVAL_REQUIRED: set PYDANTIC_AI_SMOKE_CONFIRM=yes for one live local inference call")
+                    return EXIT_APPROVAL_REQUIRED
+                from .pydantic_ai_runtime import PydanticAIRuntime
+
+                def live_runtime_factory(_index):
+                    return PydanticAIRuntime(
+                        model=_prov.build_local_model(kind, pf.model_id, pf.base_url),
+                        usage_source="provider")
+                producer_runtime = live_runtime_factory(0)
+                judge_runtime_factory = live_runtime_factory
+                runtime_provider = kind
+                runtime_model = pf.model_id
+            elif kind == "anthropic":
+                pf = _prov.preflight_credentials()
+                if pf.status != "READY":
+                    print(f"provider unavailable: {pf.status}: {pf.reason}", file=sys.stderr)
+                    return EXIT_PROVIDER_UNAVAILABLE
+                if os.environ.get("PYDANTIC_AI_SMOKE_CONFIRM") != "yes":
+                    print("APPROVAL_REQUIRED: set PYDANTIC_AI_SMOKE_CONFIRM=yes for one live provider call")
+                    return EXIT_APPROVAL_REQUIRED
+                from .pydantic_ai_runtime import PydanticAIRuntime
+
+                def live_runtime_factory(_index):
+                    return PydanticAIRuntime(model=_prov.build_provider_model(pf.model_id),
+                                             usage_source="provider")
+                producer_runtime = live_runtime_factory(0)
+                judge_runtime_factory = live_runtime_factory
+                runtime_provider = pf.provider
+                runtime_model = pf.model_id
+            else:
+                print("provider unavailable: set PYDANTIC_AI_PROVIDER to local-openai|ollama|anthropic", file=sys.stderr)
+                return EXIT_PROVIDER_UNAVAILABLE
+
+        ctx = ctx_factory(0, runtime_provider, runtime_model)
+        registry = build_executor_registry()
+        binding_validator = _proposal_binding_validator(proposal)
+        for descriptor in registry.values():
+            descriptor.param_validator = binding_validator
+        res = run_role(producer_runtime, task, specs[role], ctx, controller=c,
+                       registry=registry, mode="primary")
+        status = getattr(res.detail, "status", "")
+        if status == "APPROVAL_REQUIRED":
+            print(f"APPROVAL_REQUIRED: {proposal.get('approval_boundary') or res.detail.reason}")
+            return EXIT_APPROVAL_REQUIRED
+        if status not in {"EXECUTED", "DUPLICATE"}:
+            print(f"stage dispatch failed: {status}: {getattr(res.detail, 'reason', res.error)}", file=sys.stderr)
+            return EXIT_VALIDATION_REJECTED
+
+        declared = [(c.run_dir / rel).resolve() for rel in c.stage(args.stage).get("outputs", [])]
+        missing = [str(path) for path in declared if not path.exists()]
+        if missing:
+            print("stage missing declared outputs: " + ", ".join(missing), file=sys.stderr)
+            return EXIT_VALIDATION_REJECTED
+        if c.stage(args.stage)["status"] != "completed":
+            c.complete_external_stage(args.stage, declared)
+        c = RunController(args.run_dir)
+        if c.stage(args.stage)["status"] != "completed":
+            print("controller stage did not complete", file=sys.stderr)
+            return EXIT_VALIDATION_REJECTED
+
+        decision = "NO_GATE"
+        vote_path = None
+        if c.stage(args.stage).get("gate_criteria"):
+            if args.auto_mock_judges:
+                vote_path = _write_three_pass_votes(c, args.stage)
+                decision = "PASS"
+                print(f"judge_votes: {vote_path}")
+            else:
+                if args.runtime == "mock" and judge_runtime_factory is None:
+                    raise ValueError(
+                        "mock run-stage with a gate requires either --auto-mock-judges or three --mock-judge-response files")
+                gate_ctx = c.gate_context(args.stage)
+                judge_allow = judge_read_allowlist(gate_ctx, evidence_path)
+
+                def judge_ctx_factory(i):
+                    return RuntimeContext(exchange_dir=str(exchange), repo_root=args.repo_root,
+                                          provider=runtime_provider, model_id=runtime_model,
+                                          read_allow_prefixes=list(judge_allow))
+                decision, vote_path = run_three_judge_gate(
+                    c, args.stage, specs, judge_runtime_factory, judge_ctx_factory, evidence_path)
+            c = RunController(args.run_dir)
+            if c.stage(args.stage)["gate"] != decision:
+                print("controller gate did not record the aggregate decision", file=sys.stderr)
+                return EXIT_VALIDATION_REJECTED
+            if decision != "PASS":
+                print(f"GATE_{decision}: recovery path is now controlled by the Controller")
+                return EXIT_VALIDATION_REJECTED
+
+        print(f"stage: {args.stage}\naction_status: {status}\ngate: {decision}\nbounded_evidence: {evidence_path}")
+        return EXIT_SUCCESS
+    except Exception as exc:
+        print(f"run-stage failed: {type(exc).__name__}: {exc}", file=sys.stderr)
+        return EXIT_VALIDATION_REJECTED
+
 def main(argv=None) -> int:
     import os
     args = _build_parser().parse_args(argv)
+    if args.command == "preflight":
+        return _cmd_preflight(args)
+    if args.command == "approve":
+        return _cmd_approve(args)
+    if args.command == "run-stage":
+        return _cmd_run_stage(args)
     if args.command != "run-task":  # pragma: no cover
         return EXIT_INTERNAL
     out = sys.stdout

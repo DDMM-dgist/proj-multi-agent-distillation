@@ -96,7 +96,7 @@ def capability_status(action_type: str) -> Optional[CapabilityEntry]:
 
 DATA_CURATOR_ACTIONS = (
     "inspect_dataset", "summarize_source_categories", "sample_seed_pool",
-    "reconstruct_lineage", "generate_group_split", "label_with_teacher",
+    "reconstruct_lineage", "generate_group_split", "acquire_structures", "label_with_teacher",
     "validate_label_preservation", "build_dataset_manifest",
     "compare_deployment_coverage", "detect_duplicates", "detect_atomic_overlap",
 )
@@ -106,7 +106,7 @@ ML_TRAINER_ACTIONS = (
     "compute_committee_disagreement", "validate_training_completion",
 )
 SIMULATION_ACTIONS = (
-    "run_teacher_md", "run_student_md", "compute_rdf", "compute_coordination",
+    "build_teacher_baseline", "run_teacher_md", "run_student_md", "compute_rdf", "compute_coordination",
     "compute_minimum_distance", "detect_force_spike", "compute_nve_drift",
     "validate_simulation_completion",
     "submit_scheduler_job", "query_scheduler_job", "collect_scheduler_artifact",
@@ -119,6 +119,8 @@ ANALYST_ACTIONS = (
 
 # Actions that always require explicit human approval before execution (costly/side-effecting).
 APPROVAL_GATED_ACTIONS = {
+    "build_teacher_baseline": "costly_teacher_labeling",
+    "acquire_structures": "costly_teacher_labeling",
     "label_with_teacher": "costly_teacher_labeling",
     "train_committee": "costly_training",
     "run_teacher_md": "production_md",

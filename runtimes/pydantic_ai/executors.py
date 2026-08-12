@@ -130,6 +130,206 @@ def _exec_compare_coverage(proposal):
 
 # --- binding helpers ------------------------------------------------------------
 
+
+
+# --- production guard helpers ---------------------------------------------------
+
+
+def _protect_dataset(path, reference_yaml=None, selected_source_indices=None, require_lineage=True):
+    if not reference_yaml:
+        return
+    from validation.protected_reference import (
+        assert_dataset_geometry_disjoint,
+        assert_parent_lineage_allowed,
+        assert_source_indices_allowed,
+        validate_reference_config,
+    )
+    protection = validate_reference_config(reference_yaml)
+    assert_source_indices_allowed(selected_source_indices or [], protection["protected_source_indices"])
+    assert_dataset_geometry_disjoint(path, protection["reference_fingerprints"])
+    if require_lineage:
+        assert_parent_lineage_allowed(path, protection["protected_source_indices"])
+
+
+def _evidence(role, path):
+    from validation.report import evidence_record
+    return evidence_record(role, path)
+
+
+def _exec_build_teacher_baseline(proposal):
+    import math
+    import numpy as np
+    from ase.io import read
+    from adapters import load_config
+    from adapters.acquisition import label_with_teacher
+    from validation.teacher_baseline import validate_teacher_baseline_report
+    from workflow.integrity import artifact_digest
+    p = _params(proposal)
+    structures = p["structures_path"]
+    reference_yaml = p.get("reference_yaml")
+    _protect_dataset(structures, reference_yaml, p.get("selected_source_indices"),
+                     require_lineage=bool(p.get("require_lineage", False)))
+    labeled_output = p.get("labeled_output") or str(Path(p["report_path"]).with_suffix(".extxyz"))
+    label_manifest = p.get("label_manifest_path") or str(
+        Path(p["report_path"]).with_name("teacher_baseline_labels.manifest.json"))
+    label_manifest_payload = label_with_teacher(
+        load_config(p["teacher_config"]), structures, labeled_output, label_manifest,
+        bool(p.get("include_stress", False)))
+    frames = read(labeled_output, index=":")
+    energies = [float(a.info["teacher_energy"]) for a in frames]
+    fmax = []
+    for atoms in frames:
+        forces = np.asarray(atoms.arrays["teacher_forces"], dtype=float)
+        if forces.shape != (len(atoms), 3) or not np.all(np.isfinite(forces)):
+            raise ValueError("Teacher baseline produced non-finite or malformed forces")
+        fmax.append(float(np.max(np.linalg.norm(forces, axis=1))))
+    if not energies or not all(math.isfinite(e) for e in energies):
+        raise ValueError("Teacher baseline produced no finite energies")
+    report_path = Path(p["report_path"])
+    report_path.parent.mkdir(parents=True, exist_ok=True)
+    required = ["deployment_domain", "applicability_status", "applicability_limitations"]
+    missing = [name for name in required if name not in p]
+    if missing:
+        raise ValueError("Teacher baseline requires explicit deployment/applicability evidence: " + ", ".join(missing))
+    deployment_domain = p["deployment_domain"]
+    applicability_status = p["applicability_status"]
+    limitations = list(p["applicability_limitations"])
+    report = {
+        "schema_version": 1,
+        "profile": p.get("profile", "teacher_baseline"),
+        "teacher": {"kind": label_manifest_payload["teacher_kind"],
+                    "config": str(Path(p["teacher_config"]).resolve()),
+                    "model_sha256": label_manifest_payload.get("teacher_model_sha256")},
+        "distillation_scope": str(Path(p["distillation_scope"]).resolve()),
+        "validation_profile": str(Path(p["validation_profile"]).resolve()),
+        "deployment_domain": deployment_domain,
+        "applicability": {"status": applicability_status, "limitations": limitations},
+        "checks": [{
+            "domain": "operational_teacher_inference",
+            "observable": "fresh_teacher_energy_force_finiteness",
+            "status": "PASS",
+            "value": float(max(fmax)),
+            "unit": "eV/Angstrom",
+            "criterion": {"operator": "max", "threshold": float(p.get("force_finite_threshold", 1.0e12))},
+            "purpose": "deployment_stability",
+            "reference_source": "teacher",
+            "protocol": "fresh Teacher inference on declared operational structures",
+            "details": {"n_frames": len(frames), "energy_min": min(energies),
+                        "energy_max": max(energies),
+                        "fresh_label_output": str(Path(labeled_output).resolve()),
+                        "fresh_label_output_integrity": artifact_digest(labeled_output),
+                        "fresh_label_manifest": str(Path(label_manifest).resolve()),
+                        "fresh_label_manifest_integrity": artifact_digest(label_manifest)},
+        }],
+        "evidence": [
+            _evidence("teacher_config", p["teacher_config"]),
+            _evidence("distillation_scope", p["distillation_scope"]),
+            _evidence("validation_profile", p["validation_profile"]),
+            _evidence("operational_structures", structures),
+        ],
+    }
+    report_path.write_text(json.dumps(report, indent=2) + "\n")
+    validate_teacher_baseline_report(report_path)
+    return {"path": str(report_path.resolve()), "report": report,
+            "integrity": artifact_digest(report_path),
+            "labeled_output": str(Path(labeled_output).resolve()),
+            "label_manifest": str(Path(label_manifest).resolve())}
+
+
+def _exec_acquire_structures(proposal):
+    from adapters import load_config
+    from adapters.acquisition import acquire
+    from workflow.integrity import artifact_digest
+    p = _params(proposal)
+    _protect_dataset(p["seed_structures"], p.get("reference_yaml"),
+                     p.get("selected_source_indices"), require_lineage=False)
+    result = acquire(load_config(p["acquisition_config"]), load_config(p["teacher_config"]),
+                     p["seed_structures"], p["out_path"])
+    _protect_dataset(result, p.get("reference_yaml"), require_lineage=True)
+    artifact = {"path": str(Path(result).resolve()), "integrity": artifact_digest(result)}
+    manifest_path = p.get("manifest_path")
+    if manifest_path:
+        manifest = {
+            "schema_version": 1,
+            "operation": "acquire_structures",
+            "acquisition_config": str(Path(p["acquisition_config"]).resolve()),
+            "teacher_config": str(Path(p["teacher_config"]).resolve()),
+            "seed_structures": str(Path(p["seed_structures"]).resolve()),
+            "output": artifact["path"],
+            "output_integrity": artifact["integrity"],
+        }
+        Path(manifest_path).parent.mkdir(parents=True, exist_ok=True)
+        Path(manifest_path).write_text(json.dumps(manifest, indent=2) + "\n")
+        artifact["manifest_path"] = str(Path(manifest_path).resolve())
+        artifact["manifest_integrity"] = artifact_digest(manifest_path)
+    return artifact
+
+
+def _exec_label_with_teacher(proposal):
+    from adapters import load_config
+    from adapters.acquisition import label_with_teacher
+    from workflow.integrity import artifact_digest
+    p = _params(proposal)
+    _protect_dataset(p.get("structures_path", p.get("structures")), p.get("reference_yaml"),
+                     p.get("selected_source_indices"), require_lineage=True)
+    manifest = label_with_teacher(
+        load_config(p["teacher_config"]),
+        p.get("structures_path", p.get("structures")),
+        p.get("out_path", p.get("labeled_output")),
+        p["manifest_path"],
+        bool(p.get("include_stress", False)),
+    )
+    return {"path": manifest["output"], "sha256": manifest["sha256"],
+            "manifest_path": str(Path(p["manifest_path"]).resolve()),
+            "manifest_integrity": artifact_digest(p["manifest_path"])}
+
+
+def _exec_run_teacher_md(proposal):
+    from adapters import load_config
+    from adapters.acquisition import run_teacher_md
+    from workflow.integrity import artifact_digest
+    p = _params(proposal)
+    out = run_teacher_md(load_config(p["md_config"]), load_config(p["teacher_config"]),
+                         p["seed_structures"], p["out_path"])
+    return {"path": str(Path(out).resolve()), "integrity": artifact_digest(out)}
+
+
+def _exec_train_committee(proposal):
+    from workflow.steps import train_committee
+    from workflow.integrity import artifact_digest
+    p = _params(proposal)
+    _protect_dataset(p["dataset"], p.get("reference_yaml"),
+                     p.get("selected_source_indices"), require_lineage=True)
+    manifest = train_committee(p["student_config"], p["dataset"], p["output_dir"],
+                               p["manifest_path"])
+    return {"path": str(Path(p["manifest_path"]).resolve()), "manifest": manifest,
+            "integrity": artifact_digest(p["manifest_path"])}
+
+
+def _exec_evaluate_committee(proposal):
+    from workflow.steps import evaluate_committee
+    from workflow.integrity import artifact_digest
+    p = _params(proposal)
+    report = evaluate_committee(
+        p["student_config"], p["committee_manifest"], p["frames_path"],
+        p["labeled_output"], p["report_path"], p.get("required_channels"))
+    return {"path": str(Path(p["report_path"]).resolve()), "report": report,
+            "integrity": artifact_digest(p["report_path"]),
+            "labeled_output": str(Path(p["labeled_output"]).resolve())}
+
+
+def _exec_run_student_md(proposal):
+    from workflow.steps import run_md
+    from workflow.integrity import artifact_digest
+    p = _params(proposal)
+    manifest = run_md(
+        p["md_config"], p["student_config"], p["checkpoint"], p["template_name"],
+        p["context_yaml"], p["input_path"], p["run_dir"], p["manifest_path"],
+        p.get("committee_manifest"), p.get("selected_seed"), p.get("evidence_paths"))
+    return {"path": str(Path(p["manifest_path"]).resolve()), "manifest": manifest,
+            "integrity": artifact_digest(p["manifest_path"])}
+
+
 def _ready(action, role, backing, contract, out, fn, validator="", cost="light"):
     return ExecutorBinding(action, role, "READY_EXECUTOR", backing, contract, out, validator,
                            cost, False, fn=fn)
@@ -167,9 +367,12 @@ BINDINGS: dict[str, ExecutorBinding] = {b.action_type: b for b in [
     _ready("generate_group_split", "data-curator", "workflow.steps.split_dataset",
            "dataset,output_dir,manifest", "split manifest (sha256-bound)",
            _exec_generate_group_split, validator="workflow.steps split integrity"),
+    _hpc("acquire_structures", "data-curator", "adapters.acquisition.acquire",
+         "acquisition_config,teacher_config,seed_structures,out_path",
+         "acquired extxyz + acquisition manifest", "lineage validation"),
     _hpc("label_with_teacher", "data-curator", "adapters.acquisition.label_with_teacher",
-         "teacher_cfg,structures,out,manifest", "labeled extxyz + labeling manifest",
-         "labeling manifest integrity"),
+         "teacher_config,structures_path,out_path,manifest_path",
+         "labeled extxyz + labeling manifest", "labeling manifest integrity"),
     _ready("validate_label_preservation", "data-curator",
            "ase.io.read + acquisition.validate_lineage", "labeled_path[,n_source_frames]",
            "label-preservation report", de.validate_label_preservation,
@@ -189,12 +392,12 @@ BINDINGS: dict[str, ExecutorBinding] = {b.action_type: b for b in [
     _ready("prepare_student_inputs", "ml-trainer", "adapters.student._render_simple_nn_config",
            "student_config,out_dir", "rendered SIMPLE-NN config", de.prepare_student_inputs),
     _hpc("train_committee", "ml-trainer", "workflow.steps.train_committee",
-         "student_config,dataset,output_dir,manifest", "committee manifest + checkpoints", ""),
+         "student_config,dataset,output_dir,manifest_path", "committee manifest + checkpoints", ""),
     _ready("collect_checkpoints", "ml-trainer", "committee manifest convention",
            "committee_manifest", "checkpoint paths + integrity", de.collect_checkpoints),
     _hpc("evaluate_heldout_fidelity", "ml-trainer", "workflow.steps.evaluate_committee",
-         "student_config,committee_manifest,frames", "3-channel fidelity report",
-         "four_channel_audit"),
+         "student_config,committee_manifest,frames_path,labeled_output,report_path",
+         "3-channel fidelity report", "four_channel_audit"),
     _ready("summarize_seed_variation", "ml-trainer", "adapters.uncertainty.committee_force_std",
            "forces_per_seed", "seed-variation summary", de.summarize_seed_variation),
     _ready("compute_committee_disagreement", "ml-trainer",
@@ -204,8 +407,12 @@ BINDINGS: dict[str, ExecutorBinding] = {b.action_type: b for b in [
            "committee_manifest[,expected_seeds]", "training-completeness report",
            de.validate_training_completion, validator="artifact completeness"),
     # --- Simulation ---
+    _hpc("build_teacher_baseline", "simulation",
+         "adapters.acquisition.label_with_teacher + validation.teacher_baseline",
+         "teacher_config,structures_path,distillation_scope,validation_profile,report_path",
+         "TeacherBaselineReport", "validation.teacher_baseline"),
     _hpc("run_teacher_md", "simulation", "adapters.acquisition.run_teacher_md",
-         "cfg,teacher_cfg,seed,out", "teacher MD snapshots", ""),
+         "md_config,teacher_config,seed_structures,out_path", "teacher MD snapshots", ""),
     _hpc("run_student_md", "simulation", "workflow.steps.run_md / adapters.md_backend.run",
          "md_cfg,student_cfg,checkpoint,...", "MD trajectory + manifest", ""),
     _ready("compute_rdf", "simulation", "validation.structure_dynamics.compute_rdf",
@@ -252,9 +459,24 @@ BINDINGS: dict[str, ExecutorBinding] = {b.action_type: b for b in [
 def build_executor_registry() -> dict:
     reg: dict = {}
     for action, b in BINDINGS.items():
+        executor = b.fn
+        if action == "build_teacher_baseline":
+            executor = _exec_build_teacher_baseline
+        elif action == "acquire_structures":
+            executor = _exec_acquire_structures
+        elif action == "label_with_teacher":
+            executor = _exec_label_with_teacher
+        elif action == "run_teacher_md":
+            executor = _exec_run_teacher_md
+        elif action == "train_committee":
+            executor = _exec_train_committee
+        elif action == "evaluate_heldout_fidelity":
+            executor = _exec_evaluate_committee
+        elif action == "run_student_md":
+            executor = _exec_run_student_md
         reg[action] = ActionDescriptor(
             action_type=action, role=b.role, cost_class=b.cost_class,
-            approval_boundary=APPROVAL_GATED_ACTIONS.get(action), executor=b.fn)
+            approval_boundary=APPROVAL_GATED_ACTIONS.get(action), executor=executor)
     return reg
 
 

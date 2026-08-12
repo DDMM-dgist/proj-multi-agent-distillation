@@ -21,7 +21,7 @@ import unittest
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
-FREEZE_REVISION = "deterministic-verdict-ownership-refactor (v2; post-consumed-holdout)"
+FREEZE_REVISION = "production-readiness-executor-wiring (v3; no role-count change)"
 FROZEN_MODEL = "qwen2.5-7b-instruct"
 
 FROZEN = {
@@ -44,7 +44,7 @@ FROZEN = {
     "runtimes/pydantic_ai/driver.py":
         "571636918a2827ceded12e9ee3b0cad7f23ab73887d61ed0cc2b6d5727986719",
     "runtimes/pydantic_ai/actions.py":
-        "2efc14e661056581b54e6a93be8ab9bca9b670b009f9e97091b1dad9aee1d78f",
+        "e47e6f8535f3c51068c1391fa26e213f850a2a97f51be90a675ae05d52edb5f3",
     "runtimes/pydantic_ai/controller_bridge.py":
         "5b23ee61b4bb399fe4c5b17f545fd1386806e74e5d419f0c8469765895289385",
     "orchestration/specs.py":
@@ -97,6 +97,26 @@ class ArchitectureFreezeTests(unittest.TestCase):
             self.skipTest("pydantic (optional runtime dep) not installed")
         self.assertEqual(RuntimeContext.model_fields["request_limit"].default, 6)
 
+
+    def test_production_wiring_keeps_frozen_architecture_dimensions(self):
+        from runtimes.pydantic_ai.actions import ROLE_ALLOWED_ACTIONS
+        from workflow.controller import RunController
+        roles = {"orchestrator", "literature", "data-curator", "ml-trainer", "simulation", "analyst", "judge"}
+        import json
+        import tempfile
+        import yaml
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            cfg = root / "workflow.yaml"
+            cfg.write_text(yaml.safe_dump({"run_id": "freeze-dimensions", "stages": [{
+                "name": "s", "command": None,
+                "contract": {"kind": "validation_manifest", "manifest": "m.json", "validator": "validation.report.validate_validation_report"},
+            }]}))
+            c = RunController.initialize(cfg, root / "run")
+        self.assertEqual(set(ROLE_ALLOWED_ACTIONS), {"data-curator", "ml-trainer", "simulation", "analyst"})
+        self.assertIn("build_teacher_baseline", ROLE_ALLOWED_ACTIONS["simulation"])
+        self.assertEqual(len(roles), 7)
+        self.assertEqual(c.stage("s")["contract"]["kind"], "validation_manifest")
 
 if __name__ == "__main__":  # pragma: no cover
     unittest.main()
