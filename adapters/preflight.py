@@ -114,11 +114,21 @@ def check_acquisition_config(cfg):
             _dotted_callable(adapter["preflight"], "adapter.preflight")
         return [f"acquisition kind={kind}", "acquisition adapter=configured"]
     if kind == "augment-atoms":
-        command = _require(cfg, "command")
-        if not isinstance(command, list) or not command:
-            raise ValueError("augment-atoms command must be a non-empty list")
-        if not isinstance(command[0], str) or not command[0].strip():
-            raise ValueError("augment-atoms command executable must be a non-empty string")
+        command = cfg.get("command")
+        invocation = ((cfg.get("cli") or {}).get("invocation") or [])
+        if command is not None:
+            if not isinstance(command, list) or not command:
+                raise ValueError("augment-atoms command must be a non-empty list")
+            if not isinstance(command[0], str) or not command[0].strip():
+                raise ValueError("augment-atoms command executable must be a non-empty string")
+        elif invocation:
+            if not isinstance(invocation, list) or not isinstance(invocation[0], str) or not invocation[0].strip():
+                raise ValueError("augment-atoms cli.invocation executable must be a non-empty string")
+            executable = ((cfg.get("cli") or {}).get("executable") or invocation[0])
+            if not Path(str(executable)).expanduser().is_absolute() and not cfg.get("env"):
+                raise ValueError("augment-atoms cli executable requires env or absolute executable")
+        else:
+            raise ValueError("augment-atoms requires command or cli.invocation")
     elif kind == "teacher-md":
         _require_positive(cfg, "temperature_K")
         _require_positive(cfg, "timestep_fs")
@@ -148,7 +158,13 @@ def check_acquisition_files(cfg):
             _require_import_path(adapter["preflight"])(cfg, check_files=True)
         return []
     if cfg["kind"] == "augment-atoms":
-        _require_binary(cfg["command"][0], cfg.get("env"))
+        command = cfg.get("command")
+        if command:
+            binary = command[0]
+        else:
+            invocation = ((cfg.get("cli") or {}).get("invocation") or [])
+            binary = ((cfg.get("cli") or {}).get("executable") or invocation[0])
+        _require_binary(binary, cfg.get("env"))
         if cfg.get("workdir") and not resolve_config_path(cfg, cfg["workdir"]).is_dir():
             raise FileNotFoundError("augment-atoms workdir is missing")
     return []

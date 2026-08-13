@@ -301,7 +301,7 @@ def _bind_acquisition_plan_for_stage(controller, proposal):
     if len(outputs) >= 3:
         params.setdefault("protection_audit_path", str((controller.run_dir / outputs[2]).resolve()))
     params.setdefault("executable_config_path", str(
-        (controller.run_dir / "artifacts" / "acquisition_augment_atoms.resolved.json").resolve()))
+        (controller.run_dir / "artifacts" / "acquisition_augment_atoms.native.yaml").resolve()))
     proposal["parameters"] = params
     return proposal
 

@@ -44,8 +44,31 @@ def langevin_friction(cfg):
 
 def run_augment_atoms(cfg, seed_path, out_path):
     """Run a configured augment-atoms wrapper without assuming its CLI version."""
-    context = {"seed_path": str(Path(seed_path).resolve()), "out_path": str(Path(out_path).resolve())}
-    command = [str(part).format(**context) for part in cfg["command"]]
+    context = {
+        "config_path": str(Path(cfg["config_path"]).resolve()) if cfg.get("config_path") else "",
+        "seed_path": str(Path(seed_path).resolve()),
+        "out_path": str(Path(out_path).resolve()),
+    }
+    command = cfg.get("command")
+    if command:
+        command = [str(part).format(**context) for part in command]
+    else:
+        cli = cfg.get("cli") or {}
+        invocation = cli.get("invocation")
+        if not isinstance(invocation, list) or not invocation:
+            raise ValueError("augment-atoms acquisition requires command or cli.invocation")
+        command = [str(part).format(**context) for part in invocation]
+        executable = Path(command[0]).expanduser()
+        if executable.is_absolute():
+            if not executable.is_file():
+                raise FileNotFoundError(f"augment-atoms executable is missing: {executable}")
+            command[0] = str(executable)
+        elif cfg.get("env"):
+            command = ["conda", "run", "-n", str(cfg["env"]), *command]
+        else:
+            raise ValueError(
+                "augment-atoms executable must be absolute or acquisition env must be configured"
+            )
     workdir = resolve_config_path(cfg, cfg["workdir"]) if cfg.get("workdir") else None
     subprocess.run(command, check=True, cwd=workdir)
     if not Path(out_path).exists():
@@ -136,7 +159,8 @@ def acquire(acquisition_cfg, teacher_cfg, seed_path, out_path):
         return result
     if kind == "augment-atoms":
         result = run_augment_atoms(acquisition_cfg, seed_path, out_path)
-        validate_lineage(result)
+        if not acquisition_cfg.get("defer_lineage_validation"):
+            validate_lineage(result)
         return result
     if kind == "teacher-md":
         result = run_teacher_md(acquisition_cfg, teacher_cfg, seed_path, out_path)

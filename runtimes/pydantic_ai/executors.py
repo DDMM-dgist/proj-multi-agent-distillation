@@ -374,25 +374,29 @@ def _validate_acquisition_plan(plan, *, reference_yaml=None, seed_structures=Non
 
 
 def _executable_config_path(params, plan):
-    raw = params.get("executable_config_path")
+    raw = params.get("executable_config_path") or plan.get("executable_config_path")
     if raw:
         return Path(raw).expanduser().resolve()
     manifest = params.get("manifest_path") or params.get("out_path")
     if not manifest:
         raise _AcquisitionPlanError("acquisition execution requires manifest_path or executable_config_path")
-    return Path(manifest).resolve().with_name("acquisition_augment_atoms.resolved.json")
+    return Path(manifest).resolve().with_name("acquisition_augment_atoms.native.yaml")
 
 
-def _write_executable_augment_config(path, acquisition_cfg, plan, *, seed_path, out_path, teacher_config):
-    cfg = {
-        "schema_version": 1,
-        "kind": "augment-atoms-executable-config",
-        "source_interface_kind": acquisition_cfg.get("kind"),
-        "input": str(Path(seed_path).resolve()),
-        "output": str(Path(out_path).resolve()),
-        "teacher_config": str(Path(teacher_config).resolve()),
+def _schema_default(acquisition_cfg, key, default):
+    value = ((acquisition_cfg.get("installed_schema") or {}).get("config") or {}).get(key)
+    if isinstance(value, dict) and "default" in value:
+        return value["default"]
+    return default
+
+
+def _framework_plan_envelope(plan):
+    envelope = {
+        "schema_version": int(plan["schema_version"]),
         "selected_parent_structure_ids": list(plan["selected_parent_structure_ids"]),
         "selected_source_global_indices": list(plan["selected_source_global_indices"]),
+        "eligible_source_categories": list(plan["eligible_source_categories"]),
+        "n_parents": int(plan["n_parents"]),
         "n_per_structure": int(plan["n_per_structure"]),
         "T_K": float(plan["T_K"]),
         "beta": float(plan["beta"]),
@@ -401,9 +405,45 @@ def _write_executable_augment_config(path, acquisition_cfg, plan, *, seed_path, 
         "seed": int(plan["seed"]),
         "expected_output_count": int(plan["expected_output_count"]),
         "duplicate_handling": plan["duplicate_handling"],
+        "protected_reference_exclusion_report": plan["protected_reference_exclusion_report"],
+    }
+    if plan.get("executable_config_path"):
+        envelope["executable_config_path"] = str(Path(plan["executable_config_path"]).expanduser().resolve())
+    return envelope
+
+
+def _write_executable_augment_config(path, acquisition_cfg, plan, *, seed_path, out_path, teacher_config):
+    import copy
+    import yaml
+    from adapters import load_config
+    teacher_cfg = load_config(teacher_config)
+    calculator = copy.deepcopy(teacher_cfg.get("calculator"))
+    if not isinstance(calculator, dict) or not calculator:
+        raise _AcquisitionPlanError("Teacher config must bind an ASE calculator for augment-atoms")
+    cfg = {
+        "data": {
+            "input": str(Path(seed_path).resolve()),
+            "output": str(Path(out_path).resolve()),
+        },
+        "model": {
+            "calculator": calculator,
+        },
+        "config": {
+            "n_per_structure": int(plan["n_per_structure"]),
+            "T": float(plan["T_K"]),
+            "beta": float(plan["beta"]),
+            "sigma_range": [float(plan["sigma_range_A"][0]), float(plan["sigma_range_A"][1])],
+            "seed": int(plan["seed"]),
+            "units": str(plan.get("units", _schema_default(acquisition_cfg, "units", "eV"))),
+            "cell_sigma": plan.get("cell_sigma"),
+            "max_force": float(plan.get("max_force", _schema_default(acquisition_cfg, "max_force", 30.0))),
+            "min_separation": float(plan.get("min_separation", _schema_default(acquisition_cfg, "min_separation", 0.5))),
+            "max_relax_steps": int(plan.get("max_relax_steps", _schema_default(acquisition_cfg, "max_relax_steps", 20))),
+            "similarity_threshold": float(plan.get("similarity_threshold", _schema_default(acquisition_cfg, "similarity_threshold", 0.1))),
+        },
     }
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(cfg, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    path.write_text(yaml.safe_dump(cfg, sort_keys=True), encoding="utf-8")
     return cfg
 
 
@@ -412,14 +452,29 @@ def _translate_acquisition_cli(acquisition_cfg, plan, *, seed_path, out_path, ex
         return acquisition_cfg
     invocation = ((acquisition_cfg.get("cli") or {}).get("invocation") or [])
     if not invocation:
-        raise _AcquisitionPlanError("augment-atoms acquisition config requires cli.invocation")
+        executable = ((acquisition_cfg.get("cli") or {}).get("executable") or "augment-atoms")
+        invocation = [executable, "{config_path}"]
     context = {
         "config_path": str(Path(executable_config_path).resolve()),
         "seed_path": str(Path(seed_path).resolve()),
         "out_path": str(Path(out_path).resolve()),
     }
     cfg = dict(acquisition_cfg)
-    cfg["command"] = [str(part).format(**context) for part in invocation]
+    cfg["config_path"] = context["config_path"]
+    cfg["defer_lineage_validation"] = True
+    command = [str(part).format(**context) for part in invocation]
+    executable = Path(command[0]).expanduser()
+    if executable.is_absolute():
+        if not executable.is_file():
+            raise _AcquisitionPlanError(f"augment-atoms executable is missing: {executable}")
+        command[0] = str(executable)
+    elif cfg.get("env"):
+        command = ["conda", "run", "-n", str(cfg["env"]), *command]
+    else:
+        raise _AcquisitionPlanError(
+            "augment-atoms executable must be absolute or acquisition env must be configured"
+        )
+    cfg["command"] = command
     return cfg
 
 
@@ -431,12 +486,25 @@ def _apply_acquisition_lineage(result_path, plan):
     for atoms in frames:
         if atoms.info.get("parent_structure_id"):
             continue
-        parent = (atoms.info.get("starting-structure") or atoms.info.get("parent") or
-                  atoms.info.get("parent_id"))
-        if parent is None and len(parents) == 1:
+        if "starting-structure" in atoms.info:
+            native_start = atoms.info["starting-structure"]
+            try:
+                start_index = int(native_start)
+            except (TypeError, ValueError) as exc:
+                raise _AcquisitionPlanError(
+                    f"malformed augment-atoms starting-structure value: {native_start!r}"
+                ) from exc
+            if start_index < 0 or start_index >= len(parents):
+                raise _AcquisitionPlanError(
+                    f"augment-atoms starting-structure index out of range: {start_index}"
+                )
+            parent = parents[start_index]
+        elif len(parents) == 1:
             parent = parents[0]
-        if parent is None:
-            raise _AcquisitionPlanError("acquired structure lacks parent_structure_id and no deterministic native parent field is available")
+        else:
+            raise _AcquisitionPlanError(
+                "acquired structure lacks parent_structure_id and no deterministic native starting-structure field is available"
+            )
         atoms.info["parent_structure_id"] = str(parent)
         changed = True
     if changed:
@@ -620,7 +688,8 @@ def _exec_acquire_structures(proposal):
                 "duplicate_handling": plan["duplicate_handling"],
                 "dft_labels_used_as_selection_scores": False,
                 "executable_config": str(executable_path),
-                "executable_config_payload": executable_payload,
+                "framework_plan_envelope": _framework_plan_envelope(plan),
+                "native_executable_config_payload": executable_payload,
                 "executable_config_integrity": artifact_digest(executable_path),
                 "translated_command": list(executable_cfg.get("command", [])),
                 "protection_audit": str(audit_path.resolve()),

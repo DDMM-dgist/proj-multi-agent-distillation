@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import subprocess
 import tempfile
 import unittest
 from pathlib import Path
@@ -81,14 +82,31 @@ class AcquisitionPlanContractTests(unittest.TestCase):
         protected = _atoms(0.0, "seed-pool:760")
         self.reference = _protected_reference_package(self.root, protected)
         self.seed = self.root / "seed.extxyz"
-        write(str(self.seed), [_atoms(1.0, "seed-pool:900")])
+        write(str(self.seed), [_atoms(1.0, "seed-pool:900"), _atoms(2.0, "seed-pool:901")])
         self.teacher = self.root / "teacher.yaml"
-        self.teacher.write_text("kind: mock\n", encoding="utf-8")
+        self.teacher.write_text("\n".join([
+            "kind: mock",
+            "calculator:",
+            "  factory: adapters.mock_model.MockCheckpointCalculator",
+            "  model_arg: null",
+            "  kwargs:",
+            "    device: cpu",
+            "",
+        ]), encoding="utf-8")
         self.acq_cfg = self.root / "acq.yaml"
         self.acq_cfg.write_text("\n".join([
             "kind: augment-atoms",
+            "env: augment",
             "cli:",
-            "  invocation: [augment-atoms, '{config_path}', '--input', '{seed_path}', '--output', '{out_path}']",
+            "  executable: augment-atoms",
+            "  invocation: [augment-atoms, '{config_path}']",
+            "installed_schema:",
+            "  config:",
+            "    units: {default: eV}",
+            "    max_force: {default: 30.0}",
+            "    min_separation: {default: 0.5}",
+            "    max_relax_steps: {default: 20}",
+            "    similarity_threshold: {default: 0.1}",
             "planning_policy:",
             "  concrete_parameters_frozen_at: approved AcquisitionPlan before acquisition execution",
             "",
@@ -155,9 +173,12 @@ class AcquisitionPlanContractTests(unittest.TestCase):
         p["parameters"].update(params)
         return p
 
-    def _dispatch(self, proposal, adapter):
+    def _dispatch(self, proposal, adapter=None):
         from runtimes.pydantic_ai.controller_bridge import dispatch_via_controller
         from runtimes.pydantic_ai.executors import build_executor_registry
+        if adapter is None:
+            return dispatch_via_controller(proposal, controller=self.controller,
+                                           registry=build_executor_registry(), mode="primary")
         with mock.patch("adapters.acquisition.acquire", adapter):
             return dispatch_via_controller(proposal, controller=self.controller,
                                            registry=build_executor_registry(), mode="primary")
@@ -223,25 +244,67 @@ class AcquisitionPlanContractTests(unittest.TestCase):
         self.assertEqual(calls["n"], 1)
         self.assertNotIn("r:acquisition:001", self.controller.state.get("idempotency", {}))
 
-    def test_lineage_translation_and_cli_translation_reach_adapter_contract(self):
-        seen = {}
-        def adapter(cfg, teacher_cfg, seed_path, out_path):
-            seen["command"] = cfg["command"]
-            self.assertEqual(Path(seed_path), self.seed)
-            self.assertIn(str((self.root / "acquisition_augment_atoms.resolved.json").resolve()), cfg["command"])
-            a = Atoms("Cu", positions=[[3, 0, 0]], cell=[10, 10, 10], pbc=True)
-            a.info["parent"] = "seed-pool:900"
-            write(str(out_path), [a])
-            return out_path
+    def test_real_augment_atoms_shape_native_config_dispatch_and_lineage_mapping(self):
+        import yaml
+        self._write_plan(
+            eligible_source_categories=["bulk", "void"],
+            selected_parent_structure_ids=["seed-pool:900", "seed-pool:901"],
+            selected_source_global_indices=[900, 901],
+            n_parents=2,
+            n_per_structure=1,
+            expected_output_count=2,
+            max_force=25.0,
+            min_separation=0.7,
+            max_relax_steps=9,
+            similarity_threshold=0.12,
+        )
+        calls = {"n": 0, "command": None}
+
+        def fake_run(command, check, cwd=None):
+            calls["n"] += 1
+            calls["command"] = list(command)
+            self.assertTrue(check)
+            self.assertIsNone(cwd)
+            native_cfg = yaml.safe_load(self.plan_exec.read_text(encoding="utf-8"))
+            self.assertEqual(set(native_cfg), {"data", "model", "config"})
+            self.assertEqual(native_cfg["data"], {
+                "input": str(self.seed.resolve()),
+                "output": str((self.root / "out.extxyz").resolve()),
+            })
+            self.assertEqual(native_cfg["model"]["calculator"], {
+                "factory": "adapters.mock_model.MockCheckpointCalculator",
+                "model_arg": None,
+                "kwargs": {"device": "cpu"},
+            })
+            self.assertEqual(native_cfg["config"]["n_per_structure"], 1)
+            self.assertEqual(native_cfg["config"]["T"], 300.0)
+            self.assertEqual(native_cfg["config"]["sigma_range"], [0.01, 0.02])
+            self.assertEqual(native_cfg["config"]["max_force"], 25.0)
+            first = Atoms("Cu", positions=[[3, 0, 0]], cell=[10, 10, 10], pbc=True)
+            first.info.update({"starting-structure": 0, "id": "native-child-0", "parent": "native-parent-uuid-0", "level": 1, "sigma": 0.01, "relax_steps": 3})
+            second = Atoms("Cu", positions=[[4, 0, 0]], cell=[10, 10, 10], pbc=True)
+            second.info.update({"starting-structure": 1, "id": "native-child-1", "parent": "native-parent-uuid-1", "level": 1, "sigma": 0.02, "relax_steps": 4})
+            write(str(self.root / "out.extxyz"), [first, second])
+            return subprocess.CompletedProcess(command, 0)
+
         self._approve_current_plan()
-        out = self._dispatch(self._proposal(), adapter)
+        prop = self._proposal(selected_source_indices=[900, 901])
+        with mock.patch("adapters.acquisition.subprocess.run", fake_run):
+            out = self._dispatch(prop)
         self.assertEqual(out.status, "EXECUTED")
+        self.assertEqual(calls["n"], 1)
+        self.assertEqual(calls["command"][:4], ["conda", "run", "-n", "augment"])
+        self.assertEqual(calls["command"][4:], ["augment-atoms", str(self.plan_exec.resolve())])
         frames = read(str(self.root / "out.extxyz"), index=":")
-        self.assertEqual(frames[0].info["parent_structure_id"], "seed-pool:900")
+        self.assertEqual([a.info["parent_structure_id"] for a in frames], ["seed-pool:900", "seed-pool:901"])
+        self.assertEqual([a.info["parent"] for a in frames], ["native-parent-uuid-0", "native-parent-uuid-1"])
         manifest = json.loads((self.root / "manifest.json").read_text())
-        self.assertEqual(manifest["actual_output_count"], 1)
-        self.assertEqual(manifest["selected_source_global_indices"], [900])
-        self.assertEqual(manifest["translated_command"], seen["command"])
+        self.assertEqual(manifest["actual_output_count"], 2)
+        self.assertEqual(manifest["selected_source_global_indices"], [900, 901])
+        self.assertEqual(manifest["translated_command"], calls["command"])
+        self.assertIn("framework_plan_envelope", manifest)
+        self.assertNotIn("selected_parent_structure_ids", manifest["native_executable_config_payload"])
+        self.assertTrue((self.root / "acquisition_protection_audit.json").is_file())
 
     def test_protection_failure_quarantines_partial_outputs_without_idempotency(self):
         self._approve_current_plan()

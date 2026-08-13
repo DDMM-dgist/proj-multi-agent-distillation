@@ -74,11 +74,26 @@ class AcquisitionLifecycleRunStageTests(unittest.TestCase):
         self.seed = self.cfg_dir / "seed.extxyz"
         write(str(self.seed), [_atoms(900, "bulk", 1.0), _atoms(901, "void", 2.0)])
         self.teacher = self.cfg_dir / "teacher.yaml"
-        self.teacher.write_text("kind: mock\n", encoding="utf-8")
+        self.teacher.write_text(yaml.safe_dump({
+            "kind": "mock",
+            "calculator": {
+                "factory": "adapters.mock_model.MockCheckpointCalculator",
+                "model_arg": None,
+                "kwargs": {"device": "cpu"},
+            },
+        }), encoding="utf-8")
         self.acq = self.cfg_dir / "acq.yaml"
         self.acq.write_text(yaml.safe_dump({
             "kind": "augment-atoms",
-            "cli": {"invocation": ["augment-atoms", "{config_path}", "--input", "{seed_path}", "--output", "{out_path}"]},
+            "env": "augment",
+            "cli": {"executable": "augment-atoms", "invocation": ["augment-atoms", "{config_path}"]},
+            "installed_schema": {"config": {
+                "units": {"default": "eV"},
+                "max_force": {"default": 30.0},
+                "min_separation": {"default": 0.5},
+                "max_relax_steps": {"default": 20},
+                "similarity_threshold": {"default": 0.1},
+            }},
         }), encoding="utf-8")
         self.reference = _protected_reference(self.cfg_dir)
         self.plan = self.cfg_dir / "plan.json"
@@ -109,13 +124,16 @@ class AcquisitionLifecycleRunStageTests(unittest.TestCase):
         self.plan.write_text(json.dumps(payload, sort_keys=True), encoding="utf-8")
 
     def _workflow(self, include_plan=True):
+        selected_source_indices = json.loads(self.plan.read_text(encoding="utf-8")).get(
+            "selected_source_global_indices", [900]
+        )
         params = {
             "acquisition_config": "{run_dir}/inputs/001-acq.yaml",
             "teacher_config": "{run_dir}/inputs/000-teacher.yaml",
             "seed_structures": str(self.seed),
             "out_path": "{run_dir}/artifacts/acquisition_candidates.extxyz",
             "manifest_path": "{run_dir}/artifacts/acquisition.manifest.json",
-            "selected_source_indices": [900],
+            "selected_source_indices": selected_source_indices,
         }
         if include_plan:
             params["acquisition_plan_path"] = "{run_dir}/inputs/003-plan.json"
@@ -214,6 +232,58 @@ class AcquisitionLifecycleRunStageTests(unittest.TestCase):
         c = __import__("workflow.controller", fromlist=["RunController"]).RunController(self.run_dir)
         self.assertEqual(c.stage("acquisition")["attempts"], 0)
         self.assertFalse(c.state.get("idempotency"))
+
+    def test_run_stage_real_augment_atoms_adapter_translates_native_lineage(self):
+        self._write_plan(
+            eligible_source_categories=["bulk", "void"],
+            selected_parent_structure_ids=["seed-pool:900", "seed-pool:901"],
+            selected_source_global_indices=[900, 901],
+            n_parents=2,
+            n_per_structure=1,
+            expected_output_count=2,
+            max_force=24.0,
+        )
+        c = self._init(include_plan=True)
+        from runtimes.pydantic_ai.executors import acquisition_plan_sha256_from_proposal
+        stage_cfg = cli._stage_config(c, "acquisition")
+        proposal, _ = cli._proposal_from_stage(c, "acquisition", stage_cfg)
+        proposal = cli._bind_acquisition_plan_for_stage(c, proposal)
+        plan_sha = acquisition_plan_sha256_from_proposal(proposal)
+        cli.main(["approve", "--run-dir", str(self.run_dir), "--boundary", "costly_teacher_labeling", "--note", "exact", "--plan-sha256", plan_sha])
+        calls = {"command": None}
+        import subprocess
+        real_subprocess_run = subprocess.run
+
+        def fake_run(command, check=False, cwd=None, **kwargs):
+            if "augment-atoms" not in [str(x) for x in command]:
+                return real_subprocess_run(command, check=check, cwd=cwd, **kwargs)
+            calls["command"] = list(command)
+            self.assertTrue(check)
+            native_cfg = yaml.safe_load((self.run_dir / "artifacts" / "acquisition_augment_atoms.native.yaml").read_text(encoding="utf-8"))
+            self.assertEqual(set(native_cfg), {"data", "model", "config"})
+            self.assertEqual(native_cfg["config"]["n_per_structure"], 1)
+            self.assertEqual(native_cfg["config"]["max_force"], 24.0)
+            first = Atoms("Cu", positions=[[3, 0, 0]], cell=[10, 10, 10], pbc=True)
+            first.info.update({"starting-structure": 0, "id": "native-0", "parent": "native-parent-0", "level": 1, "sigma": 0.01, "relax_steps": 2})
+            second = Atoms("Cu", positions=[[4, 0, 0]], cell=[10, 10, 10], pbc=True)
+            second.info.update({"starting-structure": 1, "id": "native-1", "parent": "native-parent-1", "level": 1, "sigma": 0.02, "relax_steps": 3})
+            write(str(self.run_dir / "artifacts" / "acquisition_candidates.extxyz"), [first, second])
+            import subprocess
+            return subprocess.CompletedProcess(command, 0)
+
+        with mock.patch("adapters.acquisition.subprocess.run", fake_run):
+            code = cli.main(["run-stage", "--runtime", "mock", "--run-dir", str(self.run_dir), "--stage", "acquisition", "--auto-mock-judges"])
+        self.assertEqual(code, cli.EXIT_SUCCESS)
+        self.assertEqual(calls["command"][:4], ["conda", "run", "-n", "augment"])
+        self.assertEqual(calls["command"][4:], ["augment-atoms", str((self.run_dir / "artifacts" / "acquisition_augment_atoms.native.yaml").resolve())])
+        from ase.io import read
+        frames = read(str(self.run_dir / "artifacts" / "acquisition_candidates.extxyz"), index=":")
+        self.assertEqual([a.info["parent_structure_id"] for a in frames], ["seed-pool:900", "seed-pool:901"])
+        self.assertEqual([a.info["parent"] for a in frames], ["native-parent-0", "native-parent-1"])
+        manifest = json.loads((self.run_dir / "artifacts" / "acquisition.manifest.json").read_text(encoding="utf-8"))
+        self.assertEqual(manifest["actual_output_count"], 2)
+        self.assertEqual(manifest["translated_command"], calls["command"])
+        self.assertTrue((self.run_dir / "artifacts" / "acquisition_protection_audit.json").is_file())
 
     def test_successful_mock_adapter_creates_all_stage_outputs_through_run_stage(self):
         c = self._init(include_plan=True)
