@@ -21,22 +21,22 @@ import unittest
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
-FREEZE_REVISION = "large-artifact bounded-Judge-evidence hardening (v5; no role/action/controller change)"
+FREEZE_REVISION = "inline JudgeEvidencePacket hardening (v6; no role/action/controller/contract change)"
 FROZEN_MODEL = "qwen2.5-7b-instruct"
 
 FROZEN = {
     "runtimes/pydantic_ai/criterion_eval.py":
         "65a1c4fd5560660eef4825b4f4aa0687868cda7e4e6e863c19ec2b8923d12b96",
     "agents/judge.md":
-        "26c6bfa6755d15a17b004608ad33b24ed11a8a53c7a96c598f7b35d169e640ce",
+        "cc32f81efdbf825067f2688eb78a2f41982f9183ef78a33badb31906dabc8aa8",
     "orchestration/exchange.py":
         "f29362891c18c728dc9de0a8c3ee51590c9be6be53f5b811bdfd861d0e82a8ae",
     "runtimes/pydantic_ai/tool_registry.py":
         "3d398a718da1c9e89d03585acdc9fafcfeb2d4767569ffac6027edcd13c1e467",
     "runtimes/pydantic_ai/models.py":
-        "962a77cb4c553b3b1f96c73c9b62769d8f403c1a70ebf321e9d3352e20a72cff",
+        "b6e5efbb6ccc89c9be17d39e8b0255b8b97178292a6dc0619ada506e71fbfd1a",
     "runtimes/pydantic_ai/pydantic_ai_runtime.py":
-        "4cf343d6e3b16c66560e6ee47ddd4d6b36d1eb941ce59bf95f65bcc077a87507",
+        "3d2105d5f15824fbd26a599996181e09f2bb555c331aff514df14a4122d2bcb9",
     "runtimes/pydantic_ai/role_outputs.py":
         "929695fad270279f839e8d7cd7ca441516fc2fd6c6717ec0359e5a52050972eb",
     "runtimes/pydantic_ai/production_router.py":

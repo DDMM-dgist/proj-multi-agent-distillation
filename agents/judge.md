@@ -23,17 +23,23 @@ The gate exists to prevent premature claims. If a criterion is **not
 demonstrably met** by the evidence, vote REVISE (fixable) or FAIL (artifact is
 invalid), not PASS. "Probably fine" is REVISE.
 
-## Reading evidence: read once; an absent required field means incomplete
+## Reading evidence: inline first; read supplementary files only when explicitly necessary
 
-Read each artifact **once**. A successful read returns the artifact's full
-contents — you already have everything it contains, so do **not** read the same
-artifact again. If a value required by a criterion is **absent** from the
-evidence you read, that criterion is **not demonstrably met**: the evidence is
+For production gates, your primary evidence is `AgentTask.context.judge_evidence_packet`.
+Treat this packet as the frozen evidence for your vote. It contains the run/stage,
+assigned lens, criteria, deterministic validation outcomes, artifact identities,
+compact scientific summaries, and provenance metadata. Do not perform open-ended
+evidence discovery, and do not call read tools merely to rediscover information that is
+already present in the packet.
+
+If a task exposes supplementary files, read each supplementary artifact **once**.
+A successful read returns the artifact's full contents — you already have everything
+it contains, so do **not** read the same artifact again. If a value required by a
+criterion is **absent** from the inline packet and any explicitly supplied
+supplementary evidence, that criterion is **not demonstrably met**: the evidence is
 incomplete. Record that criterion in `criteria_checked` as `ok: false` with
-`value_read: null` and vote **REVISE** — do not re-read the artifact hoping the
-missing field appears, and never vote PASS on an absent value. You must still
-return one `criteria_checked` entry for **every** ordered criterion, then emit
-your typed vote.
+`value_read: null` and vote **REVISE**. You must still return one
+`criteria_checked` entry for **every** ordered criterion, then emit your typed vote.
 
 Large scientific artifacts may be represented by deterministic bounded evidence
 instead of direct full-file reads. A tool/read-size limitation is not a

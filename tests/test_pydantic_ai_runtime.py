@@ -303,6 +303,18 @@ class ToolSecurityTests(unittest.TestCase):
             self.assertEqual([i.tool for i in ts.invocations], ["read_json", "read_json"])
             self.assertTrue(all(not i.ok for i in ts.invocations))
 
+    def test_tools_can_be_disabled_for_inline_judge_evidence(self):
+        from runtimes.pydantic_ai.models import RuntimeContext
+        from runtimes.pydantic_ai.pydantic_ai_runtime import PydanticAIRuntime
+        from runtimes.pydantic_ai.tool_registry import ReadOnlyToolset
+        from orchestration.specs import load_agent_specs
+        specs = load_agent_specs(str(ROOT / "agent_specs"))
+        ctx = RuntimeContext(exchange_dir="/tmp/ex", repo_root=str(ROOT), tools_enabled=False)
+        toolset = ReadOnlyToolset([])
+        agent = PydanticAIRuntime(model=None)._build_agent(specs["judge"], toolset, None, ctx)
+        names = [tool.name for tool in getattr(agent, "_function_tools", {}).values()]
+        self.assertEqual(names, [])
+
     def test_manifest_lists_exactly_the_exposed_read_tools(self):
         from runtimes.pydantic_ai.tool_registry import EXPOSED_READ_TOOLS
         self.assertEqual(EXPOSED_READ_TOOLS,

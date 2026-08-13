@@ -457,12 +457,12 @@ class ProductionReadinessTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             artifact = root / "run" / "artifacts" / "a.json"
-            artifact.parent.mkdir(parents=True)
+            artifact.parent.mkdir(parents=True, exist_ok=True)
             artifact.write_text('{"ok": true}\n')
             gate_context = {"artifact_sha256": {str(artifact): "abc"}}
             evidence = root / "run" / "exchange" / "bounded_evidence" / "stage.json"
             allow = judge_read_allowlist(gate_context, evidence)
-            self.assertEqual(allow, [str(evidence.resolve()), str(artifact.resolve())])
+            self.assertEqual(allow, [])
         self.assertFalse(any(path == "/tmp/run" or path.endswith("/gates") or "/provenance" in path for path in allow))
 
 
@@ -498,7 +498,7 @@ class ProductionReadinessTests(unittest.TestCase):
             def ctx_factory(index):
                 ctx = RuntimeContext(exchange_dir=str(run_dir / "exchange"), repo_root=str(ROOT),
                                      provider="mock", model_id="mock",
-                                     read_allow_prefixes=[str(evidence.resolve()), str(artifact.resolve())])
+                                     read_allow_prefixes=[], tools_enabled=False)
                 contexts.append(ctx)
                 return ctx
             decision, _ = run_three_judge_gate(c, "s", specs, runtime_factory, ctx_factory, evidence)
@@ -506,12 +506,9 @@ class ProductionReadinessTests(unittest.TestCase):
             self.assertEqual(len(contexts), 4)  # one exchange setup context + three Judge contexts
             judge_contexts = contexts[1:]
             self.assertEqual(len(judge_contexts), 3)
-            expected = [str(evidence.resolve()), str(artifact.resolve())]
             for ctx in judge_contexts:
-                self.assertEqual(ctx.read_allow_prefixes, expected)
-                self.assertFalse(any(path == str(run_dir) or path.endswith("/gates") or
-                                     "/provenance" in path or "/results" in path
-                                     for path in ctx.read_allow_prefixes))
+                self.assertEqual(ctx.read_allow_prefixes, [])
+                self.assertFalse(ctx.tools_enabled)
 
 
     def test_teacher_baseline_large_artifact_is_bounded_for_judges(self):
@@ -596,15 +593,16 @@ class ProductionReadinessTests(unittest.TestCase):
             c.complete_external_stage("teacher_baseline", [report, large, labels])
             gate_context = c.gate_context("teacher_baseline")
             allow = judge_read_allowlist(gate_context, evidence)
-            self.assertIn(str(evidence.resolve()), allow)
-            self.assertIn(str(report.resolve()), allow)
-            self.assertIn(str(labels.resolve()), allow)
-            self.assertNotIn(str(large.resolve()), allow)
+            self.assertEqual(allow, [])
             task = _judge_task("teacher_baseline", 1, c.stage("teacher_baseline")["gate_review_lenses"][0], gate_context, evidence, c)
-            input_paths = [item["path"] for item in task["inputs"]]
-            self.assertNotIn(str(large.resolve()), input_paths)
-            self.assertEqual(task["context"]["large_artifact_policy"]["read_limit_is_scientific_failure"], False)
-            self.assertEqual(task["context"]["large_artifacts"][0]["sha256"], artifact_digest(large)["sha256"])
+            self.assertEqual(task["inputs"], [])
+            packet = task["context"]["judge_evidence_packet"]
+            self.assertTrue(task["context"]["primary_evidence_inline"])
+            self.assertLessEqual(packet["packet_bytes"], 128 * 1024)
+            self.assertEqual(packet["large_artifact_policy"]["read_limit_is_scientific_failure"], False)
+            self.assertEqual(packet["large_artifacts"][0]["sha256"], artifact_digest(large)["sha256"])
+            self.assertEqual(packet["artifacts"][0]["teacher_baseline"]["structure_count"], 2134)
+            self.assertEqual(packet["deterministic_validation"][0]["contract_validated"], True)
 
     def test_bounded_evidence_keeps_validation_failures_and_nan_summaries_visible(self):
         from runtimes.pydantic_ai.bounded_evidence import build_bounded_evidence
@@ -643,10 +641,52 @@ class ProductionReadinessTests(unittest.TestCase):
             large.write_text("x" * 1_000_001)
             gate_context = {"artifact_sha256": {str(small.resolve()): "small-sha", str(large.resolve()): "large-sha"}, "criteria": ["c"], "review_lenses": [{"id": "evidence_provenance", "focus": "f"}]}
             allow = judge_read_allowlist(gate_context, evidence)
-            self.assertEqual(allow, [str(evidence.resolve()), str(small.resolve())])
-            task = _judge_task("s", 1, gate_context["review_lenses"][0], gate_context, evidence, type("C", (), {"state": {"run_id": "r"}})())
-            self.assertEqual([item["path"] for item in task["inputs"]], [str(evidence), str(small.resolve())])
-            self.assertEqual(task["context"]["large_artifacts"], [{"path": str(large.resolve()), "sha256": "large-sha", "size": 1_000_001, "direct_read_exposed": False, "reason": "represented by bounded evidence summary"}])
+            self.assertEqual(allow, [])
+            class C:
+                state = {"run_id": "r"}
+                def stage(self, _name):
+                    return {"status": "completed", "attempts": 1, "gate": "pending"}
+            from runtimes.pydantic_ai.bounded_evidence import build_bounded_evidence
+            build_bounded_evidence([small, large], evidence, validation_outcomes=[{"result":"PASS"}])
+            task = _judge_task("s", 1, gate_context["review_lenses"][0], gate_context, evidence, C())
+            self.assertEqual(task["inputs"], [])
+            self.assertEqual(task["context"]["judge_evidence_packet"]["large_artifacts"], [{"path": str(large.resolve()), "sha256": "large-sha", "size": 1_000_001, "direct_read_exposed": False, "reason": "represented by bounded evidence summary"}])
+
+    def test_judge_evidence_packets_have_same_science_and_distinct_lenses(self):
+        from runtimes.pydantic_ai.bounded_evidence import build_bounded_evidence
+        from runtimes.pydantic_ai.cli import _judge_task
+        from workflow.controller import RunController
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            workflow = root / "workflow.yaml"
+            workflow.write_text(yaml.safe_dump({"run_id": "packet-blind", "stages": [{
+                "name": "s", "outputs": ["artifacts/a.json"], "gate": {"criteria": ["c"]}}]}))
+            run_dir = root / "run"
+            c = RunController.initialize(workflow, run_dir)
+            artifact = run_dir / "artifacts" / "a.json"
+            artifact.parent.mkdir(parents=True, exist_ok=True)
+            artifact.write_text('{"schema_version":1,"status":"NOT_ESTABLISHED","warnings":["w"]}\n')
+            c.complete_external_stage("s", [artifact])
+            evidence = run_dir / "exchange" / "bounded_evidence" / "s.json"
+            build_bounded_evidence([artifact], evidence, validation_outcomes=[{"validator":"v","contract_validated":False,"result":"FAIL","warnings":["w"]}])
+            gate_context = c.gate_context("s")
+            tasks = [_judge_task("s", i, lens, gate_context, evidence, c)
+                     for i, lens in enumerate(gate_context["review_lenses"], 1)]
+            packets = [t["context"]["judge_evidence_packet"] for t in tasks]
+            self.assertEqual({p["review_lens"] for p in packets}, {l["id"] for l in gate_context["review_lenses"]})
+            stripped = []
+            for p in packets:
+                q = dict(p)
+                q.pop("judge_id")
+                q.pop("review_lens")
+                q.pop("review_focus")
+                q.pop("packet_bytes")
+                stripped.append(q)
+            self.assertEqual(stripped[0], stripped[1])
+            self.assertEqual(stripped[1], stripped[2])
+            self.assertNotIn("votes", json.dumps(tasks))
+            self.assertEqual(packets[0]["deterministic_validation"][0]["warnings"], ["w"])
+            self.assertEqual(packets[0]["artifacts"][0]["status"], "NOT_ESTABLISHED")
 
     def test_teacher_baseline_requires_explicit_structures_and_does_not_pick_xyz(self):
         from runtimes.pydantic_ai import cli

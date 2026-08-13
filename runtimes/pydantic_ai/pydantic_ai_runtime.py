@@ -50,7 +50,12 @@ class PydanticAIRuntime:
         else:
             agent = Agent(self._model, **kwargs)
 
-        # Both read-only tools (matching tool_registry.EXPOSED_READ_TOOLS) are registered.
+        # Both read-only tools (matching tool_registry.EXPOSED_READ_TOOLS) are registered unless
+        # the caller supplies primary evidence inline and explicitly disables discovery tools
+        # (production Judges). Other roles keep the existing tool surface.
+        if context is not None and not getattr(context, "tools_enabled", True):
+            return agent
+
         # Any failure — blocked path, read error, bad encoding, or invalid JSON — is
         # returned to the model as an explicit, distinguishable refusal and recorded in the
         # audit trail, rather than crashing the run. Enforcement is at the tool, not the agent.

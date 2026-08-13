@@ -131,9 +131,13 @@ class RuntimeContext(BaseModel):
     # Deterministic per-invocation bound on the number of MODEL REQUESTS (pydantic_ai
     # UsageLimits.request_limit). Each tool round-trip consumes one request, so this fails a
     # runaway tool loop closed BEFORE the context window is exhausted. Legitimate current tasks
-    # need <=2 requests (e.g. Judge: read_json + final vote); 6 leaves headroom for a few tool
-    # round-trips while stopping a loop like Stage B attempt-1's 20x read_artifact_manifest.
+    # need <=2 requests (e.g. Judge: inline evidence + final vote); 6 leaves headroom for a few
+    # supplementary tool round-trips while stopping a loop like Stage B attempt-1's 20x
+    # read_artifact_manifest.
     request_limit: int = 6
+    # Production Judges receive primary evidence inline; disabling tools prevents open-ended
+    # evidence discovery from consuming the request budget. Other roles default unchanged.
+    tools_enabled: bool = True
     correlation_id: str = ""
 
 

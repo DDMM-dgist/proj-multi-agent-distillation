@@ -34,6 +34,7 @@ EXIT_INTERNAL = 8
 
 _PROVIDER_UNAVAILABLE_FAILURES = {"authentication_failure"}
 MAX_PRODUCER_GENERATION_ATTEMPTS = 3
+MAX_JUDGE_EVIDENCE_PACKET_BYTES = 128 * 1024
 _AUTH_BINDING_MISMATCH = "authoritative action binding mismatch"
 
 
@@ -493,6 +494,45 @@ def _large_artifact_records(gate_context):
     return records
 
 
+def build_judge_evidence_packet(controller, stage_name, judge_index, lens, gate_context, evidence_path):
+    evidence_file = Path(evidence_path).resolve()
+    bounded = json.loads(evidence_file.read_text(encoding="utf-8"))
+    packet = {
+        "schema_version": 1,
+        "packet_kind": "JudgeEvidencePacket",
+        "run_id": controller.state["run_id"],
+        "stage": stage_name,
+        "judge_id": f"judge-{judge_index}",
+        "review_lens": lens["id"],
+        "review_focus": lens["focus"],
+        "criteria": list(gate_context["criteria"]),
+        "bounded_evidence_path": str(evidence_file),
+        "bounded_evidence_sha256": __import__("workflow.integrity", fromlist=["sha256_file"]).sha256_file(evidence_file),
+        "artifact_sha256": dict(gate_context.get("artifact_sha256") or {}),
+        "large_artifacts": _large_artifact_records(gate_context),
+        "deterministic_validation": list(bounded.get("validation_outcomes") or []),
+        "protocol_refs": list(bounded.get("protocol_refs") or []),
+        "artifacts": list(bounded.get("artifacts") or []),
+        "large_artifact_policy": {
+            "direct_read_limit_bytes": 1_000_000,
+            "read_limit_is_scientific_failure": False,
+            "policy": ("Large Controller-registered scientific artifacts are authoritative "
+                       "provenance. Evaluate them through deterministic bounded summaries, "
+                       "hashes, manifests, and validation outcomes when supplied."),
+        },
+        "provenance_summary": {
+            "controller_stage_status": controller.stage(stage_name).get("status"),
+            "controller_stage_attempts": controller.stage(stage_name).get("attempts"),
+            "controller_stage_gate": controller.stage(stage_name).get("gate"),
+        },
+    }
+    encoded = json.dumps(packet, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    if len(encoded) > MAX_JUDGE_EVIDENCE_PACKET_BYTES:
+        raise ValueError("JudgeEvidencePacket exceeds 128 KB")
+    packet["packet_bytes"] = len(encoded)
+    return packet
+
+
 def _write_three_pass_votes(controller, stage_name):
     ctx = controller.gate_context(stage_name)
     votes = []
@@ -517,40 +557,33 @@ def _write_three_pass_votes(controller, stage_name):
 
 
 def _judge_task(stage_name, judge_index, lens, gate_context, evidence_path, controller):
-    inputs = [{"role": "bounded_evidence", "path": str(evidence_path)}]
-    for path in _direct_judge_artifact_paths(gate_context):
-        inputs.append({"role": "stage_artifact", "path": path})
-    large_artifacts = _large_artifact_records(gate_context)
+    packet = build_judge_evidence_packet(
+        controller, stage_name, judge_index, lens, gate_context, evidence_path)
     return {
         "schema_version": 1,
         "task_id": f"{stage_name}-judge-{judge_index}",
         "agent": "judge",
         "run_id": controller.state["run_id"],
         "created_at": "controller-stage-runner",
-        "instruction": f"Judge stage {stage_name} against the frozen criteria and bounded evidence.",
-        "inputs": inputs,
+        "instruction": (f"Judge stage {stage_name} against the frozen criteria using "
+                        "context.judge_evidence_packet as the complete primary evidence."),
+        "inputs": [],
         "criteria": list(gate_context["criteria"]),
         "constraints": [
-            "Use only the provided frozen evidence, compact summaries, hashes, and directly readable artifacts.",
+            "Primary evidence is already supplied in context.judge_evidence_packet; do not discover it with tools.",
+            "Use only the supplied frozen evidence packet, compact summaries, hashes, validation outcomes, and criteria.",
             "Do not assume or inspect another Judge context or vote.",
             "Do not mark REVISE/FAIL solely because a large registered artifact is not exposed for full direct reading.",
             "Do not request compression or filtering merely for LLM readability when deterministic bounded evidence resolves the criterion.",
         ],
         "context": {"review_lens": lens["id"], "review_focus": lens["focus"],
-                    "stage": stage_name, "artifact_sha256": gate_context["artifact_sha256"],
-                    "large_artifact_policy": {
-                        "direct_read_limit_bytes": 1_000_000,
-                        "policy": ("Large Controller-registered scientific artifacts are authoritative "
-                                   "provenance. Evaluate them through deterministic bounded summaries, "
-                                   "hashes, manifests, and validation outcomes when supplied."),
-                        "read_limit_is_scientific_failure": False,
-                    },
-                    "large_artifacts": large_artifacts},
+                    "stage": stage_name, "primary_evidence_inline": True,
+                    "judge_evidence_packet": packet},
     }
 
 
 def judge_read_allowlist(gate_context, evidence_path):
-    return [str(Path(evidence_path).resolve()), *_direct_judge_artifact_paths(gate_context)]
+    return []
 
 
 def run_three_judge_gate(controller, stage_name, specs, runtime_factory, runtime_context_factory,
@@ -735,7 +768,8 @@ def _cmd_run_stage(args) -> int:
                 def judge_ctx_factory(i):
                     return RuntimeContext(exchange_dir=str(exchange), repo_root=args.repo_root,
                                           provider=runtime_provider, model_id=runtime_model,
-                                          read_allow_prefixes=list(judge_allow))
+                                          read_allow_prefixes=list(judge_allow),
+                                          tools_enabled=False)
                 decision, vote_path = run_three_judge_gate(
                     c, args.stage, specs, judge_runtime_factory, judge_ctx_factory, evidence_path)
             c = RunController(args.run_dir)
