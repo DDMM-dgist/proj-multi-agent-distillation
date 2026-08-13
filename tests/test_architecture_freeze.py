@@ -21,14 +21,14 @@ import unittest
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
-FREEZE_REVISION = "reference-validation-capability-amendment (v4; one action + UTF-8 prompt reads)"
+FREEZE_REVISION = "large-artifact bounded-Judge-evidence hardening (v5; no role/action/controller change)"
 FROZEN_MODEL = "qwen2.5-7b-instruct"
 
 FROZEN = {
     "runtimes/pydantic_ai/criterion_eval.py":
         "65a1c4fd5560660eef4825b4f4aa0687868cda7e4e6e863c19ec2b8923d12b96",
     "agents/judge.md":
-        "5e902597944c4e700c4d82b77e7462a6971781cbd1b0614dc33015a48a3682f9",
+        "26c6bfa6755d15a17b004608ad33b24ed11a8a53c7a96c598f7b35d169e640ce",
     "orchestration/exchange.py":
         "f29362891c18c728dc9de0a8c3ee51590c9be6be53f5b811bdfd861d0e82a8ae",
     "runtimes/pydantic_ai/tool_registry.py":

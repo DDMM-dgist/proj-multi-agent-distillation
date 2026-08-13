@@ -454,10 +454,15 @@ class ProductionReadinessTests(unittest.TestCase):
 
     def test_judge_read_allowlists_are_mutually_blind(self):
         from runtimes.pydantic_ai.cli import judge_read_allowlist
-        gate_context = {"artifact_sha256": {"/tmp/run/artifacts/a.json": "abc"}}
-        evidence = Path("/tmp/run/exchange/bounded_evidence/stage.json")
-        allow = judge_read_allowlist(gate_context, evidence)
-        self.assertEqual(allow, [str(evidence.resolve()), "/tmp/run/artifacts/a.json"])
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            artifact = root / "run" / "artifacts" / "a.json"
+            artifact.parent.mkdir(parents=True)
+            artifact.write_text('{"ok": true}\n')
+            gate_context = {"artifact_sha256": {str(artifact): "abc"}}
+            evidence = root / "run" / "exchange" / "bounded_evidence" / "stage.json"
+            allow = judge_read_allowlist(gate_context, evidence)
+            self.assertEqual(allow, [str(evidence.resolve()), str(artifact.resolve())])
         self.assertFalse(any(path == "/tmp/run" or path.endswith("/gates") or "/provenance" in path for path in allow))
 
 
@@ -507,6 +512,141 @@ class ProductionReadinessTests(unittest.TestCase):
                 self.assertFalse(any(path == str(run_dir) or path.endswith("/gates") or
                                      "/provenance" in path or "/results" in path
                                      for path in ctx.read_allow_prefixes))
+
+
+    def test_teacher_baseline_large_artifact_is_bounded_for_judges(self):
+        from runtimes.pydantic_ai.bounded_evidence import build_bounded_evidence
+        from runtimes.pydantic_ai.cli import _judge_task, judge_read_allowlist
+        from workflow.controller import RunController
+        from workflow.integrity import artifact_digest
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            run_dir = root / "run"
+            workflow = root / "workflow.yaml"
+            workflow.write_text(yaml.safe_dump({"run_id": "large-judge", "stages": [{
+                "name": "teacher_baseline", "outputs": ["artifacts/teacher_baseline.json", "artifacts/teacher_baseline_operational.extxyz", "artifacts/teacher_baseline_labels.manifest.json"],
+                "gate": {"criteria": ["Teacher inference succeeds on every declared operational deployment slice with no NaN or Inf outputs"]},
+            }]}))
+            c = RunController.initialize(workflow, run_dir)
+            artifacts = run_dir / "artifacts"
+            artifacts.mkdir(parents=True, exist_ok=True)
+            large = artifacts / "teacher_baseline_operational.extxyz"
+            large.write_text("x" * 1_000_001)
+            labels = artifacts / "teacher_baseline_labels.manifest.json"
+            labels.write_text(json.dumps({
+                "schema_version": 1,
+                "teacher_model_sha256": "teacher-sha",
+                "teacher_config_sha256": "config-sha",
+                "source_sha256": "candidate-sha",
+                "output": str(large),
+                "sha256": artifact_digest(large)["sha256"],
+                "n_frames": 2134,
+                "labels": ["energy", "forces"],
+            }))
+            report = artifacts / "teacher_baseline.json"
+            report.write_text(json.dumps({
+                "schema_version": 1,
+                "profile": "teacher_baseline",
+                "teacher": {"kind": "allegro", "config": "teacher.yaml", "model_sha256": "teacher-sha"},
+                "distillation_scope": "scope.yaml",
+                "validation_profile": "validation.yaml",
+                "deployment_domain": {
+                    "slice_status": {"dilute_oxygen_vacancy": "NOT_ESTABLISHED"},
+                    "dft_labels_used": False,
+                    "protected_reference_labels_used": False,
+                },
+                "applicability": {"status": "NOT_ESTABLISHED", "limitations": ["dilute_oxygen_vacancy = NOT_ESTABLISHED"]},
+                "checks": [{
+                    "observable": "fresh_teacher_energy_force_finiteness",
+                    "status": "PASS",
+                    "value": 54.1,
+                    "unit": "eV/Angstrom",
+                    "purpose": "deployment_stability",
+                    "reference_source": "teacher",
+                    "protocol": "fresh Teacher inference",
+                    "details": {
+                        "n_frames": 2134,
+                        "fresh_label_output_integrity": artifact_digest(large),
+                        "fresh_label_manifest_integrity": artifact_digest(labels),
+                    },
+                }],
+                "evidence": [{"role": "operational_structures", "path": "candidates.extxyz", "integrity": {"sha256": "candidate-sha"}}],
+            }))
+            evidence = run_dir / "exchange" / "bounded_evidence" / "teacher_baseline.json"
+            summary = build_bounded_evidence(
+                [report, large, labels], evidence,
+                validation_outcomes=[{"stage": "teacher_baseline", "validator": "validation.teacher_baseline.validate_teacher_baseline_report", "contract_validated": True, "result": "PASS"}],
+            )
+            tb = next(a for a in summary["artifacts"] if a["artifact_path"] == str(report.resolve()))["teacher_baseline"]
+            self.assertEqual(tb["structure_count"], 2134)
+            self.assertEqual(tb["expected_structure_count"], 2134)
+            self.assertEqual(tb["successful_prediction_count"], 2134)
+            self.assertEqual(tb["failed_prediction_count"], 0)
+            self.assertEqual(tb["finite_teacher_energy_count"], 2134)
+            self.assertEqual(tb["finite_teacher_force_count"], 2134)
+            self.assertEqual(tb["label_keys"], ["teacher_energy", "teacher_forces"])
+            self.assertEqual(tb["teacher_model_sha256"], "teacher-sha")
+            self.assertEqual(tb["source_candidate_sha256"], "candidate-sha")
+            self.assertEqual(tb["deployment_domain_status"]["dilute_oxygen_vacancy"], "NOT_ESTABLISHED")
+            self.assertEqual(tb["applicability_status"], "NOT_ESTABLISHED")
+            self.assertFalse(tb["dft_labels_used"])
+            self.assertFalse(tb["protected_reference_labels_used"])
+            self.assertEqual(summary["validation_outcomes"][0]["contract_validated"], True)
+
+            c.complete_external_stage("teacher_baseline", [report, large, labels])
+            gate_context = c.gate_context("teacher_baseline")
+            allow = judge_read_allowlist(gate_context, evidence)
+            self.assertIn(str(evidence.resolve()), allow)
+            self.assertIn(str(report.resolve()), allow)
+            self.assertIn(str(labels.resolve()), allow)
+            self.assertNotIn(str(large.resolve()), allow)
+            task = _judge_task("teacher_baseline", 1, c.stage("teacher_baseline")["gate_review_lenses"][0], gate_context, evidence, c)
+            input_paths = [item["path"] for item in task["inputs"]]
+            self.assertNotIn(str(large.resolve()), input_paths)
+            self.assertEqual(task["context"]["large_artifact_policy"]["read_limit_is_scientific_failure"], False)
+            self.assertEqual(task["context"]["large_artifacts"][0]["sha256"], artifact_digest(large)["sha256"])
+
+    def test_bounded_evidence_keeps_validation_failures_and_nan_summaries_visible(self):
+        from runtimes.pydantic_ai.bounded_evidence import build_bounded_evidence
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            report = root / "teacher_baseline.json"
+            report.write_text(json.dumps({
+                "schema_version": 1,
+                "profile": "teacher_baseline",
+                "teacher": {"model_sha256": "teacher-sha"},
+                "deployment_domain": {"dft_labels_used": False, "protected_reference_labels_used": False},
+                "applicability": {"status": "NOT_ESTABLISHED", "limitations": []},
+                "checks": [{"observable": "fresh_teacher_energy_force_finiteness", "status": "FAIL", "details": {"n_frames": 3}}],
+                "evidence": [],
+            }))
+            out = root / "evidence.json"
+            summary = build_bounded_evidence(
+                [report], out,
+                validation_outcomes=[{"stage": "teacher_baseline", "validator": "validation.teacher_baseline.validate_teacher_baseline_report", "contract_validated": False, "result": "FAIL", "errors": ["NaN teacher force"]}],
+            )
+            tb = summary["artifacts"][0]["teacher_baseline"]
+            self.assertIsNone(tb["successful_prediction_count"])
+            self.assertIsNone(tb["finite_teacher_energy_count"])
+            self.assertEqual(summary["validation_outcomes"][0]["result"], "FAIL")
+            self.assertIn("NaN teacher force", summary["validation_outcomes"][0]["errors"])
+
+    def test_small_artifact_remains_directly_readable_large_artifact_is_summarized(self):
+        from runtimes.pydantic_ai.cli import _judge_task, judge_read_allowlist
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            evidence = root / "evidence.json"
+            evidence.write_text('{"schema_version": 1}\n')
+            small = root / "small.json"
+            large = root / "large.extxyz"
+            small.write_text('{"ok": true}\n')
+            large.write_text("x" * 1_000_001)
+            gate_context = {"artifact_sha256": {str(small.resolve()): "small-sha", str(large.resolve()): "large-sha"}, "criteria": ["c"], "review_lenses": [{"id": "evidence_provenance", "focus": "f"}]}
+            allow = judge_read_allowlist(gate_context, evidence)
+            self.assertEqual(allow, [str(evidence.resolve()), str(small.resolve())])
+            task = _judge_task("s", 1, gate_context["review_lenses"][0], gate_context, evidence, type("C", (), {"state": {"run_id": "r"}})())
+            self.assertEqual([item["path"] for item in task["inputs"]], [str(evidence), str(small.resolve())])
+            self.assertEqual(task["context"]["large_artifacts"], [{"path": str(large.resolve()), "sha256": "large-sha", "size": 1_000_001, "direct_read_exposed": False, "reason": "represented by bounded evidence summary"}])
 
     def test_teacher_baseline_requires_explicit_structures_and_does_not_pick_xyz(self):
         from runtimes.pydantic_ai import cli

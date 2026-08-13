@@ -443,6 +443,56 @@ def _stage_outputs(controller, stage_name):
     return paths
 
 
+def _stage_validation_outcomes(controller, stage_name):
+    outcomes = []
+    stage = controller.stage(stage_name)
+    contract = stage.get("contract") or {}
+    for event in controller.state.get("events", []):
+        if event.get("type") != "external_stage_completed" or event.get("stage") != stage_name:
+            continue
+        outcomes.append({
+            "stage": stage_name,
+            "validator": contract.get("validator"),
+            "contract_kind": contract.get("kind"),
+            "contract_manifest": contract.get("manifest"),
+            "contract_validated": bool(event.get("contract_validated")),
+            "result": "PASS" if event.get("contract_validated") else "FAIL",
+        })
+    if not outcomes and contract:
+        outcomes.append({
+            "stage": stage_name,
+            "validator": contract.get("validator"),
+            "contract_kind": contract.get("kind"),
+            "contract_manifest": contract.get("manifest"),
+            "contract_validated": False,
+            "result": "NOT_RUN",
+        })
+    return outcomes
+
+
+def _direct_judge_artifact_paths(gate_context):
+    from .bounded_evidence import DIRECT_JUDGE_ARTIFACT_BYTES
+    paths = []
+    for raw in gate_context.get("artifact_sha256", {}):
+        path = Path(raw).resolve()
+        if path.exists() and path.stat().st_size <= DIRECT_JUDGE_ARTIFACT_BYTES:
+            paths.append(str(path))
+    return paths
+
+
+def _large_artifact_records(gate_context):
+    from .bounded_evidence import DIRECT_JUDGE_ARTIFACT_BYTES
+    records = []
+    for raw, sha in (gate_context.get("artifact_sha256") or {}).items():
+        path = Path(raw).resolve()
+        size = path.stat().st_size if path.exists() else None
+        if size is None or size > DIRECT_JUDGE_ARTIFACT_BYTES:
+            records.append({"path": str(path), "sha256": sha, "size": size,
+                            "direct_read_exposed": False,
+                            "reason": "represented by bounded evidence summary"})
+    return records
+
+
 def _write_three_pass_votes(controller, stage_name):
     ctx = controller.gate_context(stage_name)
     votes = []
@@ -468,28 +518,39 @@ def _write_three_pass_votes(controller, stage_name):
 
 def _judge_task(stage_name, judge_index, lens, gate_context, evidence_path, controller):
     inputs = [{"role": "bounded_evidence", "path": str(evidence_path)}]
-    for path in gate_context["artifact_sha256"]:
+    for path in _direct_judge_artifact_paths(gate_context):
         inputs.append({"role": "stage_artifact", "path": path})
+    large_artifacts = _large_artifact_records(gate_context)
     return {
         "schema_version": 1,
         "task_id": f"{stage_name}-judge-{judge_index}",
         "agent": "judge",
         "run_id": controller.state["run_id"],
         "created_at": "controller-stage-runner",
-        "instruction": f"Judge stage {stage_name} against the frozen criteria and artifacts.",
+        "instruction": f"Judge stage {stage_name} against the frozen criteria and bounded evidence.",
         "inputs": inputs,
         "criteria": list(gate_context["criteria"]),
         "constraints": [
-            "Use only the provided frozen evidence and artifacts.",
+            "Use only the provided frozen evidence, compact summaries, hashes, and directly readable artifacts.",
             "Do not assume or inspect another Judge context or vote.",
+            "Do not mark REVISE/FAIL solely because a large registered artifact is not exposed for full direct reading.",
+            "Do not request compression or filtering merely for LLM readability when deterministic bounded evidence resolves the criterion.",
         ],
         "context": {"review_lens": lens["id"], "review_focus": lens["focus"],
-                    "stage": stage_name, "artifact_sha256": gate_context["artifact_sha256"]},
+                    "stage": stage_name, "artifact_sha256": gate_context["artifact_sha256"],
+                    "large_artifact_policy": {
+                        "direct_read_limit_bytes": 1_000_000,
+                        "policy": ("Large Controller-registered scientific artifacts are authoritative "
+                                   "provenance. Evaluate them through deterministic bounded summaries, "
+                                   "hashes, manifests, and validation outcomes when supplied."),
+                        "read_limit_is_scientific_failure": False,
+                    },
+                    "large_artifacts": large_artifacts},
     }
 
 
 def judge_read_allowlist(gate_context, evidence_path):
-    return [str(Path(evidence_path).resolve()), *[str(Path(path).resolve()) for path in gate_context["artifact_sha256"]]]
+    return [str(Path(evidence_path).resolve()), *_direct_judge_artifact_paths(gate_context)]
 
 
 def run_three_judge_gate(controller, stage_name, specs, runtime_factory, runtime_context_factory,
@@ -654,6 +715,8 @@ def _cmd_run_stage(args) -> int:
         if c.stage(args.stage)["status"] != "completed":
             print("controller stage did not complete", file=sys.stderr)
             return EXIT_VALIDATION_REJECTED
+        build_bounded_evidence(declared, evidence_path, protocol_refs=[c.state.get("workflow_config")],
+                               validation_outcomes=_stage_validation_outcomes(c, args.stage))
 
         decision = "NO_GATE"
         vote_path = None

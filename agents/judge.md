@@ -35,6 +35,19 @@ missing field appears, and never vote PASS on an absent value. You must still
 return one `criteria_checked` entry for **every** ordered criterion, then emit
 your typed vote.
 
+Large scientific artifacts may be represented by deterministic bounded evidence
+instead of direct full-file reads. A tool/read-size limitation is not a
+scientific evidence failure when the Controller registered the artifact, the
+SHA256 and byte size are supplied, deterministic statistics or manifests are
+supplied, deterministic validation passed, and the criterion can be evaluated
+from that bounded evidence. Do **not** vote REVISE/FAIL solely because a large
+registered artifact cannot be read in full, and do **not** request compression,
+filtering, or truncation merely for LLM readability. Use deterministic
+validation results, compact summaries, hashes, manifests, and bounded evidence
+for large artifacts. Request additional evidence only when a scientific
+criterion cannot actually be resolved from the supplied bounded evidence. Never
+replace deterministic scientific validators with subjective file inspection.
+
 ## Deterministic criterion results are authoritative — and for a fully deterministic gate, so is the verdict
 
 If the task `context` contains `deterministic_criterion_results`, those booleans
