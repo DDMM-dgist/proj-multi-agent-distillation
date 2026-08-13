@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import contextlib
+import io
 import json
 import os
 import tempfile
@@ -109,8 +111,11 @@ class ProducerContextDeliveryTests(unittest.TestCase):
         patch_env = mock.patch.dict(os.environ, env or {}, clear=False)
         patch_runtime = mock.patch("runtimes.pydantic_ai.mock_runtime.MockAgentRuntime", _CaptureRuntime)
         patch_exec = mock.patch("workflow.steps.train_committee", _fake_train_committee)
-        with patch_env, patch_runtime, patch_exec:
+        stdout = io.StringIO()
+        stderr = io.StringIO()
+        with patch_env, patch_runtime, patch_exec, contextlib.redirect_stdout(stdout), contextlib.redirect_stderr(stderr):
             code = cli.main(["run-stage", "--runtime", "mock", "--run-dir", str(run_dir), "--stage", "training", "--auto-mock-judges"])
+        self._last_cli_output = stdout.getvalue() + stderr.getvalue()
         return code, run_dir, RunController(run_dir), list(_CaptureRuntime.tasks), list(_CaptureRuntime.contexts)
 
     def test_production_producer_receives_inline_primary_evidence_without_tools(self):
@@ -133,6 +138,7 @@ class ProducerContextDeliveryTests(unittest.TestCase):
         code, _run_dir, c, tasks, _contexts = self._run_training({"PYDANTIC_AI_CONTEXT_WINDOW_TOKENS": "100"})
         self.assertEqual(code, cli.EXIT_VALIDATION_REJECTED)
         self.assertEqual(tasks, [])
+        self.assertIn(cli.PRODUCER_CONTEXT_BUDGET_EXCEEDED, self._last_cli_output)
         self.assertNotIn("producer-context-test:training:001", c.state.get("idempotency", {}))
         self.assertEqual(c.stage("training")["attempts"], 0)
         self.assertEqual(c.stage("training")["status"], "pending")
@@ -155,14 +161,30 @@ class ProducerContextDeliveryTests(unittest.TestCase):
             spec = load_agent_specs(ROOT / "agent_specs")["ml-trainer"]
             ctx = RuntimeContext(exchange_dir=str(run_dir / "exchange"), repo_root=str(ROOT),
                                  tools_enabled=False)
-            policy = {"context_window_tokens": 2500, "output_token_reserve": 2000,
-                      "prompt_safety_margin_tokens": 200}
-            ok, diag = cli._producer_context_budget(task, spec, ctx, policy)
-            self.assertFalse(ok)
-            self.assertEqual(diag["output_token_reserve"], 2000)
-            policy["output_token_reserve"] = 100
-            ok, _diag = cli._producer_context_budget(task, spec, ctx, policy)
+            base_policy = {"context_window_tokens": 100_000, "output_token_reserve": 100,
+                           "prompt_safety_margin_tokens": 200}
+            ok, base_diag = cli._producer_context_budget(task, spec, ctx, base_policy)
             self.assertTrue(ok)
+
+            high_reserve_policy = dict(base_policy, output_token_reserve=2000)
+            ok, high_diag = cli._producer_context_budget(task, spec, ctx, high_reserve_policy)
+            self.assertTrue(ok)
+            self.assertGreater(high_diag["estimated_total_tokens"], base_diag["estimated_total_tokens"])
+            self.assertEqual(
+                high_diag["estimated_total_tokens"] - base_diag["estimated_total_tokens"],
+                high_reserve_policy["output_token_reserve"] - base_policy["output_token_reserve"],
+            )
+
+            fits_policy = dict(high_reserve_policy,
+                               context_window_tokens=high_diag["estimated_total_tokens"] + 16)
+            ok, _diag = cli._producer_context_budget(task, spec, ctx, fits_policy)
+            self.assertTrue(ok)
+
+            fails_policy = dict(high_reserve_policy,
+                                context_window_tokens=high_diag["estimated_total_tokens"] - 1)
+            ok, fail_diag = cli._producer_context_budget(task, spec, ctx, fails_policy)
+            self.assertFalse(ok)
+            self.assertEqual(fail_diag["output_token_reserve"], 2000)
 
     def test_context_window_is_configurable(self):
         from runtimes.pydantic_ai.cli import producer_context_policy
