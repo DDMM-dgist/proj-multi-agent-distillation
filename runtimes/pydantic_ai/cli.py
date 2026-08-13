@@ -33,6 +33,8 @@ EXIT_DUPLICATE = 7
 EXIT_INTERNAL = 8
 
 _PROVIDER_UNAVAILABLE_FAILURES = {"authentication_failure"}
+MAX_PRODUCER_GENERATION_ATTEMPTS = 3
+_AUTH_BINDING_MISMATCH = "authoritative action binding mismatch"
 
 
 def _build_parser() -> argparse.ArgumentParser:
@@ -314,33 +316,117 @@ def _proposal_binding_validator(authoritative, controller=None):
     return validate
 
 
-def _producer_task(stage_name, role, evidence_path, controller, authoritative_proposal):
+def _producer_task(stage_name, role, evidence_path, controller, authoritative_proposal,
+                   retry_feedback=None):
+    instruction = (f"Inspect and reason about the authoritative execution proposal for stage {stage_name}. "
+                   "authoritative_action_proposal is immutable execution state. Return exactly the "
+                   "same execution-critical binding: copy every execution-critical value exactly, "
+                   "preserve relative path strings exactly, preserve ALL parameter keys, preserve "
+                   "false values, null values, and empty lists/dicts if present, do not normalize "
+                   "paths, do not resolve paths, do not drop keys because they appear optional or "
+                   "default, do not stringify lists/dicts/booleans/nulls, do not move path parameters "
+                   "into metadata or input_artifacts, and do not change action_type, approval boundary, "
+                   "idempotency key, stage, expected outputs, or protected-reference binding. Only "
+                   "rationale text may differ.")
+    if retry_feedback:
+        instruction += (" Your previous ActionProposal failed authoritative binding. "
+                        "Use the corrective feedback in context.producer_retry_feedback and return "
+                        "the COMPLETE authoritative ActionProposal exactly.")
+    context = {"stage": stage_name,
+               "authoritative_action_proposal": authoritative_proposal,
+               "authoritative_parameter_keys": sorted(
+                   (authoritative_proposal.get("parameters") or {}).keys()),
+               "authoritative_expected_outputs": list(
+                   authoritative_proposal.get("expected_outputs") or [])}
+    if retry_feedback:
+        context["producer_retry_feedback"] = retry_feedback
     return {
         "schema_version": 1,
         "task_id": f"{stage_name}-producer",
         "agent": role,
         "run_id": controller.state["run_id"],
         "created_at": "controller-stage-runner",
-        "instruction": (f"Inspect and reason about the authoritative execution proposal for stage {stage_name}. "
-                        "authoritative_action_proposal is immutable execution state. Return exactly the "
-                        "same execution-critical binding: copy every execution-critical value exactly, "
-                        "preserve relative path strings exactly, preserve ALL parameter keys, preserve "
-                        "false values, null values, and empty lists/dicts if present, do not normalize "
-                        "paths, do not resolve paths, do not drop keys because they appear optional or "
-                        "default, and do not change action_type, approval boundary, idempotency key, "
-                        "stage, expected outputs, or protected-reference binding. Only rationale text "
-                        "may differ."),
+        "instruction": instruction,
         "inputs": [{"role": "bounded_evidence", "path": str(evidence_path)}],
         "criteria": list(controller.stage(stage_name).get("gate_criteria") or ["stage action is valid"]),
         "constraints": ["Return exactly one typed ActionProposal; do not run compute directly."],
-        "context": {"stage": stage_name,
-                    "authoritative_action_proposal": authoritative_proposal,
-                    "authoritative_parameter_keys": sorted(
-                        (authoritative_proposal.get("parameters") or {}).keys()),
-                    "authoritative_expected_outputs": list(
-                        authoritative_proposal.get("expected_outputs") or [])},
+        "context": context,
     }
 
+
+
+def _load_candidate_from_provenance(path):
+    try:
+        payload = json.loads(Path(path).read_text(encoding="utf-8"))
+        raw = payload.get("raw_response")
+        return json.loads(raw) if raw else None
+    except Exception:
+        return None
+
+
+def _parameter_diff_summary(authoritative, candidate):
+    auth_params = authoritative.get("parameters") or {}
+    cand_params = (candidate or {}).get("parameters") or {}
+    missing = sorted(set(auth_params) - set(cand_params))
+    extra = sorted(set(cand_params) - set(auth_params))
+    changed = []
+
+    def walk(left, right, path):
+        if isinstance(left, dict) and isinstance(right, dict):
+            for key in sorted(set(left) & set(right)):
+                walk(left[key], right[key], f"{path}.{key}")
+        elif isinstance(left, list) and isinstance(right, list):
+            if left != right:
+                changed.append(path)
+        elif left != right or type(left) is not type(right):
+            changed.append(path)
+
+    for key in sorted(set(auth_params) & set(cand_params)):
+        walk(auth_params[key], cand_params[key], f"parameters.{key}")
+    bound_changed = []
+    for field in sorted(_BOUND_PROPOSAL_FIELDS - {"parameters"}):
+        if _canonical((candidate or {}).get(field)) != _canonical(authoritative.get(field)):
+            bound_changed.append(field)
+    return {"missing_parameter_keys": missing,
+            "extra_parameter_keys": extra,
+            "changed_fields": sorted(bound_changed + changed)}
+
+
+def _binding_retry_feedback(authoritative, candidate, message, attempt_index):
+    summary = _parameter_diff_summary(authoritative, candidate)
+    return {
+        "previous_attempt": attempt_index,
+        "binding_error": message,
+        **summary,
+        "instruction": (
+            "Return the COMPLETE authoritative ActionProposal. Preserve every execution-critical "
+            "field exactly, including all parameter keys, false/null/empty values, lists, dicts, "
+            "and path strings. Do not move path parameters into metadata or input_artifacts."
+        ),
+    }
+
+
+def _is_authoritative_binding_rejection(result):
+    status = getattr(result.detail, "status", "")
+    reason = getattr(result.detail, "reason", "") or result.error or ""
+    return status == "INVALID" and reason.startswith(_AUTH_BINDING_MISMATCH), reason
+
+
+def _run_producer_with_binding_retries(runtime, task, spec, context, *, controller, registry,
+                                       authoritative_proposal, task_factory):
+    from .production_router import run_role
+    result = None
+    feedback = None
+    for attempt in range(1, MAX_PRODUCER_GENERATION_ATTEMPTS + 1):
+        current_task = task if feedback is None else task_factory(feedback)
+        result = run_role(runtime, current_task, spec, context, controller=controller,
+                          registry=registry, mode="primary")
+        retryable, reason = _is_authoritative_binding_rejection(result)
+        if not retryable or attempt == MAX_PRODUCER_GENERATION_ATTEMPTS:
+            return result
+        candidate = _load_candidate_from_provenance(result.provenance_path)
+        feedback = _binding_retry_feedback(authoritative_proposal, candidate, reason, attempt)
+    return result
 
 def _write_mock_response(path, proposal):
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -542,8 +628,13 @@ def _cmd_run_stage(args) -> int:
         binding_validator = _proposal_binding_validator(proposal, c)
         for descriptor in registry.values():
             descriptor.param_validator = binding_validator
-        res = run_role(producer_runtime, task, specs[role], ctx, controller=c,
-                       registry=registry, mode="primary")
+        def producer_task_factory(feedback):
+            return _producer_task(args.stage, role, evidence_path, c, proposal,
+                                  retry_feedback=feedback)
+
+        res = _run_producer_with_binding_retries(
+            producer_runtime, task, specs[role], ctx, controller=c, registry=registry,
+            authoritative_proposal=proposal, task_factory=producer_task_factory)
         status = getattr(res.detail, "status", "")
         if status == "APPROVAL_REQUIRED":
             print(f"APPROVAL_REQUIRED: {proposal.get('approval_boundary') or res.detail.reason}")
