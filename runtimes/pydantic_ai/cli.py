@@ -246,11 +246,46 @@ def _canonical(value):
     return json.loads(json.dumps(value, sort_keys=True, separators=(",", ":"), default=str))
 
 
-def _proposal_binding_validator(authoritative):
+def _resolve_run_output(run_dir, raw):
+    path = Path(raw)
+    if not path.is_absolute():
+        if ".." in path.parts:
+            raise ValueError("expected_outputs may not contain path traversal")
+        path = run_dir / path
+    resolved = path.resolve()
+    if not resolved.is_relative_to(run_dir):
+        raise ValueError("expected_outputs must resolve inside the controller run_dir")
+    return resolved
+
+
+def _expected_outputs_match(run_dir, authoritative, candidate):
+    if not isinstance(authoritative, list) or not isinstance(candidate, list):
+        return False, "expected_outputs must be lists"
+    if len(authoritative) != len(candidate):
+        return False, "expected_outputs count differs"
+    try:
+        auth_paths = [_resolve_run_output(run_dir, value) for value in authoritative]
+        cand_paths = [_resolve_run_output(run_dir, value) for value in candidate]
+    except (TypeError, ValueError) as exc:
+        return False, str(exc)
+    for index, (left, right) in enumerate(zip(auth_paths, cand_paths)):
+        if left != right:
+            return False, f"expected_outputs target differs at index {index}"
+    return True, ""
+
+
+def _proposal_binding_validator(authoritative, controller=None):
+    run_dir = Path(controller.run_dir).resolve() if controller is not None else None
+
     def validate(candidate):
         for field in sorted(_BOUND_PROPOSAL_FIELDS):
             left = candidate.get(field) if isinstance(candidate, dict) else getattr(candidate, field, None)
             right = authoritative.get(field)
+            if field == "expected_outputs" and run_dir is not None:
+                ok, message = _expected_outputs_match(run_dir, right, left)
+                if not ok:
+                    return False, f"authoritative action binding mismatch for {field}: {message}"
+                continue
             if _canonical(left) != _canonical(right):
                 return False, f"authoritative action binding mismatch for {field}"
         return True, ""
@@ -265,14 +300,23 @@ def _producer_task(stage_name, role, evidence_path, controller, authoritative_pr
         "run_id": controller.state["run_id"],
         "created_at": "controller-stage-runner",
         "instruction": (f"Inspect and reason about the authoritative execution proposal for stage {stage_name}. "
-                        "Return exactly the same execution-critical binding. Do not replace paths, "
-                        "add/remove execution parameters, or change action_type, approval boundary, "
-                        "idempotency key, stage, expected outputs, or protected-reference binding."),
+                        "authoritative_action_proposal is immutable execution state. Return exactly the "
+                        "same execution-critical binding: copy every execution-critical value exactly, "
+                        "preserve relative path strings exactly, preserve ALL parameter keys, preserve "
+                        "false values, null values, and empty lists/dicts if present, do not normalize "
+                        "paths, do not resolve paths, do not drop keys because they appear optional or "
+                        "default, and do not change action_type, approval boundary, idempotency key, "
+                        "stage, expected outputs, or protected-reference binding. Only rationale text "
+                        "may differ."),
         "inputs": [{"role": "bounded_evidence", "path": str(evidence_path)}],
         "criteria": list(controller.stage(stage_name).get("gate_criteria") or ["stage action is valid"]),
         "constraints": ["Return exactly one typed ActionProposal; do not run compute directly."],
         "context": {"stage": stage_name,
-                    "authoritative_action_proposal": authoritative_proposal},
+                    "authoritative_action_proposal": authoritative_proposal,
+                    "authoritative_parameter_keys": sorted(
+                        (authoritative_proposal.get("parameters") or {}).keys()),
+                    "authoritative_expected_outputs": list(
+                        authoritative_proposal.get("expected_outputs") or [])},
     }
 
 
@@ -473,7 +517,7 @@ def _cmd_run_stage(args) -> int:
 
         ctx = ctx_factory(0, runtime_provider, runtime_model)
         registry = build_executor_registry()
-        binding_validator = _proposal_binding_validator(proposal)
+        binding_validator = _proposal_binding_validator(proposal, c)
         for descriptor in registry.values():
             descriptor.param_validator = binding_validator
         res = run_role(producer_runtime, task, specs[role], ctx, controller=c,

@@ -286,6 +286,62 @@ class ProductionReadinessTests(unittest.TestCase):
             self.assertIn("dilute_oxygen_vacancy = NOT_ESTABLISHED", report["applicability"]["limitations"])
 
 
+    def test_expected_outputs_canonicalization_is_controller_owned(self):
+        from runtimes.pydantic_ai.cli import _proposal_binding_validator
+        from workflow.controller import RunController
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            run_dir = root / "run"
+            RunController.initialize(_mock_training_workflow(root), run_dir)
+            c = RunController(run_dir)
+            base = _authoritative_response(run_dir)
+            validate = _proposal_binding_validator(base, c)
+
+            candidate = json.loads(json.dumps(base))
+            ok, message = validate(candidate)
+            self.assertTrue(ok, message)
+
+            candidate = json.loads(json.dumps(base))
+            candidate["expected_outputs"] = [str((run_dir / rel).resolve()) for rel in base["expected_outputs"]]
+            ok, message = validate(candidate)
+            self.assertTrue(ok, message)
+
+            candidate = json.loads(json.dumps(base))
+            candidate["expected_outputs"] = [
+                str((run_dir / "artifacts" / "other.json").resolve()),
+                str((run_dir / "artifacts" / "committee").resolve()),
+            ]
+            ok, message = validate(candidate)
+            self.assertFalse(ok)
+            self.assertIn("expected_outputs", message)
+
+            candidate = json.loads(json.dumps(base))
+            candidate["expected_outputs"] = [
+                str((root / "outside.json").resolve()),
+                str((run_dir / "artifacts" / "committee").resolve()),
+            ]
+            ok, message = validate(candidate)
+            self.assertFalse(ok)
+            self.assertIn("inside the controller run_dir", message)
+
+            candidate = json.loads(json.dumps(base))
+            candidate["expected_outputs"] = base["expected_outputs"][:1]
+            ok, message = validate(candidate)
+            self.assertFalse(ok)
+            self.assertIn("count differs", message)
+
+            candidate = json.loads(json.dumps(base))
+            candidate["expected_outputs"] = list(reversed(base["expected_outputs"]))
+            ok, message = validate(candidate)
+            self.assertFalse(ok)
+            self.assertIn("target differs", message)
+
+            candidate = json.loads(json.dumps(base))
+            candidate["expected_outputs"] = [*base["expected_outputs"], "artifacts/extra.json"]
+            ok, message = validate(candidate)
+            self.assertFalse(ok)
+            self.assertIn("count differs", message)
+
     def test_authoritative_proposal_tampering_is_rejected_before_executor(self):
         from runtimes.pydantic_ai import cli
         from workflow.controller import RunController
@@ -300,6 +356,16 @@ class ProductionReadinessTests(unittest.TestCase):
                 ("output path", lambda p: p["parameters"].__setitem__("manifest_path", str(root / "other.json"))),
                 ("action_type", lambda p: p.__setitem__("action_type", "collect_checkpoints")),
             ]
+            # Parameter comparison remains strict: missing keys are not filled from the authoritative proposal.
+            proposal = json.loads(json.dumps(base))
+            proposal["parameters"]["require_lineage"] = False
+            from runtimes.pydantic_ai.cli import _proposal_binding_validator
+            validator = _proposal_binding_validator(proposal, RunController(run_dir))
+            candidate = json.loads(json.dumps(proposal))
+            del candidate["parameters"]["require_lineage"]
+            ok, message = validator(candidate)
+            self.assertFalse(ok)
+            self.assertIn("parameters", message)
             for label, mutate in cases:
                 proposal = json.loads(json.dumps(base))
                 mutate(proposal)
