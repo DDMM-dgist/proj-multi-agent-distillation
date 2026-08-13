@@ -1,0 +1,251 @@
+from __future__ import annotations
+
+import json
+import tempfile
+import unittest
+from pathlib import Path
+from unittest import mock
+
+from ase import Atoms
+from ase.io import read, write
+
+
+def _run(d: Path):
+    state = {
+        "schema_version": 7, "run_id": "r", "created_at": "2026-08-07T00:00:00+00:00",
+        "updated_at": "2026-08-07T00:00:00+00:00", "workflow_config": "w", "artifacts": [],
+        "project_dir": "p", "inputs": [], "code_revision": "x", "events": [],
+        "stages": [{"name": "acquisition", "status": "pending", "gate": "pending", "artifacts": []}],
+        "iterations": [{"id": 1, "parent_iteration": None, "status": "active",
+                        "started_at": "2026-08-07T00:00:00+00:00", "trigger": None}],
+        "recoveries": [], "pending_recovery": None,
+        "runtime_attempts": [], "idempotency": {}, "action_approvals": {},
+    }
+    d.mkdir(parents=True, exist_ok=True)
+    (d / "manifest.json").write_text(json.dumps(state), encoding="utf-8")
+    return d
+
+
+def _protected_reference_package(root: Path, protected_atoms) -> Path:
+    from workflow.integrity import sha256_file
+    ref = root / "protected.xyz"
+    write(str(ref), [protected_atoms])
+    indices = root / "protected_indices.txt"
+    indices.write_text("760\n761\n", encoding="utf-8")
+    manifest = root / "protected_manifest.json"
+    manifest.write_text(json.dumps({"mapping": {
+        "logical_test_frames": 1,
+        "matched_logical_frames": 1,
+        "unmatched_logical_frames": 0,
+        "protected_source_rows": 2,
+        "conflicting_label_duplicates": 0,
+    }}), encoding="utf-8")
+    reference = root / "reference.yaml"
+    reference.write_text("\n".join([
+        "kind: protected-existing-dft",
+        "reference_id: test-reference",
+        "reference_class: ORIGINAL_TEACHER_TEST",
+        "status: AVAILABLE_AND_PROTECTED",
+        "logical_test_frames: 1",
+        "protected_source_rows: 2",
+        f"protection_manifest: {manifest}",
+        f"protected_source_rows_file: {indices}",
+        "duplicate_equivalent:",
+        "  source_global_indices: [760, 761]",
+        "  label_conflict: false",
+        "prohibited_uses: [student_training, student_validation_tuning, acquisition_seed, augmentation_parent, recovery_training]",
+        "structures:",
+        f"  path: {ref}",
+        "  logical_frames: 1",
+        f"  sha256: {sha256_file(ref)}",
+        "",
+    ]), encoding="utf-8")
+    return reference
+
+
+def _atoms(x=1.0, parent="seed-pool:900"):
+    a = Atoms("Cu", positions=[[x, 0, 0]], cell=[10, 10, 10], pbc=True)
+    a.info["structure_id"] = parent
+    a.info["parent_structure_id"] = parent
+    return a
+
+
+class AcquisitionPlanContractTests(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.root = Path(self.tmp.name)
+        protected = _atoms(0.0, "seed-pool:760")
+        self.reference = _protected_reference_package(self.root, protected)
+        self.seed = self.root / "seed.extxyz"
+        write(str(self.seed), [_atoms(1.0, "seed-pool:900")])
+        self.teacher = self.root / "teacher.yaml"
+        self.teacher.write_text("kind: mock\n", encoding="utf-8")
+        self.acq_cfg = self.root / "acq.yaml"
+        self.acq_cfg.write_text("\n".join([
+            "kind: augment-atoms",
+            "cli:",
+            "  invocation: [augment-atoms, '{config_path}', '--input', '{seed_path}', '--output', '{out_path}']",
+            "planning_policy:",
+            "  concrete_parameters_frozen_at: approved AcquisitionPlan before acquisition execution",
+            "",
+        ]), encoding="utf-8")
+        self.plan_exec = self.root / "augment-input.yaml"
+        self.plan_exec.write_text("n_per_structure: 1\n", encoding="utf-8")
+        self.plan_path = self.root / "plan.json"
+        self._write_plan()
+        from workflow.controller import RunController
+        self.controller = RunController(_run(self.root / "run"))
+        self.controller.grant_action_approval("costly_teacher_labeling")
+
+    def _write_plan(self, **updates):
+        plan = {
+            "schema_version": 1,
+            "eligible_source_categories": ["bulk"],
+            "selected_parent_structure_ids": ["seed-pool:900"],
+            "selected_source_global_indices": [900],
+            "n_parents": 1,
+            "n_per_structure": 1,
+            "T_K": 300.0,
+            "beta": 0.1,
+            "sigma_range_A": [0.01, 0.02],
+            "cell_sigma": None,
+            "seed": 123,
+            "expected_output_count": 1,
+            "duplicate_handling": "drop_exact_duplicates",
+            "protected_reference_exclusion_report": {
+                "status": "PASS",
+                "reference_id": "test-reference",
+                "dft_labels_used_as_selection_scores": False,
+            },
+            "executable_config_path": str(self.plan_exec),
+        }
+        plan.update(updates)
+        self.plan_path.write_text(json.dumps(plan), encoding="utf-8")
+        return plan
+
+    def _proposal(self, **params):
+        p = {
+            "requested_by_role": "data-curator",
+            "action_type": "acquire_structures",
+            "idempotency_key": "r:acquisition:001",
+            "run_id": "r",
+            "stage": "acquisition",
+            "requested_at": "t",
+            "rationale": "test",
+            "parameters": {
+                "acquisition_config": str(self.acq_cfg),
+                "teacher_config": str(self.teacher),
+                "seed_structures": str(self.seed),
+                "out_path": str(self.root / "out.extxyz"),
+                "manifest_path": str(self.root / "manifest.json"),
+                "reference_yaml": str(self.reference),
+                "selected_source_indices": [900],
+                "acquisition_plan_path": str(self.plan_path),
+            },
+        }
+        p["parameters"].update(params)
+        return p
+
+    def _dispatch(self, proposal, adapter):
+        from runtimes.pydantic_ai.controller_bridge import dispatch_via_controller
+        from runtimes.pydantic_ai.executors import build_executor_registry
+        with mock.patch("adapters.acquisition.acquire", adapter):
+            return dispatch_via_controller(proposal, controller=self.controller,
+                                           registry=build_executor_registry(), mode="primary")
+
+    def test_missing_plan_fails_before_adapter(self):
+        calls = {"n": 0}
+        def adapter(*_args):
+            calls["n"] += 1
+        prop = self._proposal(acquisition_plan_path=None)
+        out = self._dispatch(prop, adapter)
+        self.assertEqual(out.status, "EXECUTOR_ERROR")
+        self.assertIn("AcquisitionPlan is required", out.reason)
+        self.assertEqual(calls["n"], 0)
+        self.assertNotIn("r:acquisition:001", self.controller.state.get("idempotency", {}))
+
+    def test_incomplete_plan_fails_closed(self):
+        self._write_plan(beta=None)
+        data = json.loads(self.plan_path.read_text())
+        data.pop("beta")
+        self.plan_path.write_text(json.dumps(data), encoding="utf-8")
+        out = self._dispatch(self._proposal(), lambda *_args: None)
+        self.assertEqual(out.status, "EXECUTOR_ERROR")
+        self.assertIn("missing required fields", out.reason)
+
+    def test_protected_parent_and_duplicate_equivalent_rows_reject(self):
+        for bad in (760, 761):
+            self._write_plan(selected_source_global_indices=[bad])
+            out = self._dispatch(self._proposal(selected_source_indices=[bad]), lambda *_args: None)
+            self.assertEqual(out.status, "EXECUTOR_ERROR")
+            self.assertIn("protected reference leakage", out.reason)
+
+    def test_protected_logical_geometry_rejects_before_adapter(self):
+        protected_seed = self.root / "protected_seed.extxyz"
+        write(str(protected_seed), [_atoms(0.0, "seed-pool:900")])
+        calls = {"n": 0}
+        def adapter(*_args):
+            calls["n"] += 1
+        out = self._dispatch(self._proposal(seed_structures=str(protected_seed)), adapter)
+        self.assertEqual(out.status, "EXECUTOR_ERROR")
+        self.assertIn("protected reference geometry", out.reason)
+        self.assertEqual(calls["n"], 0)
+
+    def test_empty_parent_selection_rejects(self):
+        self._write_plan(selected_parent_structure_ids=[], selected_source_global_indices=[], n_parents=0, expected_output_count=0)
+        out = self._dispatch(self._proposal(selected_source_indices=[]), lambda *_args: None)
+        self.assertEqual(out.status, "EXECUTOR_ERROR")
+        self.assertIn("selected_parent_structure_ids", out.reason)
+
+    def test_plan_output_count_mismatch_rejects_after_single_adapter_call(self):
+        calls = {"n": 0}
+        def adapter(cfg, teacher_cfg, seed_path, out_path):
+            calls["n"] += 1
+            write(str(out_path), [_atoms(1.0, "seed-pool:900"), _atoms(2.0, "seed-pool:900")])
+            return out_path
+        out = self._dispatch(self._proposal(), adapter)
+        self.assertEqual(out.status, "EXECUTOR_ERROR")
+        self.assertIn("output count mismatch", out.reason)
+        self.assertEqual(calls["n"], 1)
+        self.assertNotIn("r:acquisition:001", self.controller.state.get("idempotency", {}))
+
+    def test_lineage_translation_and_cli_translation_reach_adapter_contract(self):
+        seen = {}
+        def adapter(cfg, teacher_cfg, seed_path, out_path):
+            seen["command"] = cfg["command"]
+            self.assertEqual(Path(seed_path), self.seed)
+            self.assertIn(str(self.plan_exec.resolve()), cfg["command"])
+            a = Atoms("Cu", positions=[[3, 0, 0]], cell=[10, 10, 10], pbc=True)
+            a.info["parent"] = "seed-pool:900"
+            write(str(out_path), [a])
+            return out_path
+        out = self._dispatch(self._proposal(), adapter)
+        self.assertEqual(out.status, "EXECUTED")
+        frames = read(str(self.root / "out.extxyz"), index=":")
+        self.assertEqual(frames[0].info["parent_structure_id"], "seed-pool:900")
+        manifest = json.loads((self.root / "manifest.json").read_text())
+        self.assertEqual(manifest["actual_output_count"], 1)
+        self.assertEqual(manifest["selected_source_global_indices"], [900])
+        self.assertEqual(manifest["translated_command"], seen["command"])
+
+    def test_executor_runs_at_most_once_with_idempotency(self):
+        calls = {"n": 0}
+        def adapter(cfg, teacher_cfg, seed_path, out_path):
+            calls["n"] += 1
+            write(str(out_path), [_atoms(1.0, "seed-pool:900")])
+            return out_path
+        prop = self._proposal()
+        first = self._dispatch(prop, adapter)
+        second = self._dispatch(prop, adapter)
+        self.assertEqual(first.status, "EXECUTED")
+        self.assertEqual(second.status, "DUPLICATE")
+        self.assertEqual(calls["n"], 1)
+
+    def test_active_config_hashes_are_advisory_not_authoritative(self):
+        from runtimes.pydantic_ai.cli import _BOUND_PROPOSAL_FIELDS
+        self.assertNotIn("active_config_hashes", _BOUND_PROPOSAL_FIELDS)
+
+
+if __name__ == "__main__":
+    unittest.main()

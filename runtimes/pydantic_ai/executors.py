@@ -151,6 +151,136 @@ def _protect_dataset(path, reference_yaml=None, selected_source_indices=None, re
         assert_parent_lineage_allowed(path, protection["protected_source_indices"])
 
 
+class _AcquisitionPlanError(ValueError):
+    """Fail-closed acquisition planning/contract violation before adapter dispatch."""
+
+
+_REQUIRED_ACQUISITION_PLAN_FIELDS = {
+    "eligible_source_categories", "selected_parent_structure_ids",
+    "selected_source_global_indices", "n_parents", "n_per_structure", "T_K", "beta",
+    "sigma_range_A", "cell_sigma", "seed", "expected_output_count", "duplicate_handling",
+    "protected_reference_exclusion_report",
+}
+
+
+def _load_structured_file(path):
+    import yaml
+    p = Path(path).resolve()
+    if not p.is_file():
+        raise _AcquisitionPlanError(f"AcquisitionPlan is missing: {p}")
+    if p.suffix.lower() == ".json":
+        return json.loads(p.read_text(encoding="utf-8"))
+    return yaml.safe_load(p.read_text(encoding="utf-8"))
+
+
+def _acquisition_plan_payload(raw):
+    if isinstance(raw, dict):
+        payload = dict(raw)
+        payload.setdefault("_plan_path", None)
+        return payload
+    if not raw:
+        raise _AcquisitionPlanError("AcquisitionPlan is required before acquire_structures execution")
+    payload = _load_structured_file(raw)
+    if not isinstance(payload, dict):
+        raise _AcquisitionPlanError("AcquisitionPlan must be a JSON/YAML mapping")
+    payload["_plan_path"] = str(Path(raw).resolve())
+    return payload
+
+
+def _nonempty_list(plan, key):
+    value = plan.get(key)
+    if not isinstance(value, list) or not value:
+        raise _AcquisitionPlanError(f"AcquisitionPlan.{key} must be a non-empty list")
+    return value
+
+
+def _validate_acquisition_plan(plan, *, reference_yaml=None, proposal_selected_source_indices=None):
+    missing = sorted(_REQUIRED_ACQUISITION_PLAN_FIELDS - set(plan))
+    if missing:
+        raise _AcquisitionPlanError("AcquisitionPlan missing required fields: " + ", ".join(missing))
+    parents = _nonempty_list(plan, "selected_parent_structure_ids")
+    selected = _nonempty_list(plan, "selected_source_global_indices")
+    if any(isinstance(x, bool) or not isinstance(x, int) for x in selected):
+        raise _AcquisitionPlanError("AcquisitionPlan.selected_source_global_indices must contain integers")
+    if proposal_selected_source_indices is not None and list(proposal_selected_source_indices) != selected:
+        raise _AcquisitionPlanError("proposal selected_source_indices must exactly match AcquisitionPlan selected_source_global_indices")
+    n_parents = int(plan.get("n_parents"))
+    n_per = int(plan.get("n_per_structure"))
+    expected = int(plan.get("expected_output_count"))
+    if n_parents <= 0 or n_per <= 0 or expected <= 0:
+        raise _AcquisitionPlanError("AcquisitionPlan parent/count fields must be positive")
+    if n_parents != len(parents) or n_parents != len(selected):
+        raise _AcquisitionPlanError("AcquisitionPlan n_parents must match selected parent/source counts")
+    if expected != n_parents * n_per:
+        raise _AcquisitionPlanError("AcquisitionPlan expected_output_count must equal n_parents * n_per_structure")
+    sigma = plan.get("sigma_range_A")
+    if (not isinstance(sigma, list) or len(sigma) != 2 or
+            any(not isinstance(x, (int, float)) for x in sigma) or sigma[0] > sigma[1]):
+        raise _AcquisitionPlanError("AcquisitionPlan.sigma_range_A must be [min, max]")
+    report = plan.get("protected_reference_exclusion_report")
+    if not isinstance(report, dict) or report.get("status") != "PASS":
+        raise _AcquisitionPlanError("AcquisitionPlan protected_reference_exclusion_report must be a PASS record")
+    if report.get("dft_labels_used_as_selection_scores") is not False:
+        raise _AcquisitionPlanError("AcquisitionPlan must record DFT labels were not used as selection scores")
+    if reference_yaml:
+        from validation.protected_reference import assert_source_indices_allowed, validate_reference_config
+        protection = validate_reference_config(reference_yaml)
+        assert_source_indices_allowed(selected, protection["protected_source_indices"])
+        if report.get("reference_id") and report.get("reference_id") != protection["reference_id"]:
+            raise _AcquisitionPlanError("AcquisitionPlan protection report reference_id does not match run-bound reference")
+    return {**plan, "selected_source_global_indices": selected,
+            "selected_parent_structure_ids": parents, "n_parents": n_parents,
+            "n_per_structure": n_per, "expected_output_count": expected}
+
+
+def _translate_acquisition_cli(acquisition_cfg, plan, *, seed_path, out_path):
+    if acquisition_cfg.get("kind") != "augment-atoms":
+        return acquisition_cfg
+    invocation = ((acquisition_cfg.get("cli") or {}).get("invocation") or [])
+    if not invocation:
+        raise _AcquisitionPlanError("augment-atoms acquisition config requires cli.invocation")
+    plan_path = plan.get("executable_config_path") or plan.get("_plan_path")
+    if not plan_path:
+        raise _AcquisitionPlanError("AcquisitionPlan requires executable_config_path when supplied inline")
+    context = {
+        "config_path": str(Path(plan_path).resolve()),
+        "seed_path": str(Path(seed_path).resolve()),
+        "out_path": str(Path(out_path).resolve()),
+    }
+    cfg = dict(acquisition_cfg)
+    cfg["command"] = [str(part).format(**context) for part in invocation]
+    return cfg
+
+
+def _apply_acquisition_lineage(result_path, plan):
+    from ase.io import read, write
+    frames = read(str(result_path), index=":")
+    parents = [str(x) for x in plan["selected_parent_structure_ids"]]
+    changed = False
+    for atoms in frames:
+        if atoms.info.get("parent_structure_id"):
+            continue
+        parent = (atoms.info.get("starting-structure") or atoms.info.get("parent") or
+                  atoms.info.get("parent_id"))
+        if parent is None and len(parents) == 1:
+            parent = parents[0]
+        if parent is None:
+            raise _AcquisitionPlanError("acquired structure lacks parent_structure_id and no deterministic native parent field is available")
+        atoms.info["parent_structure_id"] = str(parent)
+        changed = True
+    if changed:
+        write(str(result_path), frames)
+    return len(frames)
+
+
+def _validate_acquisition_output(result_path, plan):
+    n_frames = _apply_acquisition_lineage(result_path, plan)
+    if n_frames != int(plan["expected_output_count"]):
+        raise _AcquisitionPlanError(
+            f"acquisition output count mismatch: expected {plan['expected_output_count']}, got {n_frames}")
+    return n_frames
+
+
 def _evidence(role, path):
     from validation.report import evidence_record
     return evidence_record(role, path)
@@ -241,10 +371,19 @@ def _exec_acquire_structures(proposal):
     from adapters.acquisition import acquire
     from workflow.integrity import artifact_digest
     p = _params(proposal)
+    plan = _validate_acquisition_plan(
+        _acquisition_plan_payload(p.get("acquisition_plan") or p.get("acquisition_plan_path")),
+        reference_yaml=p.get("reference_yaml"),
+        proposal_selected_source_indices=p.get("selected_source_indices"),
+    )
     _protect_dataset(p["seed_structures"], p.get("reference_yaml"),
-                     p.get("selected_source_indices"), require_lineage=False)
-    result = acquire(load_config(p["acquisition_config"]), load_config(p["teacher_config"]),
+                     plan["selected_source_global_indices"], require_lineage=False)
+    acquisition_cfg = load_config(p["acquisition_config"])
+    executable_cfg = _translate_acquisition_cli(
+        acquisition_cfg, plan, seed_path=p["seed_structures"], out_path=p["out_path"])
+    result = acquire(executable_cfg, load_config(p["teacher_config"]),
                      p["seed_structures"], p["out_path"])
+    n_frames = _validate_acquisition_output(result, plan)
     _protect_dataset(result, p.get("reference_yaml"), require_lineage=True)
     artifact = {"path": str(Path(result).resolve()), "integrity": artifact_digest(result)}
     manifest_path = p.get("manifest_path")
@@ -255,6 +394,12 @@ def _exec_acquire_structures(proposal):
             "acquisition_config": str(Path(p["acquisition_config"]).resolve()),
             "teacher_config": str(Path(p["teacher_config"]).resolve()),
             "seed_structures": str(Path(p["seed_structures"]).resolve()),
+            "acquisition_plan": str(Path(plan["_plan_path"]).resolve()) if plan.get("_plan_path") else None,
+            "selected_parent_structure_ids": list(plan["selected_parent_structure_ids"]),
+            "selected_source_global_indices": list(plan["selected_source_global_indices"]),
+            "expected_output_count": int(plan["expected_output_count"]),
+            "actual_output_count": int(n_frames),
+            "translated_command": list(executable_cfg.get("command", [])),
             "output": artifact["path"],
             "output_integrity": artifact["integrity"],
         }
