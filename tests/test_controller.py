@@ -46,6 +46,84 @@ class RunControllerTests(unittest.TestCase):
                                                   for index, lens in enumerate(lenses, 1)]}))
         controller.record_gate(stage, votes_path=vote_path)
 
+    def write_vote_bundle(self, controller, stage, verdicts, *, runtime_failure=False):
+        artifacts = {a["path"]: a["sha256"] for a in controller.stage_artifacts(stage)}
+        vote_path = controller.run_dir / "gates" / f"{stage}.votes.json"
+        criteria = controller.stage(stage).get("gate_criteria")
+        lenses = controller.stage(stage).get("gate_review_lenses")
+        votes = []
+        for index, (verdict, lens) in enumerate(zip(verdicts, lenses), 1):
+            ok = verdict == "PASS"
+            rationale = "ok" if ok else "declared limitation needs human scope adjudication"
+            required_fix = "" if ok else "human scope adjudication"
+            if runtime_failure and index == len(verdicts):
+                rationale = "Judge invocation failed"
+                required_fix = "Re-run the judge"
+            votes.append({
+                "judge_id": f"judge-{index}", "review_lens": lens["id"],
+                "verdict": verdict,
+                "criteria_checked": [{"criterion": criterion, "value_read": "verified",
+                                      "ok": ok} for criterion in criteria],
+                "rationale": rationale, "required_fix": required_fix,
+            })
+        decision = "FAIL" if "FAIL" in verdicts else (
+            "PASS" if verdicts == ["PASS"] * len(verdicts) else "REVISE")
+        vote_path.write_text(json.dumps({
+            "stage": stage, "criteria": criteria, "review_lenses": lenses,
+            "artifact_sha256": artifacts, "decision": decision, "votes": votes,
+        }))
+        return vote_path
+
+    def accept_limitation_proposal(self, path, stage="validation"):
+        path.write_text(json.dumps({
+            "schema_version": 1, "stage": stage,
+            "proposed_decision": "ACCEPT_DECLARED_LIMITATION",
+            "rationale": "The REVISE concerns an explicitly declared scope limitation.",
+            "accepted_limitations": ["declared limitation remains NOT_ESTABLISHED"],
+            "scope_effect": "restrict_scope_to_declared_limitations",
+            "downstream_claim_restrictions": [
+                "Do not claim applicability beyond the accepted declared limitation."
+            ],
+        }))
+        return path
+
+    def require_recovery_proposal(self, path, stage="validation"):
+        path.write_text(json.dumps({
+            "schema_version": 1, "stage": stage,
+            "proposed_decision": "REQUIRE_SCIENTIFIC_RECOVERY",
+            "rationale": "Human review requires additional scientific evidence.",
+            "recovery_route": "use existing RecoveryPlan lifecycle",
+        }))
+        return path
+
+    def completed_validation_controller(self, root, *, check_status="PASS"):
+        cfg = root / "workflow.yaml"
+        cfg.write_text(yaml.safe_dump({"run_id": "adjudication", "stages": [
+            {"name": "validation", "command": None, "outputs": ["artifacts/report.json"],
+             "gate": {"criteria": [self.GATE_CRITERION]},
+             "contract": {"kind": "validation_manifest", "manifest": "artifacts/report.json",
+                          "validator": "validation.report.validate_validation_report",
+                          "options": {"required_pass_observables": ["scope"]}}},
+            {"name": "next", "command": [sys.executable, "-c",
+             "from pathlib import Path; Path('artifacts/next.txt').write_text('ok')"],
+             "outputs": ["artifacts/next.txt"]},
+        ]}))
+        controller = RunController.initialize(cfg, root / "run")
+        report = controller.run_dir / "artifacts/report.json"
+        evidence = controller.run_dir / "artifacts/evidence.txt"
+        evidence.write_text("scope evidence")
+        value = 1 if check_status == "PASS" else 0
+        report.write_text(json.dumps({
+            "schema_version": 1, "profile": "generic",
+            "checks": [{"domain": "scope", "observable": "scope",
+                        "status": check_status, "value": value, "unit": "none",
+                        "criterion": {"operator": "equals", "target": 1}}],
+            "evidence": [{"role": "scope_evidence", "path": str(evidence),
+                          "integrity": artifact_digest(evidence)}],
+        }))
+        controller.complete_external_stage("validation", [report, evidence])
+        return controller
+
     def test_gate_blocks_next_stage_and_state_resumes(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
@@ -329,6 +407,117 @@ class RunControllerTests(unittest.TestCase):
             }))
             controller.record_gate("data", votes_path=bundle)
             self.assertEqual(controller.stage("data")["gate"], "REVISE")
+
+    def test_revise_adjudication_accepts_declared_limitation_and_preserves_raw_gate(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            controller = self.completed_validation_controller(root)
+            votes = self.write_vote_bundle(controller, "validation", ["PASS", "PASS", "REVISE"])
+            controller.record_gate("validation", votes_path=votes)
+            proposal = self.accept_limitation_proposal(root / "adjudication.json")
+            adjudication = controller.propose_adjudication(proposal)
+            self.assertEqual(adjudication["status"], "proposed")
+            self.assertEqual(controller.stage("validation")["gate"], "REVISE")
+            with self.assertRaisesRegex(RuntimeError, "recovery is pending"):
+                controller.run_stage("next")
+            controller.decide_adjudication("researcher", note="accept declared scope")
+            self.assertIsNone(controller.state["pending_recovery"])
+            self.assertEqual(controller.stage("validation")["gate"], "REVISE")
+            self.assertEqual(controller.state["adjudications"][-1]["status"], "accepted")
+            resolution = controller.stage("validation")["effective_resolution"]
+            self.assertEqual(resolution["decision"], "ACCEPT_DECLARED_LIMITATION")
+            self.assertEqual(resolution["raw_vote_verdicts"], ["PASS", "PASS", "REVISE"])
+            self.assertIn("declared limitation", resolution["accepted_limitations"][0])
+            controller.run_stage("next")
+            self.assertEqual(controller.stage("next")["status"], "completed")
+
+    def test_adjudication_requires_explicit_human_action(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            controller = self.completed_validation_controller(root)
+            votes = self.write_vote_bundle(controller, "validation", ["PASS", "PASS", "REVISE"])
+            controller.record_gate("validation", votes_path=votes)
+            controller.propose_adjudication(self.accept_limitation_proposal(root / "adj.json"))
+            self.assertEqual(controller.state["pending_recovery"]["status"], "adjudication_proposed")
+            with self.assertRaisesRegex(RuntimeError, "recovery is pending"):
+                controller.run_stage("next")
+
+    def test_adjudication_forbids_validator_fail(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            controller = self.completed_validation_controller(root, check_status="FAIL")
+            votes = self.write_vote_bundle(controller, "validation", ["PASS", "PASS", "REVISE"])
+            controller.record_gate("validation", votes_path=votes)
+            with self.assertRaisesRegex(ValueError, "did not pass"):
+                controller.propose_adjudication(self.accept_limitation_proposal(root / "adj.json"))
+
+    def test_adjudication_forbids_fail_vote(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            controller = self.completed_validation_controller(root)
+            votes = self.write_vote_bundle(controller, "validation", ["PASS", "REVISE", "FAIL"])
+            controller.record_gate("validation", votes_path=votes)
+            with self.assertRaisesRegex(RuntimeError, "only available for REVISE"):
+                controller.propose_adjudication(self.accept_limitation_proposal(root / "adj.json"))
+
+    def test_adjudication_forbids_missing_judge_bundle(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            controller = self.completed_validation_controller(root)
+            controller.record_gate("validation", "REVISE", evidence="manual revise")
+            with self.assertRaisesRegex(RuntimeError, "vote record"):
+                controller.propose_adjudication(self.accept_limitation_proposal(root / "adj.json"))
+
+    def test_adjudication_forbids_runtime_failed_judge_vote(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            controller = self.completed_validation_controller(root)
+            votes = self.write_vote_bundle(controller, "validation", ["PASS", "PASS", "REVISE"],
+                                          runtime_failure=True)
+            controller.record_gate("validation", votes_path=votes)
+            with self.assertRaisesRegex(RuntimeError, "Judge runtime failure"):
+                controller.propose_adjudication(self.accept_limitation_proposal(root / "adj.json"))
+
+    def test_adjudication_requires_restrictive_scope_effect(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            controller = self.completed_validation_controller(root)
+            votes = self.write_vote_bundle(controller, "validation", ["PASS", "PASS", "REVISE"])
+            controller.record_gate("validation", votes_path=votes)
+            proposal = root / "adj.json"
+            proposal.write_text(json.dumps({
+                "schema_version": 1, "stage": "validation",
+                "proposed_decision": "ACCEPT_DECLARED_LIMITATION",
+                "rationale": "expand",
+                "accepted_limitations": ["limitation"],
+                "scope_effect": "expand_applicability",
+                "downstream_claim_restrictions": ["none"],
+            }))
+            with self.assertRaisesRegex(ValueError, "cannot expand"):
+                controller.propose_adjudication(proposal)
+
+    def test_adjudication_require_recovery_routes_to_existing_recovery_lifecycle(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            controller = self.completed_validation_controller(root)
+            votes = self.write_vote_bundle(controller, "validation", ["PASS", "PASS", "REVISE"])
+            controller.record_gate("validation", votes_path=votes)
+            controller.propose_adjudication(self.require_recovery_proposal(root / "adj.json"))
+            controller.decide_adjudication("researcher")
+            self.assertEqual(controller.state["pending_recovery"]["status"], "required")
+            plan = root / "recovery-plan.json"
+            plan.write_text(json.dumps({
+                "schema_version": 1, "failed_stage": "validation",
+                "failure_category": "evidence_gap", "root_cause": "needs new evidence",
+                "responsible_agent": "analyst", "return_stage": "validation",
+                "proposed_changes": [{"type": "clarify_scope"}],
+                "labeling": {"teacher_relabel": False, "new_dft": False},
+                "student_training": {"retrain": False, "mode": "none"},
+                "revalidation": {"reuse_profile": True, "targets": ["validation"]},
+                "estimated_cost": {},
+            }))
+            recovery = controller.propose_recovery(plan)
+            self.assertEqual(recovery["status"], "proposed")
 
     def test_recovery_plan_requires_human_approval_and_starts_bound_iteration(self):
         with tempfile.TemporaryDirectory() as tmp:

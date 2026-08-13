@@ -21,7 +21,7 @@ import unittest
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
-FREEZE_REVISION = "inline JudgeEvidencePacket hardening (v6; no role/action/controller/contract change)"
+FREEZE_REVISION = "REVISE adjudication controller amendment (v7; no role/action/contract/Judge change)"
 FROZEN_MODEL = "qwen2.5-7b-instruct"
 
 FROZEN = {
@@ -50,7 +50,7 @@ FROZEN = {
     "orchestration/specs.py":
         "4b6dc829fe2b6b594cc87e8a62bd944ea9df181cd7f420ae3732c861ce8e43cb",
     "workflow/controller.py":
-        "cf6875f5c188e312e57525cfd43daa2dd6504c98a41437298197065967863244",
+        "caf1c2c79500d03f15554888e8033a802bc334596997f1cfdfe7f69c89b2bb77",
     "orchestration/schema/agent_result.schema.json":
         "a38afea9c06c21e647376efd835dec32a16b2f247583a090560cb1843e0eda31",
     "orchestration/schema/agent_spec.schema.json":

@@ -23,6 +23,8 @@ RECOVERY_CATEGORIES = {
     "physical_validation", "simulation_protocol", "evidence_gap", "other",
 }
 RECOVERY_AGENTS = {"data-curator", "ml-trainer", "simulation", "analyst", "orchestrator"}
+ADJUDICATION_DECISIONS = {"ACCEPT_DECLARED_LIMITATION", "REQUIRE_SCIENTIFIC_RECOVERY"}
+ADJUDICATION_SCOPE_EFFECT = "restrict_scope_to_declared_limitations"
 
 
 def now():
@@ -226,7 +228,7 @@ class RunController:
                      "code_revision": git_revision(project_dir), "events": [], "stages": stages,
                      "iterations": [{"id": 1, "parent_iteration": None, "status": "active",
                                      "started_at": created_at, "trigger": None}],
-                     "recoveries": [], "pending_recovery": None,
+                     "recoveries": [], "adjudications": [], "pending_recovery": None,
                      # v7 additive operational metadata (safe empty defaults):
                      "runtime_attempts": [], "idempotency": {}, "action_approvals": {},
                      "scheduler_jobs": {}}
@@ -370,9 +372,23 @@ class RunController:
         for stage in self.state["stages"]:
             if stage["name"] == name:
                 return
-            if stage["gate"] != "PASS":
+            if stage["gate"] != "PASS" and not self._stage_has_accepted_adjudication(stage["name"]):
                 raise RuntimeError(f"stage {name!r} blocked: {stage['name']!r} gate is {stage['gate']}")
             self.verify_stage_artifacts(stage["name"])
+
+    def _stage_has_accepted_adjudication(self, name):
+        resolution = self.stage(name).get("effective_resolution")
+        if not resolution or resolution.get("decision") != "ACCEPT_DECLARED_LIMITATION":
+            return False
+        matches = [item for item in self.state.get("adjudications", [])
+                   if item.get("id") == resolution.get("adjudication_id")]
+        if len(matches) != 1 or matches[0].get("status") != "accepted":
+            return False
+        try:
+            verify_artifact(matches[0]["path"], matches[0]["integrity"])
+        except (KeyError, FileNotFoundError, RuntimeError):
+            return False
+        return True
 
     def verify_inputs(self):
         expected_revision = self.state.get("code_revision")
@@ -808,6 +824,206 @@ class RunController:
                 "a REVISE/FAIL recovery is pending; propose, approve, and start the next iteration"
             )
 
+
+    def _pending_gate_votes_path(self, pending):
+        recorded_at = pending.get("gate_recorded_at")
+        stage = pending.get("failed_stage")
+        matches = [event for event in self.state.get("events", [])
+                   if event.get("type") == "gate" and event.get("stage") == stage and
+                   event.get("at") == recorded_at and event.get("votes")]
+        if len(matches) != 1:
+            raise RuntimeError("pending gate vote record is missing or ambiguous")
+        path = Path(matches[0]["votes"])
+        if not path.is_absolute():
+            path = self.run_dir / path
+        path = path.resolve()
+        if pending.get("votes_integrity"):
+            verify_artifact(path, pending["votes_integrity"])
+        return path
+
+    def _stage_contract_passed_for_adjudication(self, stage):
+        contract = stage.get("contract") or {}
+        if not contract or contract.get("kind") != "validation_manifest":
+            return True
+        records = [record["path"] for record in self.stage_artifacts(stage["name"])]
+        self._validate_external_contract(stage, records, enforce_required_pass=True)
+        completions = [event for event in self.state.get("events", [])
+                       if event.get("type") == "external_stage_completed" and
+                       event.get("stage") == stage["name"] and
+                       event.get("contract_validated") is True]
+        if not completions:
+            raise RuntimeError("adjudication requires a completed deterministic contract validation")
+        return True
+
+    def _validate_adjudication_eligibility(self, pending):
+        if not pending or pending.get("status") != "required":
+            raise RuntimeError("no REVISE gate is waiting for adjudication")
+        if pending.get("verdict") != "REVISE":
+            raise RuntimeError("human adjudication continuation is only available for REVISE")
+        stage = self.stage(pending["failed_stage"])
+        if stage["status"] != "completed":
+            raise RuntimeError("adjudication requires a completed stage")
+        current_hashes = {record["path"]: record["sha256"]
+                          for record in self.verify_stage_artifacts(stage["name"])}
+        if current_hashes != pending.get("artifact_sha256"):
+            raise RuntimeError("adjudication artifact binding does not match current artifacts")
+        votes_path = self._pending_gate_votes_path(pending)
+        decision, bundle = self._validate_vote_bundle(stage["name"], votes_path)
+        if decision != "REVISE":
+            raise RuntimeError("adjudication requires a raw REVISE vote bundle")
+        verdicts = [vote.get("verdict") for vote in bundle.get("votes", [])]
+        if len(verdicts) != 3:
+            raise RuntimeError("adjudication requires three completed Judge votes")
+        if "FAIL" in verdicts:
+            raise RuntimeError("adjudication continuation is forbidden after any FAIL vote")
+        for vote in bundle.get("votes", []):
+            text = " ".join(str(vote.get(field, ""))
+                            for field in ("rationale", "required_fix")).lower()
+            if "judge invocation failed" in text or "runtime failed" in text:
+                raise RuntimeError("adjudication is forbidden after Judge runtime failure")
+        self._stage_contract_passed_for_adjudication(stage)
+        return stage, votes_path, bundle
+
+    def propose_adjudication(self, proposal_path):
+        """Bind a proposed human scientific adjudication to an eligible REVISE gate."""
+        pending = self.state.get("pending_recovery")
+        stage, votes_path, bundle = self._validate_adjudication_eligibility(pending)
+        source = Path(proposal_path).resolve()
+        proposal = json.loads(source.read_text())
+        if proposal.get("schema_version") != 1:
+            raise ValueError("adjudication proposal requires schema_version=1")
+        if proposal.get("stage") != stage["name"]:
+            raise ValueError("adjudication proposal stage does not match the pending gate")
+        decision = proposal.get("proposed_decision")
+        if decision not in ADJUDICATION_DECISIONS:
+            raise ValueError(f"invalid adjudication decision: {decision!r}")
+        if not isinstance(proposal.get("rationale"), str) or not proposal["rationale"].strip():
+            raise ValueError("adjudication proposal requires rationale")
+        if decision == "ACCEPT_DECLARED_LIMITATION":
+            limitations = proposal.get("accepted_limitations")
+            restrictions = proposal.get("downstream_claim_restrictions")
+            if (not isinstance(limitations, list) or not limitations or
+                    any(not isinstance(item, str) or not item.strip() for item in limitations)):
+                raise ValueError("ACCEPT_DECLARED_LIMITATION requires accepted_limitations")
+            if proposal.get("scope_effect") != ADJUDICATION_SCOPE_EFFECT:
+                raise ValueError("adjudication cannot expand applicability")
+            if (not isinstance(restrictions, list) or not restrictions or
+                    any(not isinstance(item, str) or not item.strip() for item in restrictions)):
+                raise ValueError(
+                    "ACCEPT_DECLARED_LIMITATION requires downstream_claim_restrictions"
+                )
+        if decision == "REQUIRE_SCIENTIFIC_RECOVERY":
+            recovery_route = proposal.get("recovery_route")
+            if not isinstance(recovery_route, str) or not recovery_route.strip():
+                raise ValueError("REQUIRE_SCIENTIFIC_RECOVERY requires recovery_route")
+
+        adjudication_id = len(self.state.setdefault("adjudications", [])) + 1
+        adjudication_dir = self.run_dir / "adjudications"
+        adjudication_dir.mkdir(exist_ok=True)
+        destination = adjudication_dir / f"adjudication-{adjudication_id:03d}.json"
+        record = {
+            "id": adjudication_id,
+            "schema_version": 1,
+            "status": "proposed",
+            "proposed_at": now(),
+            "source": str(source),
+            "stage": stage["name"],
+            "raw_gate": "REVISE",
+            "raw_votes": str(votes_path),
+            "raw_votes_integrity": artifact_digest(votes_path),
+            "raw_vote_verdicts": [vote["verdict"] for vote in bundle["votes"]],
+            "gate_binding": {
+                "recorded_at": pending["gate_recorded_at"],
+                "artifact_sha256": pending["artifact_sha256"],
+                "votes_integrity": pending.get("votes_integrity"),
+            },
+            "proposal": proposal,
+            "human_decision": None,
+        }
+        destination.write_text(json.dumps(record, indent=2) + "\n")
+        record["path"] = str(destination)
+        record["integrity"] = artifact_digest(destination)
+        self.state["adjudications"].append(record)
+        self.state["pending_recovery"] = {
+            "status": "adjudication_proposed", "adjudication_id": adjudication_id
+        }
+        self.state["events"].append({"at": now(), "type": "adjudication_proposed",
+                                     "adjudication_id": adjudication_id,
+                                     "path": str(destination),
+                                     "integrity": record["integrity"]})
+        self.save()
+        return record
+
+    def _pending_adjudication_record(self):
+        pending = self.state.get("pending_recovery")
+        if not pending or pending.get("status") != "adjudication_proposed":
+            raise RuntimeError("no adjudication proposal is waiting for a human decision")
+        matches = [item for item in self.state.get("adjudications", [])
+                   if item.get("id") == pending.get("adjudication_id")]
+        if len(matches) != 1:
+            raise RuntimeError("pending adjudication record is missing or ambiguous")
+        try:
+            verify_artifact(matches[0]["path"], matches[0]["integrity"])
+        except (KeyError, FileNotFoundError, RuntimeError) as exc:
+            raise RuntimeError("pending adjudication integrity check failed") from exc
+        return matches[0]
+
+    def decide_adjudication(self, decided_by, decision=None, note=None):
+        """Record a human adjudication decision without changing the raw Judge gate."""
+        record = self._pending_adjudication_record()
+        if not isinstance(decided_by, str) or not decided_by.strip():
+            raise ValueError("adjudication decision requires decided_by")
+        proposal = record["proposal"]
+        decision = decision or proposal["proposed_decision"]
+        if decision != proposal["proposed_decision"]:
+            raise ValueError("human decision must match the proposed adjudication decision")
+        if decision not in ADJUDICATION_DECISIONS:
+            raise ValueError(f"invalid adjudication decision: {decision!r}")
+        pending_gate = {
+            "status": "required",
+            "failed_stage": record["stage"],
+            "verdict": record["raw_gate"],
+            "gate_recorded_at": record["gate_binding"]["recorded_at"],
+            "artifact_sha256": record["gate_binding"]["artifact_sha256"],
+            "votes_integrity": record["gate_binding"].get("votes_integrity"),
+        }
+        self._validate_adjudication_eligibility(pending_gate)
+        decision_record = {
+            "decision": decision,
+            "decided_at": now(),
+            "decided_by": decided_by.strip(),
+            "note": note or "",
+        }
+        record["human_decision"] = decision_record
+        if decision == "ACCEPT_DECLARED_LIMITATION":
+            record["status"] = "accepted"
+            self.stage(record["stage"])["effective_resolution"] = {
+                "type": "human_scientific_adjudication",
+                "adjudication_id": record["id"],
+                "raw_gate": record["raw_gate"],
+                "raw_vote_verdicts": list(record["raw_vote_verdicts"]),
+                "decision": decision,
+                "accepted_limitations": list(proposal["accepted_limitations"]),
+                "scope_effect": proposal["scope_effect"],
+                "downstream_claim_restrictions": list(
+                    proposal["downstream_claim_restrictions"]
+                ),
+            }
+            self.state["pending_recovery"] = None
+        else:
+            record["status"] = "requires_scientific_recovery"
+            self.state["pending_recovery"] = {
+                **pending_gate, "adjudication_id": record["id"]
+            }
+        adjudication_path = Path(record["path"])
+        adjudication_path.write_text(json.dumps(record, indent=2) + "\n")
+        record["integrity"] = artifact_digest(adjudication_path)
+        self.state["events"].append({"at": now(), "type": "adjudication_decided",
+                                     "adjudication_id": record["id"],
+                                     **decision_record})
+        self.save()
+        return record
+
     def _current_iteration(self):
         iterations = self.state.setdefault("iterations", [])
         if not iterations:
@@ -1124,6 +1340,14 @@ def main():
     gate.add_argument("--votes")
     rebind = sub.add_parser("rebind-inputs")
     rebind.add_argument("run_dir")
+    propose_adjudication = sub.add_parser("propose-adjudication")
+    propose_adjudication.add_argument("run_dir")
+    propose_adjudication.add_argument("proposal")
+    decide_adjudication = sub.add_parser("decide-adjudication")
+    decide_adjudication.add_argument("run_dir")
+    decide_adjudication.add_argument("--decided-by", required=True)
+    decide_adjudication.add_argument("--decision", choices=sorted(ADJUDICATION_DECISIONS))
+    decide_adjudication.add_argument("--note")
     propose = sub.add_parser("propose-recovery")
     propose.add_argument("run_dir")
     propose.add_argument("plan")
@@ -1154,6 +1378,10 @@ def main():
         controller.record_gate(args.stage, args.verdict, args.evidence, args.votes)
     elif args.action == "rebind-inputs":
         controller.rebind_inputs()
+    elif args.action == "propose-adjudication":
+        controller.propose_adjudication(args.proposal)
+    elif args.action == "decide-adjudication":
+        controller.decide_adjudication(args.decided_by, args.decision, args.note)
     elif args.action == "propose-recovery":
         controller.propose_recovery(args.plan)
     elif args.action == "approve-recovery":
