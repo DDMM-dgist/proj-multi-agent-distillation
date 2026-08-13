@@ -244,6 +244,45 @@ class AcquisitionPlanContractTests(unittest.TestCase):
         self.assertEqual(calls["n"], 1)
         self.assertNotIn("r:acquisition:001", self.controller.state.get("idempotency", {}))
 
+
+    def test_old_dict_calculator_binding_is_not_native_data2objects_schema(self):
+        import importlib.util
+        if importlib.util.find_spec("augment_atoms") is None or importlib.util.find_spec("data2objects") is None:
+            self.skipTest("augment-atoms/data2objects package is not installed in this environment")
+        import dacite
+        import yaml
+        from augment_atoms import AugmentConfig
+        import data2objects
+        payload = {
+            "data": {"input": str(self.seed), "output": str(self.root / "out.extxyz")},
+            "model": {"calculator": {
+                "module": "nequip.ase",
+                "class": "NequIPCalculator",
+                "constructor": "from_compiled_model",
+                "model_arg": "__positional__",
+                "kwargs": {"device": "cpu"},
+            }},
+            "config": {
+                "n_per_structure": 1,
+                "T": 300.0,
+                "beta": 0.1,
+                "sigma_range": [0.01, 0.02],
+                "seed": 123,
+                "units": "eV",
+                "cell_sigma": None,
+                "max_force": 30.0,
+                "min_separation": 0.5,
+                "max_relax_steps": 1,
+                "similarity_threshold": 0.1,
+            },
+        }
+        path = self.root / "old-dict-native.yaml"
+        path.write_text(yaml.safe_dump(payload), encoding="utf-8")
+        object_dict = data2objects.from_dict(yaml.safe_load(path.read_text(encoding="utf-8")))
+        self.assertIsInstance(object_dict["model"]["calculator"], dict)
+        with self.assertRaises(dacite.exceptions.WrongTypeError):
+            dacite.from_dict(data_class=AugmentConfig, data=object_dict, config=dacite.Config(strict=True))
+
     def test_real_augment_atoms_shape_native_config_dispatch_and_lineage_mapping(self):
         import yaml
         self._write_plan(
@@ -260,11 +299,12 @@ class AcquisitionPlanContractTests(unittest.TestCase):
         )
         calls = {"n": 0, "command": None}
 
-        def fake_run(command, check, cwd=None):
+        def fake_run(command, check, cwd=None, env=None):
             calls["n"] += 1
             calls["command"] = list(command)
             self.assertTrue(check)
             self.assertIsNone(cwd)
+            self.assertIn("PYTHONPATH", env or {})
             native_cfg = yaml.safe_load(self.plan_exec.read_text(encoding="utf-8"))
             self.assertEqual(set(native_cfg), {"data", "model", "config"})
             self.assertEqual(native_cfg["data"], {
@@ -272,9 +312,9 @@ class AcquisitionPlanContractTests(unittest.TestCase):
                 "output": str((self.root / "out.extxyz").resolve()),
             })
             self.assertEqual(native_cfg["model"]["calculator"], {
-                "factory": "adapters.mock_model.MockCheckpointCalculator",
-                "model_arg": None,
-                "kwargs": {"device": "cpu"},
+                "+runtimes.pydantic_ai.augment_atoms_bridge.teacher_calculator": {
+                    "teacher_config": str(self.teacher.resolve()),
+                }
             })
             self.assertEqual(native_cfg["config"]["n_per_structure"], 1)
             self.assertEqual(native_cfg["config"]["T"], 300.0)

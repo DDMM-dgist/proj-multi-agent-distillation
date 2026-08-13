@@ -259,8 +259,14 @@ class AcquisitionLifecycleRunStageTests(unittest.TestCase):
                 return real_subprocess_run(command, check=check, cwd=cwd, **kwargs)
             calls["command"] = list(command)
             self.assertTrue(check)
+            self.assertIn("PYTHONPATH", kwargs.get("env") or {})
             native_cfg = yaml.safe_load((self.run_dir / "artifacts" / "acquisition_augment_atoms.native.yaml").read_text(encoding="utf-8"))
             self.assertEqual(set(native_cfg), {"data", "model", "config"})
+            self.assertEqual(native_cfg["model"]["calculator"], {
+                "+runtimes.pydantic_ai.augment_atoms_bridge.teacher_calculator": {
+                    "teacher_config": str((self.run_dir / "inputs" / "000-teacher.yaml").resolve()),
+                }
+            })
             self.assertEqual(native_cfg["config"]["n_per_structure"], 1)
             self.assertEqual(native_cfg["config"]["max_force"], 24.0)
             first = Atoms("Cu", positions=[[3, 0, 0]], cell=[10, 10, 10], pbc=True)

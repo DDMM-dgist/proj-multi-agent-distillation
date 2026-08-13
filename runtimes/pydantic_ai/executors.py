@@ -426,7 +426,11 @@ def _write_executable_augment_config(path, acquisition_cfg, plan, *, seed_path, 
             "output": str(Path(out_path).resolve()),
         },
         "model": {
-            "calculator": calculator,
+            "calculator": {
+                "+runtimes.pydantic_ai.augment_atoms_bridge.teacher_calculator": {
+                    "teacher_config": str(Path(teacher_config).resolve()),
+                },
+            },
         },
         "config": {
             "n_per_structure": int(plan["n_per_structure"]),

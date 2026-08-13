@@ -4,6 +4,7 @@ import hashlib
 import importlib
 import importlib.metadata
 import json
+import os
 import platform
 import subprocess
 from pathlib import Path
@@ -70,7 +71,12 @@ def run_augment_atoms(cfg, seed_path, out_path):
                 "augment-atoms executable must be absolute or acquisition env must be configured"
             )
     workdir = resolve_config_path(cfg, cfg["workdir"]) if cfg.get("workdir") else None
-    subprocess.run(command, check=True, cwd=workdir)
+    env = os.environ.copy()
+    repo_root = Path(__file__).resolve().parents[1]
+    existing_pythonpath = env.get("PYTHONPATH")
+    env["PYTHONPATH"] = (str(repo_root) if not existing_pythonpath
+                         else str(repo_root) + os.pathsep + existing_pythonpath)
+    subprocess.run(command, check=True, cwd=workdir, env=env)
     if not Path(out_path).exists():
         raise FileNotFoundError(f"augment-atoms command produced no output: {out_path}")
     return Path(out_path)
