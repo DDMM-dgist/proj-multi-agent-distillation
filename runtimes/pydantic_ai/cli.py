@@ -101,6 +101,7 @@ def _stage_config(controller, stage_name):
 def _default_stage_route(stage_name):
     return {
         "teacher_baseline": ("simulation", "build_teacher_baseline", "costly_teacher_labeling"),
+        "reference_validation": ("simulation", "validate_teacher_reference", "costly_teacher_labeling"),
         "acquisition": ("data-curator", "acquire_structures", "costly_teacher_labeling"),
         "teacher_labeling": ("data-curator", "label_with_teacher", "costly_teacher_labeling"),
         "training": ("ml-trainer", "train_committee", "costly_training"),
@@ -128,6 +129,20 @@ def _input_source(controller, contains=None, suffix=None, exclude_contains=None)
 
 
 def _fill_default_parameters(controller, stage_name, params):
+    if not params and stage_name == "reference_validation":
+        stage = controller.stage(stage_name)
+        outputs = stage.get("outputs") or []
+        if len(outputs) != 2:
+            raise ValueError("reference_validation requires exactly two declared outputs")
+        teacher = _input_source(controller, "teacher", ".yaml") or _input_source(controller, "teacher.allegro", ".yaml")
+        if not teacher:
+            raise ValueError("reference_validation requires a bound Teacher configuration input")
+        return {
+            "teacher_config": teacher,
+            "report_path": str((controller.run_dir / outputs[0]).resolve()),
+            "predictions_path": str((controller.run_dir / outputs[1]).resolve()),
+            "domain_fields": ["structural_domain"],
+        }
     if stage_name == "teacher_baseline" and "structures_path" not in params:
         raise ValueError("teacher_baseline requires explicit pydantic_ai.parameters.structures_path")
     if params or stage_name != "teacher_baseline":
@@ -215,7 +230,14 @@ def _proposal_from_stage(controller, stage_name, stage_cfg):
         return value
     params = fmt(_fill_default_parameters(controller, stage_name, params))
     protected_reference = _protected_reference_from_inputs(controller)
-    if protected_reference and _protection_consuming_action(action):
+    if action == "validate_teacher_reference":
+        if not protected_reference:
+            raise ValueError("reference_validation requires a controller-bound protected reference")
+        existing = params.get("reference_yaml")
+        if existing is not None and str(Path(existing).resolve()) != protected_reference:
+            raise ValueError("stage proposal reference_yaml does not match the controller-bound protected reference")
+        params["reference_yaml"] = protected_reference
+    elif protected_reference and _protection_consuming_action(action):
         existing = params.get("reference_yaml")
         if existing is not None and str(Path(existing).resolve()) != protected_reference:
             raise ValueError("stage proposal reference_yaml does not match the controller-bound protected reference")

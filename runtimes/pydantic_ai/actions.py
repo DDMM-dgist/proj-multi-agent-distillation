@@ -106,7 +106,7 @@ ML_TRAINER_ACTIONS = (
     "compute_committee_disagreement", "validate_training_completion",
 )
 SIMULATION_ACTIONS = (
-    "build_teacher_baseline", "run_teacher_md", "run_student_md", "compute_rdf", "compute_coordination",
+    "build_teacher_baseline", "validate_teacher_reference", "run_teacher_md", "run_student_md", "compute_rdf", "compute_coordination",
     "compute_minimum_distance", "detect_force_spike", "compute_nve_drift",
     "validate_simulation_completion",
     "submit_scheduler_job", "query_scheduler_job", "collect_scheduler_artifact",
@@ -120,6 +120,7 @@ ANALYST_ACTIONS = (
 # Actions that always require explicit human approval before execution (costly/side-effecting).
 APPROVAL_GATED_ACTIONS = {
     "build_teacher_baseline": "costly_teacher_labeling",
+    "validate_teacher_reference": "costly_teacher_labeling",
     "acquire_structures": "costly_teacher_labeling",
     "label_with_teacher": "costly_teacher_labeling",
     "train_committee": "costly_training",

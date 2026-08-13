@@ -281,9 +281,9 @@ class BackingMatrixTests(unittest.TestCase):
     def test_required_heavy_actions_have_registry_executors(self):
         from runtimes.pydantic_ai.executors import BINDINGS, build_executor_registry
         reg = build_executor_registry()
-        required = {"build_teacher_baseline", "acquire_structures", "label_with_teacher",
-                    "run_teacher_md", "train_committee", "evaluate_heldout_fidelity",
-                    "run_student_md"}
+        required = {"build_teacher_baseline", "validate_teacher_reference",
+                    "acquire_structures", "label_with_teacher", "run_teacher_md",
+                    "train_committee", "evaluate_heldout_fidelity", "run_student_md"}
         for action, b in BINDINGS.items():
             if b.status == "READY_EXECUTOR" or action in required:
                 self.assertIsNotNone(reg[action].executor, action)
@@ -299,7 +299,7 @@ class BackingMatrixTests(unittest.TestCase):
         from runtimes.pydantic_ai.executors import BINDINGS
         counts = Counter(b.status for b in BINDINGS.values())
         self.assertEqual(counts["READY_EXECUTOR"], 28)
-        self.assertEqual(counts["READY_HPC_APPROVAL_GATED"], 7)
+        self.assertEqual(counts["READY_HPC_APPROVAL_GATED"], 8)
         self.assertEqual(counts["READY_INTERFACE_BACKEND_NOT_CONFIGURED"], 3)
         self.assertEqual(counts["READY_REASONING_OUTPUT"], 1)
         self.assertEqual(counts.get("NOT_IMPLEMENTED", 0), 0)

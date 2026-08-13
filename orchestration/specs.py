@@ -44,13 +44,13 @@ class AgentSpec:
 
     @property
     def prompt(self) -> str:
-        return self.prompt_path.read_text()
+        return self.prompt_path.read_text(encoding="utf-8")
 
 
 def load_agent_spec(path: str | Path, *, root: str | Path | None = None) -> AgentSpec:
     """Load one agent specification and resolve its canonical prompt."""
     path = Path(path).resolve()
-    payload = yaml.safe_load(path.read_text())
+    payload = yaml.safe_load(path.read_text(encoding="utf-8"))
     if not isinstance(payload, Mapping):
         raise ValueError(f"agent specification must be a mapping: {path}")
     required = {"schema_version", "name", "role_type", "description", "prompt",
@@ -81,7 +81,7 @@ def load_agent_spec(path: str | Path, *, root: str | Path | None = None) -> Agen
         raise ValueError("agent prompt must stay inside the project root") from exc
     if not prompt_path.is_file():
         raise FileNotFoundError(f"agent prompt is missing: {prompt_path}")
-    if prompt_path.read_text().lstrip().startswith("---"):
+    if prompt_path.read_text(encoding="utf-8").lstrip().startswith("---"):
         raise ValueError("canonical prompts must not contain runtime-specific front matter")
     return AgentSpec(
         schema_version=1,

@@ -284,6 +284,121 @@ def _exec_label_with_teacher(proposal):
             "manifest_integrity": artifact_digest(p["manifest_path"])}
 
 
+
+def _exec_validate_teacher_reference(proposal):
+    import tempfile
+    from ase.io import read
+    from adapters import load_config
+    from adapters.acquisition import label_with_teacher
+    from adapters.teacher import teacher_model_reference
+    from validation.four_channel_audit import channel
+    from validation.protected_reference import validate_reference_config
+    from validation.reference_validation import (
+        REQUIRED_LOGICAL_FRAMES,
+        REQUIRED_PROTECTED_SOURCE_ROWS,
+        validate_reference_validation_report,
+    )
+    from workflow.integrity import artifact_digest, sha256_file
+    p = _params(proposal)
+    reference_yaml = p["reference_yaml"]
+    teacher_config = p["teacher_config"]
+    protection = validate_reference_config(reference_yaml)
+    if (protection["logical_frames"] != REQUIRED_LOGICAL_FRAMES or
+            protection["protected_source_rows"] != REQUIRED_PROTECTED_SOURCE_ROWS):
+        raise ValueError(
+            f"protected reference does not match required {REQUIRED_LOGICAL_FRAMES}/"
+            f"{REQUIRED_PROTECTED_SOURCE_ROWS} counts"
+        )
+    predictions_path = Path(p["predictions_path"]).resolve()
+    report_path = Path(p["report_path"]).resolve()
+    predictions_path.parent.mkdir(parents=True, exist_ok=True)
+    teacher_cfg = load_config(teacher_config)
+    with tempfile.TemporaryDirectory(prefix="teacher-reference-labels-") as tmp:
+        label_manifest_path = Path(tmp) / "teacher_labels.manifest.json"
+        label_with_teacher(teacher_cfg, protection["reference_path"], predictions_path,
+                           label_manifest_path, bool(p.get("include_stress", False)))
+        label_manifest = json.loads(label_manifest_path.read_text())
+    frames = read(str(predictions_path), index=":")
+    metrics_raw = channel(frames, "dft", "teacher", per_config_type=True, require_complete=True)
+
+    def metric_subset(src):
+        return {
+            "n_frames": int(src["n_frames"]),
+            "n_atoms": int(src["n_atoms"]),
+            "energy_mae": float(src["e_raw_mae_meV"]),
+            "energy_rmse": float(src["e_raw_rmse_meV"]),
+            "force_component_mae": float(src["f_mae"]),
+            "force_component_rmse": float(src["f_rmse"]),
+        }
+
+    by_config_type = {key: metric_subset(value) for key, value in metrics_raw.items() if key != "all"}
+    model_value = teacher_model_reference(teacher_cfg)
+    model_path = Path(model_value).expanduser().resolve() if model_value else None
+    teacher_config_path = Path(teacher_config).expanduser().resolve()
+    domain_fields = {"config_type": "present" if by_config_type else "absent"}
+    for field in p.get("domain_fields", ["structural_domain"]):
+        if field != "config_type":
+            domain_fields[field] = "present" if any(field in atoms.info for atoms in frames) else "absent"
+    report = {
+        "schema_version": 1,
+        "profile": "teacher_reference_validation",
+        "stage": "reference_validation",
+        "protected_reference_use": "teacher_vs_dft_reference_validation_only",
+        "historical_prediction_policy": "PROVENANCE_ONLY_NOT_USED_AS_FRESH_RESULT",
+        "teacher": {
+            "config": str(teacher_config_path),
+            "config_integrity": artifact_digest(teacher_config_path),
+            "model": str(model_path) if model_path else model_value,
+            "model_integrity": artifact_digest(model_path) if model_path and model_path.exists() else None,
+            "model_sha256": sha256_file(model_path) if model_path and model_path.is_file() else None,
+            "label_manifest": label_manifest,
+        },
+        "reference": {
+            "reference_id": protection["reference_id"],
+            "reference_yaml": str(Path(reference_yaml).expanduser().resolve()),
+            "structures_path": str(protection["reference_path"]),
+            "logical_frames": int(protection["logical_frames"]),
+            "protected_source_rows": int(protection["protected_source_rows"]),
+            "structures_integrity": artifact_digest(protection["reference_path"]),
+        },
+        "prediction_artifact": {
+            "path": str(predictions_path),
+            "integrity": artifact_digest(predictions_path),
+            "n_frames": len(frames),
+            "labels": ["teacher_energy", "teacher_forces", "dft_energy", "dft_forces"],
+        },
+        "metrics": {
+            "energy_normalization": "per_atom",
+            "energy_unit": "meV/atom",
+            "force_unit": "eV/Angstrom",
+            "global": metric_subset(metrics_raw["all"]),
+            "by_config_type": by_config_type,
+            "domain_fields": domain_fields,
+        },
+        "checks": [
+            {"domain": "teacher_reference", "observable": "logical_frame_count", "status": "RECORDED", "value": int(protection["logical_frames"]), "unit": "frames", "criterion": None},
+            {"domain": "teacher_reference", "observable": "protected_source_row_count", "status": "RECORDED", "value": int(protection["protected_source_rows"]), "unit": "rows", "criterion": None},
+            {"domain": "teacher_reference", "observable": "energy_mae", "status": "RECORDED", "value": metric_subset(metrics_raw["all"])["energy_mae"], "unit": "meV/atom", "criterion": None},
+            {"domain": "teacher_reference", "observable": "energy_rmse", "status": "RECORDED", "value": metric_subset(metrics_raw["all"])["energy_rmse"], "unit": "meV/atom", "criterion": None},
+            {"domain": "teacher_reference", "observable": "force_component_mae", "status": "RECORDED", "value": metric_subset(metrics_raw["all"])["force_component_mae"], "unit": "eV/Angstrom", "criterion": None},
+            {"domain": "teacher_reference", "observable": "force_component_rmse", "status": "RECORDED", "value": metric_subset(metrics_raw["all"])["force_component_rmse"], "unit": "eV/Angstrom", "criterion": None},
+        ],
+        "evidence": [
+            _evidence("teacher_config", teacher_config),
+            _evidence("protected_reference_config", reference_yaml),
+            _evidence("protected_reference_structures", protection["reference_path"]),
+            _evidence("teacher_reference_predictions", predictions_path),
+        ],
+    }
+    report_path.parent.mkdir(parents=True, exist_ok=True)
+    report_path.write_text(json.dumps(report, indent=2) + "\n")
+    validate_reference_validation_report(report_path, reference_yaml=reference_yaml,
+                                         teacher_config=teacher_config,
+                                         submitted_artifacts=[report_path, predictions_path])
+    return {"path": str(report_path), "report": report, "integrity": artifact_digest(report_path),
+            "predictions_path": str(predictions_path),
+            "predictions_integrity": artifact_digest(predictions_path)}
+
 def _exec_run_teacher_md(proposal):
     from adapters import load_config
     from adapters.acquisition import run_teacher_md
@@ -411,6 +526,11 @@ BINDINGS: dict[str, ExecutorBinding] = {b.action_type: b for b in [
          "adapters.acquisition.label_with_teacher + validation.teacher_baseline",
          "teacher_config,structures_path,distillation_scope,validation_profile,report_path",
          "TeacherBaselineReport", "validation.teacher_baseline"),
+    _hpc("validate_teacher_reference", "simulation",
+         "adapters.acquisition.label_with_teacher + validation.four_channel_audit + validation.reference_validation",
+         "teacher_config,reference_yaml,predictions_path,report_path",
+         "reference validation report + fresh Teacher reference predictions",
+         "validation.reference_validation"),
     _hpc("run_teacher_md", "simulation", "adapters.acquisition.run_teacher_md",
          "md_config,teacher_config,seed_structures,out_path", "teacher MD snapshots", ""),
     _hpc("run_student_md", "simulation", "workflow.steps.run_md / adapters.md_backend.run",
@@ -462,6 +582,8 @@ def build_executor_registry() -> dict:
         executor = b.fn
         if action == "build_teacher_baseline":
             executor = _exec_build_teacher_baseline
+        elif action == "validate_teacher_reference":
+            executor = _exec_validate_teacher_reference
         elif action == "acquire_structures":
             executor = _exec_acquire_structures
         elif action == "label_with_teacher":

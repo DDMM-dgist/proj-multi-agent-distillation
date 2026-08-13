@@ -21,7 +21,7 @@ import unittest
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
-FREEZE_REVISION = "production-readiness-executor-wiring (v3; no role-count change)"
+FREEZE_REVISION = "reference-validation-capability-amendment (v4; one action + UTF-8 prompt reads)"
 FROZEN_MODEL = "qwen2.5-7b-instruct"
 
 FROZEN = {
@@ -44,11 +44,11 @@ FROZEN = {
     "runtimes/pydantic_ai/driver.py":
         "571636918a2827ceded12e9ee3b0cad7f23ab73887d61ed0cc2b6d5727986719",
     "runtimes/pydantic_ai/actions.py":
-        "e47e6f8535f3c51068c1391fa26e213f850a2a97f51be90a675ae05d52edb5f3",
+        "08ea226f44bb53f90e079e070da8fdb9c5e6a7486f494ea2536d78890e8db434",
     "runtimes/pydantic_ai/controller_bridge.py":
         "5b23ee61b4bb399fe4c5b17f545fd1386806e74e5d419f0c8469765895289385",
     "orchestration/specs.py":
-        "12058f13b1a498a34b5aabf0dcff5186c72f1754b429ff682737a56180db1010",
+        "4b6dc829fe2b6b594cc87e8a62bd944ea9df181cd7f420ae3732c861ce8e43cb",
     "workflow/controller.py":
         "cf6875f5c188e312e57525cfd43daa2dd6504c98a41437298197065967863244",
     "orchestration/schema/agent_result.schema.json":
@@ -115,6 +115,9 @@ class ArchitectureFreezeTests(unittest.TestCase):
             c = RunController.initialize(cfg, root / "run")
         self.assertEqual(set(ROLE_ALLOWED_ACTIONS), {"data-curator", "ml-trainer", "simulation", "analyst"})
         self.assertIn("build_teacher_baseline", ROLE_ALLOWED_ACTIONS["simulation"])
+        self.assertIn("validate_teacher_reference", ROLE_ALLOWED_ACTIONS["simulation"])
+        self.assertNotIn("validate_teacher_reference", ROLE_ALLOWED_ACTIONS["data-curator"])
+        self.assertNotIn("validate_teacher_reference", ROLE_ALLOWED_ACTIONS["ml-trainer"])
         self.assertEqual(len(roles), 7)
         self.assertEqual(c.stage("s")["contract"]["kind"], "validation_manifest")
 
