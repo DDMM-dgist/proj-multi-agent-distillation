@@ -52,6 +52,8 @@ def _build_parser() -> argparse.ArgumentParser:
     approve.add_argument("--run-dir", required=True)
     approve.add_argument("--boundary", required=True)
     approve.add_argument("--note", required=True)
+    approve.add_argument("--plan-sha256", default=None,
+                         help="optional exact AcquisitionPlan SHA256 binding for acquire_structures")
     stage = sub.add_parser("run-stage", help="run one production-routed stage")
     stage.add_argument("--run-dir", required=True)
     stage.add_argument("--stage", required=True)
@@ -264,6 +266,44 @@ def _proposal_from_stage(controller, stage_name, stage_cfg):
         "requested_by_role": role,
         "action_type": action,
     }, role
+
+
+
+def _run_bound_input_paths(controller):
+    paths = set()
+    for record in controller.state.get("inputs", []):
+        for key in ("source", "snapshot"):
+            raw = record.get(key)
+            if raw:
+                paths.add(str(Path(raw).resolve()))
+    return paths
+
+
+def _bind_acquisition_plan_for_stage(controller, proposal):
+    if proposal.get("action_type") != "acquire_structures":
+        return proposal
+    from .executors import _acquisition_plan_payload, _validate_acquisition_plan
+    params = dict(proposal.get("parameters") or {})
+    raw_plan = params.get("acquisition_plan_path") or params.get("acquisition_plan")
+    if not raw_plan:
+        raise ValueError("PLAN_INPUT_REQUIRED: acquisition requires acquisition_plan_path or acquisition_plan")
+    if params.get("acquisition_plan_path"):
+        plan_path = str(Path(params["acquisition_plan_path"]).resolve())
+        if plan_path not in _run_bound_input_paths(controller):
+            raise ValueError("PLAN_INPUT_REQUIRED: acquisition_plan_path must be a controller-bound run input")
+    plan = _validate_acquisition_plan(
+        _acquisition_plan_payload(raw_plan), reference_yaml=params.get("reference_yaml"),
+        seed_structures=params.get("seed_structures"),
+        proposal_selected_source_indices=(params.get("selected_source_indices") or None))
+    params["acquisition_plan_sha256"] = plan["_plan_sha256"]
+    params["selected_source_indices"] = list(plan["selected_source_global_indices"])
+    outputs = list(controller.stage(proposal["stage"]).get("outputs") or [])
+    if len(outputs) >= 3:
+        params.setdefault("protection_audit_path", str((controller.run_dir / outputs[2]).resolve()))
+    params.setdefault("executable_config_path", str(
+        (controller.run_dir / "artifacts" / "acquisition_augment_atoms.resolved.json").resolve()))
+    proposal["parameters"] = params
+    return proposal
 
 
 _BOUND_PROPOSAL_FIELDS = {
@@ -764,8 +804,9 @@ def _cmd_preflight(args) -> int:
 def _cmd_approve(args) -> int:
     from workflow.controller import RunController
     c = RunController(args.run_dir)
-    c.grant_action_approval(args.boundary, note=args.note)
-    print(f"approval: {args.boundary}")
+    c.grant_action_approval(args.boundary, note=args.note, plan_sha256=args.plan_sha256)
+    suffix = f" plan_sha256={args.plan_sha256}" if args.plan_sha256 else ""
+    print(f"approval: {args.boundary}{suffix}")
     return EXIT_SUCCESS
 
 
@@ -784,6 +825,14 @@ def _cmd_run_stage(args) -> int:
         c.verify_inputs()
         stage_cfg = _stage_config(c, args.stage)
         proposal, role = _proposal_from_stage(c, args.stage, stage_cfg)
+        try:
+            proposal = _bind_acquisition_plan_for_stage(c, proposal)
+        except ValueError as exc:
+            message = str(exc)
+            if message.startswith("PLAN_INPUT_REQUIRED"):
+                print(message, file=sys.stderr)
+                return EXIT_VALIDATION_REJECTED
+            raise
         evidence_path = c.run_dir / "exchange" / "bounded_evidence" / f"{args.stage}.json"
         upstream = [a["path"] for a in c.state.get("artifacts", [])]
         build_bounded_evidence(upstream, evidence_path, protocol_refs=[c.state.get("workflow_config")])
@@ -869,7 +918,7 @@ def _cmd_run_stage(args) -> int:
             budget_policy=producer_budget_policy)
         status = getattr(res.detail, "status", "")
         if status == "APPROVAL_REQUIRED":
-            print(f"APPROVAL_REQUIRED: {proposal.get('approval_boundary') or res.detail.reason}")
+            print(f"APPROVAL_REQUIRED: {getattr(res.detail, 'reason', '') or proposal.get('approval_boundary')}")
             return EXIT_APPROVAL_REQUIRED
         if status not in {"EXECUTED", "DUPLICATE"}:
             print(f"stage dispatch failed: {status}: {getattr(res.detail, 'reason', res.error)}", file=sys.stderr)

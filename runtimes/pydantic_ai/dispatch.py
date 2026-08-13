@@ -57,15 +57,16 @@ class ActionDescriptor:
 # --- Approval + idempotency stores (in-memory here; controller-backed in the bridge) ---------
 
 class InMemoryApprovalStore:
-    """Approval is per (run_id, boundary). The controller-backed store checks approval records."""
+    """Approval is per (run_id, boundary), optionally bound to an exact plan hash."""
     def __init__(self):
         self._granted: set = set()
 
-    def grant(self, run_id: str, boundary: str) -> None:
-        self._granted.add((run_id, boundary))
+    def grant(self, run_id: str, boundary: str, plan_sha256: str | None = None) -> None:
+        self._granted.add((run_id, boundary, plan_sha256))
 
-    def has_approval(self, run_id: str, boundary: str, idempotency_key: str = "") -> bool:
-        return (run_id, boundary) in self._granted
+    def has_approval(self, run_id: str, boundary: str, idempotency_key: str = "",
+                     plan_sha256: str | None = None) -> bool:
+        return (run_id, boundary, plan_sha256) in self._granted
 
 
 class InMemoryIdempotencyStore:
@@ -140,9 +141,20 @@ def authorize_and_execute(proposal, *, registry: dict, approvals, idempotency,
     if desc.role != role:
         return out("DENIED", f"registry role mismatch for '{action}'")
 
-    # (4) approval-boundary check
-    if desc.approval_boundary and not approvals.has_approval(run_id, desc.approval_boundary, key):
-        return out("APPROVAL_REQUIRED", f"action requires approval: {desc.approval_boundary}")
+    # (4) approval-boundary check. Acquisition execution is bound to the exact
+    # validated plan hash, so a generic boundary approval cannot authorize a
+    # different parent selection or augmentation parameter set.
+    plan_sha256 = None
+    if action == "acquire_structures":
+        try:
+            from .executors import acquisition_plan_sha256_from_proposal
+            plan_sha256 = acquisition_plan_sha256_from_proposal(proposal)
+        except Exception as exc:  # noqa: BLE001 - fail closed before approval/idempotency/executor
+            return out("INVALID", f"PLAN_INPUT_REQUIRED: {exc}")
+    if desc.approval_boundary and not approvals.has_approval(
+            run_id, desc.approval_boundary, key, plan_sha256=plan_sha256):
+        suffix = f" plan_sha256={plan_sha256}" if plan_sha256 else ""
+        return out("APPROVAL_REQUIRED", f"action requires approval: {desc.approval_boundary}{suffix}")
 
     # (5) typed parameter + artifact/hash check
     if desc.param_validator is not None:

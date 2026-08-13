@@ -44,7 +44,7 @@ def _proposal_args(role, action_type, key):
     return {"requested_by_role": role, "action_type": action_type, "schema_version": 1,
             "run_id": "r", "stage": "data_curation", "requested_at": "2026-08-07T00:00:00Z",
             "rationale": "sandbox dry-run", "idempotency_key": key, "parameters": {},
-            "active_config_refs": [], "active_config_hashes": {}, "input_artifacts": [],
+            "active_config_refs": [], "advisory_claimed_config_hashes": {}, "input_artifacts": [],
             "input_artifact_hashes": {}, "expected_outputs": [], "dry_run": True}
 
 

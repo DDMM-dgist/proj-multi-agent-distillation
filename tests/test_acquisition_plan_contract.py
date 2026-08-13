@@ -63,10 +63,13 @@ def _protected_reference_package(root: Path, protected_atoms) -> Path:
     return reference
 
 
-def _atoms(x=1.0, parent="seed-pool:900"):
+def _atoms(x=1.0, parent="seed-pool:900", category="bulk"):
     a = Atoms("Cu", positions=[[x, 0, 0]], cell=[10, 10, 10], pbc=True)
     a.info["structure_id"] = parent
     a.info["parent_structure_id"] = parent
+    if parent.startswith("seed-pool:"):
+        a.info["source_global_index"] = int(parent.split(":", 1)[1])
+    a.info["source_category"] = category
     return a
 
 
@@ -96,7 +99,12 @@ class AcquisitionPlanContractTests(unittest.TestCase):
         self._write_plan()
         from workflow.controller import RunController
         self.controller = RunController(_run(self.root / "run"))
-        self.controller.grant_action_approval("costly_teacher_labeling")
+
+    def _approve_current_plan(self):
+        from runtimes.pydantic_ai.executors import acquisition_plan_sha256_from_proposal
+        self.controller.grant_action_approval(
+            "costly_teacher_labeling",
+            plan_sha256=acquisition_plan_sha256_from_proposal(self._proposal()))
 
     def _write_plan(self, **updates):
         plan = {
@@ -160,8 +168,8 @@ class AcquisitionPlanContractTests(unittest.TestCase):
             calls["n"] += 1
         prop = self._proposal(acquisition_plan_path=None)
         out = self._dispatch(prop, adapter)
-        self.assertEqual(out.status, "EXECUTOR_ERROR")
-        self.assertIn("AcquisitionPlan is required", out.reason)
+        self.assertEqual(out.status, "INVALID")
+        self.assertIn("PLAN_INPUT_REQUIRED", out.reason)
         self.assertEqual(calls["n"], 0)
         self.assertNotIn("r:acquisition:001", self.controller.state.get("idempotency", {}))
 
@@ -170,6 +178,7 @@ class AcquisitionPlanContractTests(unittest.TestCase):
         data = json.loads(self.plan_path.read_text())
         data.pop("beta")
         self.plan_path.write_text(json.dumps(data), encoding="utf-8")
+        self._approve_current_plan()
         out = self._dispatch(self._proposal(), lambda *_args: None)
         self.assertEqual(out.status, "EXECUTOR_ERROR")
         self.assertIn("missing required fields", out.reason)
@@ -177,6 +186,7 @@ class AcquisitionPlanContractTests(unittest.TestCase):
     def test_protected_parent_and_duplicate_equivalent_rows_reject(self):
         for bad in (760, 761):
             self._write_plan(selected_source_global_indices=[bad])
+            self._approve_current_plan()
             out = self._dispatch(self._proposal(selected_source_indices=[bad]), lambda *_args: None)
             self.assertEqual(out.status, "EXECUTOR_ERROR")
             self.assertIn("protected reference leakage", out.reason)
@@ -187,13 +197,15 @@ class AcquisitionPlanContractTests(unittest.TestCase):
         calls = {"n": 0}
         def adapter(*_args):
             calls["n"] += 1
+        self._approve_current_plan()
         out = self._dispatch(self._proposal(seed_structures=str(protected_seed)), adapter)
         self.assertEqual(out.status, "EXECUTOR_ERROR")
-        self.assertIn("protected reference geometry", out.reason)
+        self.assertIn("protected logical reference geometry", out.reason)
         self.assertEqual(calls["n"], 0)
 
     def test_empty_parent_selection_rejects(self):
         self._write_plan(selected_parent_structure_ids=[], selected_source_global_indices=[], n_parents=0, expected_output_count=0)
+        self._approve_current_plan()
         out = self._dispatch(self._proposal(selected_source_indices=[]), lambda *_args: None)
         self.assertEqual(out.status, "EXECUTOR_ERROR")
         self.assertIn("selected_parent_structure_ids", out.reason)
@@ -204,6 +216,7 @@ class AcquisitionPlanContractTests(unittest.TestCase):
             calls["n"] += 1
             write(str(out_path), [_atoms(1.0, "seed-pool:900"), _atoms(2.0, "seed-pool:900")])
             return out_path
+        self._approve_current_plan()
         out = self._dispatch(self._proposal(), adapter)
         self.assertEqual(out.status, "EXECUTOR_ERROR")
         self.assertIn("output count mismatch", out.reason)
@@ -215,11 +228,12 @@ class AcquisitionPlanContractTests(unittest.TestCase):
         def adapter(cfg, teacher_cfg, seed_path, out_path):
             seen["command"] = cfg["command"]
             self.assertEqual(Path(seed_path), self.seed)
-            self.assertIn(str(self.plan_exec.resolve()), cfg["command"])
+            self.assertIn(str((self.root / "acquisition_augment_atoms.resolved.json").resolve()), cfg["command"])
             a = Atoms("Cu", positions=[[3, 0, 0]], cell=[10, 10, 10], pbc=True)
             a.info["parent"] = "seed-pool:900"
             write(str(out_path), [a])
             return out_path
+        self._approve_current_plan()
         out = self._dispatch(self._proposal(), adapter)
         self.assertEqual(out.status, "EXECUTED")
         frames = read(str(self.root / "out.extxyz"), index=":")
@@ -229,12 +243,25 @@ class AcquisitionPlanContractTests(unittest.TestCase):
         self.assertEqual(manifest["selected_source_global_indices"], [900])
         self.assertEqual(manifest["translated_command"], seen["command"])
 
+    def test_protection_failure_quarantines_partial_outputs_without_idempotency(self):
+        self._approve_current_plan()
+        def adapter(cfg, teacher_cfg, seed_path, out_path):
+            write(str(out_path), [_atoms(1.0, "seed-pool:760")])
+            return out_path
+        out = self._dispatch(self._proposal(), adapter)
+        self.assertEqual(out.status, "EXECUTOR_ERROR")
+        self.assertIn("protected reference descendant", out.reason)
+        self.assertFalse((self.root / "out.extxyz").exists())
+        self.assertFalse((self.root / "manifest.json").exists())
+        self.assertNotIn("r:acquisition:001", self.controller.state.get("idempotency", {}))
+
     def test_executor_runs_at_most_once_with_idempotency(self):
         calls = {"n": 0}
         def adapter(cfg, teacher_cfg, seed_path, out_path):
             calls["n"] += 1
             write(str(out_path), [_atoms(1.0, "seed-pool:900")])
             return out_path
+        self._approve_current_plan()
         prop = self._proposal()
         first = self._dispatch(prop, adapter)
         second = self._dispatch(prop, adapter)

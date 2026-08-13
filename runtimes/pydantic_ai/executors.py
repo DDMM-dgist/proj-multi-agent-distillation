@@ -156,16 +156,18 @@ class _AcquisitionPlanError(ValueError):
 
 
 _REQUIRED_ACQUISITION_PLAN_FIELDS = {
-    "eligible_source_categories", "selected_parent_structure_ids",
+    "schema_version", "eligible_source_categories", "selected_parent_structure_ids",
     "selected_source_global_indices", "n_parents", "n_per_structure", "T_K", "beta",
     "sigma_range_A", "cell_sigma", "seed", "expected_output_count", "duplicate_handling",
     "protected_reference_exclusion_report",
 }
+_CATEGORY_KEYS = ("source_category", "category", "config_type", "structural_domain", "domain")
+_INDEX_KEYS = ("source_global_index", "global_index", "seed_pool_index")
 
 
 def _load_structured_file(path):
     import yaml
-    p = Path(path).resolve()
+    p = Path(path).expanduser().resolve()
     if not p.is_file():
         raise _AcquisitionPlanError(f"AcquisitionPlan is missing: {p}")
     if p.suffix.lower() == ".json":
@@ -173,18 +175,44 @@ def _load_structured_file(path):
     return yaml.safe_load(p.read_text(encoding="utf-8"))
 
 
+def _canonical_json_bytes(payload):
+    return json.dumps(payload, sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode("utf-8")
+
+
+def _sha256_bytes(data):
+    import hashlib
+    return hashlib.sha256(data).hexdigest()
+
+
+def _sha256_file_local(path):
+    from workflow.integrity import sha256_file
+    return sha256_file(path)
+
+
 def _acquisition_plan_payload(raw):
     if isinstance(raw, dict):
         payload = dict(raw)
         payload.setdefault("_plan_path", None)
+        payload["_plan_sha256"] = _sha256_bytes(_canonical_json_bytes({k: v for k, v in payload.items() if not str(k).startswith("_")}))
         return payload
     if not raw:
         raise _AcquisitionPlanError("AcquisitionPlan is required before acquire_structures execution")
     payload = _load_structured_file(raw)
     if not isinstance(payload, dict):
         raise _AcquisitionPlanError("AcquisitionPlan must be a JSON/YAML mapping")
-    payload["_plan_path"] = str(Path(raw).resolve())
+    plan_path = Path(raw).expanduser().resolve()
+    payload["_plan_path"] = str(plan_path)
+    payload["_plan_sha256"] = _sha256_file_local(plan_path)
     return payload
+
+
+def acquisition_plan_sha256_from_proposal(proposal):
+    p = _params(proposal)
+    plan = _acquisition_plan_payload(p.get("acquisition_plan") or p.get("acquisition_plan_path"))
+    declared = p.get("acquisition_plan_sha256")
+    if declared is not None and declared != plan["_plan_sha256"]:
+        raise _AcquisitionPlanError("proposal acquisition_plan_sha256 does not match AcquisitionPlan")
+    return plan["_plan_sha256"]
 
 
 def _nonempty_list(plan, key):
@@ -194,12 +222,117 @@ def _nonempty_list(plan, key):
     return value
 
 
-def _validate_acquisition_plan(plan, *, reference_yaml=None, proposal_selected_source_indices=None):
+def _frame_source_index(atoms, fallback):
+    for key in _INDEX_KEYS:
+        if key in atoms.info:
+            value = atoms.info[key]
+            if isinstance(value, bool):
+                continue
+            try:
+                return int(value)
+            except (TypeError, ValueError):
+                raise _AcquisitionPlanError(f"source frame has malformed {key}: {value!r}")
+    return int(fallback)
+
+
+def _frame_structure_id(atoms, source_index):
+    for key in ("structure_id", "parent_structure_id", "id"):
+        value = atoms.info.get(key)
+        if value not in (None, ""):
+            return str(value)
+    return f"seed-pool:{int(source_index)}"
+
+
+def _frame_categories(atoms):
+    cats = set()
+    for key in _CATEGORY_KEYS:
+        value = atoms.info.get(key)
+        if value in (None, ""):
+            continue
+        if isinstance(value, (list, tuple, set)):
+            cats.update(str(v) for v in value)
+        else:
+            cats.add(str(value))
+    return cats
+
+
+def _selected_source_records(seed_structures, selected_indices):
+    from ase.io import read
+    frames = read(str(seed_structures), index=":")
+    by_index = {}
+    for offset, atoms in enumerate(frames):
+        source_index = _frame_source_index(atoms, offset)
+        if source_index in by_index:
+            raise _AcquisitionPlanError(f"source dataset has duplicate source index: {source_index}")
+        by_index[source_index] = {
+            "source_index": source_index,
+            "structure_id": _frame_structure_id(atoms, source_index),
+            "categories": _frame_categories(atoms),
+            "atoms": atoms,
+        }
+    records = []
+    for selected in selected_indices:
+        if selected not in by_index:
+            raise _AcquisitionPlanError(f"selected source index is absent from frozen source dataset: {selected}")
+        records.append(by_index[selected])
+    return records
+
+
+def _assert_selected_sources_geometry_disjoint(records, reference_yaml):
+    if not reference_yaml:
+        return
+    from validation.protected_reference import _structure_fingerprint, validate_reference_config
+    protection = validate_reference_config(reference_yaml)
+    overlaps = [record["source_index"] for record in records
+                if _structure_fingerprint(record["atoms"]) in protection["reference_fingerprints"]]
+    if overlaps:
+        raise _AcquisitionPlanError(
+            "protected logical reference geometry selected as acquisition parent: " +
+            ", ".join(map(str, overlaps[:20])))
+
+
+def _public_source_records(records):
+    public = []
+    for record in records:
+        public.append({
+            "source_index": int(record["source_index"]),
+            "structure_id": str(record["structure_id"]),
+            "categories": sorted(str(x) for x in record.get("categories", [])),
+        })
+    return public
+
+
+def _validate_selected_sources(plan, *, seed_structures, reference_yaml=None):
+    selected = list(plan["selected_source_global_indices"])
+    parents = [str(x) for x in plan["selected_parent_structure_ids"]]
+    records = _selected_source_records(seed_structures, selected)
+    _assert_selected_sources_geometry_disjoint(records, reference_yaml)
+    eligible = {str(x) for x in plan["eligible_source_categories"]}
+    for expected_parent, record in zip(parents, records):
+        if expected_parent != record["structure_id"]:
+            raise _AcquisitionPlanError(
+                "selected_parent_structure_ids must match actual source frame identities at selected_source_global_indices"
+            )
+        if not record["categories"]:
+            raise _AcquisitionPlanError(f"selected source index {record['source_index']} has no category metadata")
+        if record["categories"].isdisjoint(eligible):
+            raise _AcquisitionPlanError(
+                f"selected source index {record['source_index']} categories {sorted(record['categories'])} "
+                f"do not match eligible_source_categories {sorted(eligible)}"
+            )
+    return records
+
+
+def _validate_acquisition_plan(plan, *, reference_yaml=None, seed_structures=None,
+                               proposal_selected_source_indices=None):
     missing = sorted(_REQUIRED_ACQUISITION_PLAN_FIELDS - set(plan))
     if missing:
         raise _AcquisitionPlanError("AcquisitionPlan missing required fields: " + ", ".join(missing))
+    if plan.get("schema_version") != 1:
+        raise _AcquisitionPlanError("AcquisitionPlan requires schema_version=1")
     parents = _nonempty_list(plan, "selected_parent_structure_ids")
     selected = _nonempty_list(plan, "selected_source_global_indices")
+    categories = _nonempty_list(plan, "eligible_source_categories")
     if any(isinstance(x, bool) or not isinstance(x, int) for x in selected):
         raise _AcquisitionPlanError("AcquisitionPlan.selected_source_global_indices must contain integers")
     if proposal_selected_source_indices is not None and list(proposal_selected_source_indices) != selected:
@@ -217,6 +350,8 @@ def _validate_acquisition_plan(plan, *, reference_yaml=None, proposal_selected_s
     if (not isinstance(sigma, list) or len(sigma) != 2 or
             any(not isinstance(x, (int, float)) for x in sigma) or sigma[0] > sigma[1]):
         raise _AcquisitionPlanError("AcquisitionPlan.sigma_range_A must be [min, max]")
+    if not all(isinstance(x, str) and x.strip() for x in parents + categories):
+        raise _AcquisitionPlanError("AcquisitionPlan parent/category values must be non-empty strings")
     report = plan.get("protected_reference_exclusion_report")
     if not isinstance(report, dict) or report.get("status") != "PASS":
         raise _AcquisitionPlanError("AcquisitionPlan protected_reference_exclusion_report must be a PASS record")
@@ -228,22 +363,58 @@ def _validate_acquisition_plan(plan, *, reference_yaml=None, proposal_selected_s
         assert_source_indices_allowed(selected, protection["protected_source_indices"])
         if report.get("reference_id") and report.get("reference_id") != protection["reference_id"]:
             raise _AcquisitionPlanError("AcquisitionPlan protection report reference_id does not match run-bound reference")
+    source_records = []
+    if seed_structures:
+        source_records = _validate_selected_sources(plan, seed_structures=seed_structures,
+                                                   reference_yaml=reference_yaml)
     return {**plan, "selected_source_global_indices": selected,
-            "selected_parent_structure_ids": parents, "n_parents": n_parents,
-            "n_per_structure": n_per, "expected_output_count": expected}
+            "selected_parent_structure_ids": parents, "eligible_source_categories": categories,
+            "n_parents": n_parents, "n_per_structure": n_per, "expected_output_count": expected,
+            "_selected_source_records": _public_source_records(source_records)}
 
 
-def _translate_acquisition_cli(acquisition_cfg, plan, *, seed_path, out_path):
+def _executable_config_path(params, plan):
+    raw = params.get("executable_config_path")
+    if raw:
+        return Path(raw).expanduser().resolve()
+    manifest = params.get("manifest_path") or params.get("out_path")
+    if not manifest:
+        raise _AcquisitionPlanError("acquisition execution requires manifest_path or executable_config_path")
+    return Path(manifest).resolve().with_name("acquisition_augment_atoms.resolved.json")
+
+
+def _write_executable_augment_config(path, acquisition_cfg, plan, *, seed_path, out_path, teacher_config):
+    cfg = {
+        "schema_version": 1,
+        "kind": "augment-atoms-executable-config",
+        "source_interface_kind": acquisition_cfg.get("kind"),
+        "input": str(Path(seed_path).resolve()),
+        "output": str(Path(out_path).resolve()),
+        "teacher_config": str(Path(teacher_config).resolve()),
+        "selected_parent_structure_ids": list(plan["selected_parent_structure_ids"]),
+        "selected_source_global_indices": list(plan["selected_source_global_indices"]),
+        "n_per_structure": int(plan["n_per_structure"]),
+        "T_K": float(plan["T_K"]),
+        "beta": float(plan["beta"]),
+        "sigma_range_A": [float(plan["sigma_range_A"][0]), float(plan["sigma_range_A"][1])],
+        "cell_sigma": plan.get("cell_sigma"),
+        "seed": int(plan["seed"]),
+        "expected_output_count": int(plan["expected_output_count"]),
+        "duplicate_handling": plan["duplicate_handling"],
+    }
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(cfg, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    return cfg
+
+
+def _translate_acquisition_cli(acquisition_cfg, plan, *, seed_path, out_path, executable_config_path):
     if acquisition_cfg.get("kind") != "augment-atoms":
         return acquisition_cfg
     invocation = ((acquisition_cfg.get("cli") or {}).get("invocation") or [])
     if not invocation:
         raise _AcquisitionPlanError("augment-atoms acquisition config requires cli.invocation")
-    plan_path = plan.get("executable_config_path") or plan.get("_plan_path")
-    if not plan_path:
-        raise _AcquisitionPlanError("AcquisitionPlan requires executable_config_path when supplied inline")
     context = {
-        "config_path": str(Path(plan_path).resolve()),
+        "config_path": str(Path(executable_config_path).resolve()),
         "seed_path": str(Path(seed_path).resolve()),
         "out_path": str(Path(out_path).resolve()),
     }
@@ -279,6 +450,31 @@ def _validate_acquisition_output(result_path, plan):
         raise _AcquisitionPlanError(
             f"acquisition output count mismatch: expected {plan['expected_output_count']}, got {n_frames}")
     return n_frames
+
+
+def _write_acquisition_protection_audit(path, *, reference_yaml, result_path, selected_source_indices):
+    from validation.protected_reference import write_protection_audit, validate_protection_audit_report
+    write_protection_audit("acquisition", reference_yaml,
+                           [f"acquisition_candidates={Path(result_path).resolve()}"],
+                           path, selected_source_indices=selected_source_indices)
+    return validate_protection_audit_report(path, reference_yaml=reference_yaml,
+                                            submitted_artifacts=[Path(path).resolve(), Path(result_path).resolve()])
+
+
+def _quarantine_acquisition_outputs(paths):
+    import shutil
+    import uuid
+    existing = [Path(x).resolve() for x in paths if x and Path(x).exists()]
+    if not existing:
+        return []
+    quarantine = existing[0].parent / ".quarantine" / f"acquisition-{uuid.uuid4().hex[:12]}"
+    quarantine.mkdir(parents=True, exist_ok=True)
+    moved = []
+    for path in existing:
+        target = quarantine / path.name
+        shutil.move(str(path), str(target))
+        moved.append(str(target))
+    return moved
 
 
 def _evidence(role, path):
@@ -374,40 +570,75 @@ def _exec_acquire_structures(proposal):
     plan = _validate_acquisition_plan(
         _acquisition_plan_payload(p.get("acquisition_plan") or p.get("acquisition_plan_path")),
         reference_yaml=p.get("reference_yaml"),
+        seed_structures=p.get("seed_structures"),
         proposal_selected_source_indices=p.get("selected_source_indices"),
     )
-    _protect_dataset(p["seed_structures"], p.get("reference_yaml"),
-                     plan["selected_source_global_indices"], require_lineage=False)
+    if p.get("acquisition_plan_sha256") and p["acquisition_plan_sha256"] != plan["_plan_sha256"]:
+        raise _AcquisitionPlanError("proposal acquisition_plan_sha256 does not match AcquisitionPlan")
     acquisition_cfg = load_config(p["acquisition_config"])
+    executable_path = _executable_config_path(p, plan)
+    executable_payload = _write_executable_augment_config(
+        executable_path, acquisition_cfg, plan, seed_path=p["seed_structures"],
+        out_path=p["out_path"], teacher_config=p["teacher_config"])
     executable_cfg = _translate_acquisition_cli(
-        acquisition_cfg, plan, seed_path=p["seed_structures"], out_path=p["out_path"])
-    result = acquire(executable_cfg, load_config(p["teacher_config"]),
-                     p["seed_structures"], p["out_path"])
-    n_frames = _validate_acquisition_output(result, plan)
-    _protect_dataset(result, p.get("reference_yaml"), require_lineage=True)
-    artifact = {"path": str(Path(result).resolve()), "integrity": artifact_digest(result)}
-    manifest_path = p.get("manifest_path")
-    if manifest_path:
-        manifest = {
-            "schema_version": 1,
-            "operation": "acquire_structures",
-            "acquisition_config": str(Path(p["acquisition_config"]).resolve()),
-            "teacher_config": str(Path(p["teacher_config"]).resolve()),
-            "seed_structures": str(Path(p["seed_structures"]).resolve()),
-            "acquisition_plan": str(Path(plan["_plan_path"]).resolve()) if plan.get("_plan_path") else None,
-            "selected_parent_structure_ids": list(plan["selected_parent_structure_ids"]),
-            "selected_source_global_indices": list(plan["selected_source_global_indices"]),
-            "expected_output_count": int(plan["expected_output_count"]),
-            "actual_output_count": int(n_frames),
-            "translated_command": list(executable_cfg.get("command", [])),
-            "output": artifact["path"],
-            "output_integrity": artifact["integrity"],
-        }
-        Path(manifest_path).parent.mkdir(parents=True, exist_ok=True)
-        Path(manifest_path).write_text(json.dumps(manifest, indent=2) + "\n")
-        artifact["manifest_path"] = str(Path(manifest_path).resolve())
-        artifact["manifest_integrity"] = artifact_digest(manifest_path)
-    return artifact
+        acquisition_cfg, plan, seed_path=p["seed_structures"], out_path=p["out_path"],
+        executable_config_path=executable_path)
+    result = None
+    audit_path = Path(p.get("protection_audit_path") or Path(p["manifest_path"]).with_name("acquisition_protection_audit.json"))
+    created_paths = [p.get("out_path"), p.get("manifest_path"), str(audit_path), str(executable_path)]
+    try:
+        result = acquire(executable_cfg, load_config(p["teacher_config"]),
+                         p["seed_structures"], p["out_path"])
+        n_frames = _validate_acquisition_output(result, plan)
+        audit_result = _write_acquisition_protection_audit(
+            audit_path, reference_yaml=p["reference_yaml"], result_path=result,
+            selected_source_indices=plan["selected_source_global_indices"])
+        _protect_dataset(result, p.get("reference_yaml"), require_lineage=True)
+        artifact = {"path": str(Path(result).resolve()), "integrity": artifact_digest(result)}
+        manifest_path = p.get("manifest_path")
+        if manifest_path:
+            manifest = {
+                "schema_version": 1,
+                "operation": "acquire_structures",
+                "stage": _params(proposal).get("stage", "acquisition"),
+                "acquisition_plan": str(Path(plan["_plan_path"]).resolve()) if plan.get("_plan_path") else None,
+                "acquisition_plan_sha256": plan["_plan_sha256"],
+                "acquisition_config": str(Path(p["acquisition_config"]).resolve()),
+                "acquisition_config_integrity": artifact_digest(p["acquisition_config"]),
+                "teacher_config": str(Path(p["teacher_config"]).resolve()),
+                "teacher_config_integrity": artifact_digest(p["teacher_config"]),
+                "seed_structures": str(Path(p["seed_structures"]).resolve()),
+                "seed_structures_integrity": artifact_digest(p["seed_structures"]),
+                "reference_yaml": str(Path(p["reference_yaml"]).resolve()) if p.get("reference_yaml") else None,
+                "reference_yaml_integrity": artifact_digest(p["reference_yaml"]) if p.get("reference_yaml") else None,
+                "selected_parent_structure_ids": list(plan["selected_parent_structure_ids"]),
+                "selected_source_global_indices": list(plan["selected_source_global_indices"]),
+                "eligible_source_categories": list(plan["eligible_source_categories"]),
+                "selected_source_records": list(plan.get("_selected_source_records") or []),
+                "expected_output_count": int(plan["expected_output_count"]),
+                "actual_output_count": int(n_frames),
+                "duplicate_handling": plan["duplicate_handling"],
+                "dft_labels_used_as_selection_scores": False,
+                "executable_config": str(executable_path),
+                "executable_config_payload": executable_payload,
+                "executable_config_integrity": artifact_digest(executable_path),
+                "translated_command": list(executable_cfg.get("command", [])),
+                "protection_audit": str(audit_path.resolve()),
+                "protection_audit_integrity": artifact_digest(audit_path),
+                "protection_audit_result": audit_result,
+                "output": artifact["path"],
+                "output_integrity": artifact["integrity"],
+            }
+            Path(manifest_path).parent.mkdir(parents=True, exist_ok=True)
+            Path(manifest_path).write_text(json.dumps(manifest, indent=2) + "\n", encoding="utf-8")
+            artifact["manifest_path"] = str(Path(manifest_path).resolve())
+            artifact["manifest_integrity"] = artifact_digest(manifest_path)
+            artifact["protection_audit_path"] = str(audit_path.resolve())
+            artifact["protection_audit_integrity"] = artifact_digest(audit_path)
+        return artifact
+    except Exception:
+        _quarantine_acquisition_outputs(created_paths)
+        raise
 
 
 def _exec_label_with_teacher(proposal):

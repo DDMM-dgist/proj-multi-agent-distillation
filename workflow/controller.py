@@ -262,16 +262,24 @@ class RunController:
         """True if an action with this idempotency key was already recorded (duplicate guard)."""
         return idempotency_key in self.state.get("idempotency", {})
 
-    def grant_action_approval(self, boundary, *, scope="run", note=""):
+    def grant_action_approval(self, boundary, *, scope="run", note="", plan_sha256=None):
         """Record a human approval for an approval boundary (e.g. costly_teacher_labeling). This
         is the durable approval record the action dispatcher checks before a costly/side-effecting
         action may execute. Additive; independent of the recovery human-approval state machine."""
-        self.state.setdefault("action_approvals", {})[boundary] = {
-            "granted": True, "scope": scope, "note": note, "at": now()}
+        record = {"granted": True, "scope": scope, "note": note, "at": now()}
+        if plan_sha256 is not None:
+            record["plan_sha256"] = str(plan_sha256)
+            record["scope"] = "exact_acquisition_plan"
+        self.state.setdefault("action_approvals", {})[boundary] = record
         self.save()
 
-    def has_action_approval(self, boundary):
-        return bool(self.state.get("action_approvals", {}).get(boundary, {}).get("granted"))
+    def has_action_approval(self, boundary, plan_sha256=None):
+        record = self.state.get("action_approvals", {}).get(boundary, {})
+        if not record.get("granted"):
+            return False
+        if plan_sha256 is not None:
+            return record.get("plan_sha256") == str(plan_sha256)
+        return True
 
     # --- v7 additive: scheduler job lifecycle (pending -> collect -> resume) ------------------
     def record_scheduler_submission(self, job):

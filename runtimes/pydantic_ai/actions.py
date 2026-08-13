@@ -143,7 +143,14 @@ class ActionProposalBase(BaseModel):
     requested_at: NonEmptyStr
     rationale: NonEmptyStr
     active_config_refs: list[NonEmptyStr] = Field(default_factory=list)
-    active_config_hashes: dict[str, str] = Field(default_factory=dict)
+    advisory_claimed_config_hashes: dict[str, str] = Field(
+        default_factory=dict,
+        description=(
+            "Optional model-claimed config digests for prose audit only; these are never "
+            "authoritative integrity assertions. Execution-critical hashes must be computed "
+            "deterministically by the Controller/runtime and bound in parameters/manifests."
+        ),
+    )
     input_artifacts: list[EvidenceReference] = Field(default_factory=list)
     input_artifact_hashes: dict[str, str] = Field(default_factory=dict)
     parameters: dict[str, Any] = Field(default_factory=dict)

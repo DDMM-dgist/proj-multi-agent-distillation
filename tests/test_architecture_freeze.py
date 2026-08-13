@@ -21,7 +21,7 @@ import unittest
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
-FREEZE_REVISION = "REVISE adjudication controller amendment (v7; no role/action/contract/Judge change)"
+FREEZE_REVISION = "AcquisitionPlan lifecycle amendment (v8; exact-plan approval, no role/action/contract/Judge change)"
 FROZEN_MODEL = "qwen2.5-7b-instruct"
 
 FROZEN = {
@@ -44,13 +44,13 @@ FROZEN = {
     "runtimes/pydantic_ai/driver.py":
         "571636918a2827ceded12e9ee3b0cad7f23ab73887d61ed0cc2b6d5727986719",
     "runtimes/pydantic_ai/actions.py":
-        "08ea226f44bb53f90e079e070da8fdb9c5e6a7486f494ea2536d78890e8db434",
+        "58f236d47cb9e7dda1878c2aadd1cbea2de7cf3ddef3ab0c6f0516d1b0179fff",
     "runtimes/pydantic_ai/controller_bridge.py":
-        "5b23ee61b4bb399fe4c5b17f545fd1386806e74e5d419f0c8469765895289385",
+        "3eb11b9075bd25d5b45f09fc9d0b7c0c65f032c1293bd5e38f754fa26b752100",
     "orchestration/specs.py":
         "4b6dc829fe2b6b594cc87e8a62bd944ea9df181cd7f420ae3732c861ce8e43cb",
     "workflow/controller.py":
-        "caf1c2c79500d03f15554888e8033a802bc334596997f1cfdfe7f69c89b2bb77",
+        "ec81c8db63ea64874d677077c32a46d6bfc8fc6f920e294249e79695004999b6",
     "orchestration/schema/agent_result.schema.json":
         "a38afea9c06c21e647376efd835dec32a16b2f247583a090560cb1843e0eda31",
     "orchestration/schema/agent_spec.schema.json":
@@ -116,6 +116,8 @@ class ArchitectureFreezeTests(unittest.TestCase):
         self.assertEqual(set(ROLE_ALLOWED_ACTIONS), {"data-curator", "ml-trainer", "simulation", "analyst"})
         self.assertIn("build_teacher_baseline", ROLE_ALLOWED_ACTIONS["simulation"])
         self.assertIn("validate_teacher_reference", ROLE_ALLOWED_ACTIONS["simulation"])
+        self.assertIn("acquire_structures", ROLE_ALLOWED_ACTIONS["data-curator"])
+        self.assertNotIn("acquire_structures", ROLE_ALLOWED_ACTIONS["simulation"])
         self.assertNotIn("validate_teacher_reference", ROLE_ALLOWED_ACTIONS["data-curator"])
         self.assertNotIn("validate_teacher_reference", ROLE_ALLOWED_ACTIONS["ml-trainer"])
         self.assertEqual(len(roles), 7)

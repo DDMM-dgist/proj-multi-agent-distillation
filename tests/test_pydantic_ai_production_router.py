@@ -38,7 +38,7 @@ def _v7_run(d: Path):
 def _proposal(role, action, key="k"):
     return {"requested_by_role": role, "action_type": action, "schema_version": 1, "run_id": "r",
             "stage": "s", "requested_at": "t", "rationale": "why", "idempotency_key": key,
-            "parameters": {}, "active_config_refs": [], "active_config_hashes": {},
+            "parameters": {}, "active_config_refs": [], "advisory_claimed_config_hashes": {},
             "input_artifacts": [], "input_artifact_hashes": {}, "expected_outputs": [],
             "dry_run": True}
 

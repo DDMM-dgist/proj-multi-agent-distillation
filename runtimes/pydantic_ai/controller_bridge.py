@@ -17,8 +17,9 @@ class ControllerApprovalStore:
     def __init__(self, controller):
         self._c = controller
 
-    def has_approval(self, run_id, boundary, idempotency_key: str = "") -> bool:
-        return self._c.has_action_approval(boundary)
+    def has_approval(self, run_id, boundary, idempotency_key: str = "",
+                     plan_sha256: str | None = None) -> bool:
+        return self._c.has_action_approval(boundary, plan_sha256=plan_sha256)
 
 
 class ControllerIdempotencyStore:
