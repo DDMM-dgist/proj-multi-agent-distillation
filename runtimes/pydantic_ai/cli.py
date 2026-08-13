@@ -35,6 +35,11 @@ EXIT_INTERNAL = 8
 _PROVIDER_UNAVAILABLE_FAILURES = {"authentication_failure"}
 MAX_PRODUCER_GENERATION_ATTEMPTS = 3
 MAX_JUDGE_EVIDENCE_PACKET_BYTES = 128 * 1024
+MAX_PRODUCER_EVIDENCE_PACKET_BYTES = 128 * 1024
+DEFAULT_CONTEXT_WINDOW_TOKENS = 8192
+DEFAULT_OUTPUT_TOKEN_RESERVE = 1024
+DEFAULT_PROMPT_SAFETY_MARGIN_TOKENS = 512
+PRODUCER_CONTEXT_BUDGET_EXCEEDED = "PRODUCER_CONTEXT_BUDGET_EXCEEDED"
 _AUTH_BINDING_MISMATCH = "authoritative action binding mismatch"
 
 
@@ -317,9 +322,122 @@ def _proposal_binding_validator(authoritative, controller=None):
     return validate
 
 
+
+def _sha256_file(path):
+    from workflow.integrity import sha256_file
+    return sha256_file(path)
+
+
+def build_producer_evidence_packet(controller, stage_name, evidence_path):
+    evidence_file = Path(evidence_path).resolve()
+    bounded = json.loads(evidence_file.read_text(encoding="utf-8"))
+    packet = {
+        "schema_version": 1,
+        "packet_kind": "ProducerEvidencePacket",
+        "run_id": controller.state["run_id"],
+        "stage": stage_name,
+        "bounded_evidence_path": str(evidence_file),
+        "bounded_evidence_sha256": _sha256_file(evidence_file),
+        "bounded_evidence_bytes": evidence_file.stat().st_size,
+        "max_evidence_bytes": bounded.get("max_evidence_bytes"),
+        "artifacts": list(bounded.get("artifacts") or []),
+        "protocol_refs": list(bounded.get("protocol_refs") or []),
+        "validation_outcomes": list(bounded.get("validation_outcomes") or []),
+        "controller_stage": {
+            "status": controller.stage(stage_name).get("status"),
+            "gate": controller.stage(stage_name).get("gate"),
+            "attempts": controller.stage(stage_name).get("attempts"),
+            "declared_outputs": list(controller.stage(stage_name).get("outputs") or []),
+        },
+        "primary_evidence_policy": {
+            "primary_evidence_inline": True,
+            "tool_discovery_required": False,
+            "evidence_is_deterministic_summary": True,
+        },
+    }
+    encoded = json.dumps(packet, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    if len(encoded) > MAX_PRODUCER_EVIDENCE_PACKET_BYTES:
+        raise ValueError("ProducerEvidencePacket exceeds 128 KB")
+    packet["packet_bytes"] = len(encoded)
+    return packet
+
+
+def _env_int(name, default):
+    raw = os.environ.get(name)
+    if raw is None or raw == "":
+        return int(default)
+    value = int(raw)
+    if value <= 0:
+        raise ValueError(f"{name} must be positive")
+    return value
+
+
+def producer_context_policy(provider_name, model_id):
+    model = (model_id or "").lower()
+    known_context = {
+        "qwen2.5-7b-instruct": 8192,
+    }
+    default_window = known_context.get(model, DEFAULT_CONTEXT_WINDOW_TOKENS)
+    return {
+        "context_window_tokens": _env_int("PYDANTIC_AI_CONTEXT_WINDOW_TOKENS", default_window),
+        "output_token_reserve": _env_int("PYDANTIC_AI_OUTPUT_TOKEN_RESERVE", DEFAULT_OUTPUT_TOKEN_RESERVE),
+        "prompt_safety_margin_tokens": _env_int("PYDANTIC_AI_PROMPT_SAFETY_MARGIN_TOKENS", DEFAULT_PROMPT_SAFETY_MARGIN_TOKENS),
+        "source": "env" if os.environ.get("PYDANTIC_AI_CONTEXT_WINDOW_TOKENS") else "model-default",
+    }
+
+
+def _estimate_tokens(text):
+    try:
+        import tiktoken
+        return len(tiktoken.get_encoding("cl100k_base").encode(text))
+    except Exception:
+        # Conservative fallback for JSON-heavy prompts when an exact provider tokenizer is absent.
+        return (len(text.encode("utf-8")) + 2) // 3
+
+
+def _producer_context_budget(task, spec, context, budget_policy=None):
+    from .role_outputs import select_output_model
+    from .tool_registry import ReadOnlyToolset
+    prompt = getattr(spec, "prompt", "")
+    if getattr(context, "tools_enabled", True):
+        prompt += "\n\n" + ReadOnlyToolset(context.read_allow_prefixes).context_note()
+    task_text = json.dumps({"task": task}, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
+    schema_text = json.dumps(select_output_model(spec).model_json_schema(), sort_keys=True,
+                             separators=(",", ":"), ensure_ascii=False)
+    components = {
+        "system_prompt_tokens": _estimate_tokens(prompt),
+        "task_tokens": _estimate_tokens(task_text),
+        "output_schema_tokens": _estimate_tokens(schema_text),
+    }
+    budget_policy = budget_policy or {
+        "context_window_tokens": DEFAULT_CONTEXT_WINDOW_TOKENS,
+        "output_token_reserve": DEFAULT_OUTPUT_TOKEN_RESERVE,
+        "prompt_safety_margin_tokens": DEFAULT_PROMPT_SAFETY_MARGIN_TOKENS,
+    }
+    input_tokens = sum(components.values())
+    output_reserve = int(budget_policy.get("output_token_reserve", DEFAULT_OUTPUT_TOKEN_RESERVE))
+    safety_margin = int(budget_policy.get("prompt_safety_margin_tokens", DEFAULT_PROMPT_SAFETY_MARGIN_TOKENS))
+    total = input_tokens + output_reserve + safety_margin
+    window = int(budget_policy.get("context_window_tokens", DEFAULT_CONTEXT_WINDOW_TOKENS))
+    diagnostics = {
+        **components,
+        "estimated_input_tokens": input_tokens,
+        "context_window_tokens": window,
+        "output_token_reserve": output_reserve,
+        "prompt_safety_margin_tokens": safety_margin,
+        "estimated_total_tokens": total,
+        "task_bytes": len(task_text.encode("utf-8")),
+        "producer_evidence_packet_bytes": (task.get("context") or {}).get("producer_evidence_packet", {}).get("packet_bytes"),
+    }
+    return total <= window, diagnostics
+
+
 def _producer_task(stage_name, role, evidence_path, controller, authoritative_proposal,
                    retry_feedback=None):
+    packet = build_producer_evidence_packet(controller, stage_name, evidence_path)
     instruction = (f"Inspect and reason about the authoritative execution proposal for stage {stage_name}. "
+                   "context.producer_evidence_packet is the complete deterministic primary "
+                   "evidence packet; do not discover primary evidence with tools. "
                    "authoritative_action_proposal is immutable execution state. Return exactly the "
                    "same execution-critical binding: copy every execution-critical value exactly, "
                    "preserve relative path strings exactly, preserve ALL parameter keys, preserve "
@@ -334,6 +452,8 @@ def _producer_task(stage_name, role, evidence_path, controller, authoritative_pr
                         "Use the corrective feedback in context.producer_retry_feedback and return "
                         "the COMPLETE authoritative ActionProposal exactly.")
     context = {"stage": stage_name,
+               "primary_evidence_inline": True,
+               "producer_evidence_packet": packet,
                "authoritative_action_proposal": authoritative_proposal,
                "authoritative_parameter_keys": sorted(
                    (authoritative_proposal.get("parameters") or {}).keys()),
@@ -348,9 +468,12 @@ def _producer_task(stage_name, role, evidence_path, controller, authoritative_pr
         "run_id": controller.state["run_id"],
         "created_at": "controller-stage-runner",
         "instruction": instruction,
-        "inputs": [{"role": "bounded_evidence", "path": str(evidence_path)}],
+        "inputs": [],
         "criteria": list(controller.stage(stage_name).get("gate_criteria") or ["stage action is valid"]),
-        "constraints": ["Return exactly one typed ActionProposal; do not run compute directly."],
+        "constraints": [
+            "Primary evidence is already supplied in context.producer_evidence_packet; do not discover it with tools.",
+            "Return exactly one typed ActionProposal; do not run compute directly.",
+        ],
         "context": context,
     }
 
@@ -414,12 +537,25 @@ def _is_authoritative_binding_rejection(result):
 
 
 def _run_producer_with_binding_retries(runtime, task, spec, context, *, controller, registry,
-                                       authoritative_proposal, task_factory):
-    from .production_router import run_role
+                                       authoritative_proposal, task_factory, budget_policy=None):
+    from types import SimpleNamespace
+    from .production_router import RouteResult, run_role
     result = None
     feedback = None
     for attempt in range(1, MAX_PRODUCER_GENERATION_ATTEMPTS + 1):
         current_task = task if feedback is None else task_factory(feedback)
+        budget_ok, diagnostics = _producer_context_budget(current_task, spec, context, budget_policy)
+        if not budget_ok:
+            reason = (f"{PRODUCER_CONTEXT_BUDGET_EXCEEDED}: estimated_total_tokens="
+                      f"{diagnostics['estimated_total_tokens']} context_window_tokens="
+                      f"{diagnostics['context_window_tokens']} output_token_reserve="
+                      f"{diagnostics['output_token_reserve']} prompt_safety_margin_tokens="
+                      f"{diagnostics['prompt_safety_margin_tokens']} estimated_input_tokens="
+                      f"{diagnostics['estimated_input_tokens']} producer_evidence_packet_bytes="
+                      f"{diagnostics.get('producer_evidence_packet_bytes')}")
+            return RouteResult(
+                "producer_dispatch", False, False, reason, Path(""),
+                SimpleNamespace(status="INVALID", reason=reason, diagnostics=diagnostics))
         result = run_role(runtime, current_task, spec, context, controller=controller,
                           registry=registry, mode="primary")
         retryable, reason = _is_authoritative_binding_rejection(result)
@@ -658,7 +794,7 @@ def _cmd_run_stage(args) -> int:
         def ctx_factory(_index, provider_name="mock", model_id="mock"):
             return RuntimeContext(exchange_dir=str(exchange), repo_root=args.repo_root,
                                   provider=provider_name, model_id=model_id,
-                                  read_allow_prefixes=[str(evidence_path.parent), str(c.run_dir)])
+                                  read_allow_prefixes=[], tools_enabled=False)
 
         if args.runtime == "mock":
             response_path = Path(args.mock_response) if args.mock_response else _write_mock_response(
@@ -718,6 +854,7 @@ def _cmd_run_stage(args) -> int:
                 return EXIT_PROVIDER_UNAVAILABLE
 
         ctx = ctx_factory(0, runtime_provider, runtime_model)
+        producer_budget_policy = producer_context_policy(runtime_provider, runtime_model)
         registry = build_executor_registry()
         binding_validator = _proposal_binding_validator(proposal, c)
         for descriptor in registry.values():
@@ -728,7 +865,8 @@ def _cmd_run_stage(args) -> int:
 
         res = _run_producer_with_binding_retries(
             producer_runtime, task, specs[role], ctx, controller=c, registry=registry,
-            authoritative_proposal=proposal, task_factory=producer_task_factory)
+            authoritative_proposal=proposal, task_factory=producer_task_factory,
+            budget_policy=producer_budget_policy)
         status = getattr(res.detail, "status", "")
         if status == "APPROVAL_REQUIRED":
             print(f"APPROVAL_REQUIRED: {proposal.get('approval_boundary') or res.detail.reason}")
