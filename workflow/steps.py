@@ -80,6 +80,277 @@ def _structure_fingerprint(atoms):
                                      separators=(",", ":")).encode()).hexdigest()
 
 
+
+
+def _label_signature(atoms):
+    energy = atoms.info.get("teacher_energy")
+    forces = atoms.arrays.get("teacher_forces")
+    if energy is None or forces is None:
+        raise ValueError("Student distillation frames require teacher_energy and teacher_forces")
+    forces = np.asarray(forces, dtype=float)
+    if not np.isfinite(float(energy)) or not np.all(np.isfinite(forces)):
+        raise ValueError("Student distillation labels must be finite")
+    return float(energy), forces
+
+
+def _source_global_offsets_from_reference(reference_yaml):
+    cfg = yaml.safe_load(Path(reference_yaml).read_text(encoding="utf-8")) or {}
+    rows_path = cfg.get("protected_source_rows_csv")
+    if rows_path is None:
+        index_path = Path(cfg["protected_source_rows_file"]).expanduser().resolve()
+        rows_path = index_path.with_name("protected_source_rows.csv")
+    rows_path = Path(rows_path).expanduser().resolve()
+    import csv
+    raw = {}
+    with rows_path.open(newline="") as handle:
+        for row in csv.DictReader(handle):
+            category = row["category"]
+            raw.setdefault(category, set()).add(
+                int(row["global_index"]) - int(row["source_local_index"])
+            )
+    offsets = {}
+    for category, values in raw.items():
+        if len(values) != 1:
+            raise ValueError(f"ambiguous protected source global-index offset for {category}")
+        offsets[category] = next(iter(values))
+    return offsets
+
+
+def _base_parent_id(atoms, source_offsets):
+    existing = atoms.info.get("parent_structure_id")
+    if existing not in (None, ""):
+        return str(existing)
+    category = atoms.info.get("source_category")
+    local_index = atoms.info.get("source_local_index")
+    if category in (None, "") or local_index in (None, ""):
+        structure_id = atoms.info.get("structure_id")
+        if structure_id in (None, ""):
+            raise ValueError("base Teacher frame lacks source identity for parent_structure_id")
+        return str(structure_id)
+    category = str(category)
+    if category not in source_offsets:
+        raise ValueError(f"no source global-index offset for category {category!r}")
+    try:
+        source_index = source_offsets[category] + int(local_index)
+    except (TypeError, ValueError) as exc:
+        raise ValueError(f"invalid source_local_index for category {category!r}: {local_index!r}") from exc
+    return f"seed-pool:{source_index}"
+
+
+def _require_same_run(path, run_dir, what):
+    resolved = Path(path).resolve()
+    run_root = Path(run_dir).resolve()
+    if run_root not in resolved.parents and resolved != run_root:
+        raise ValueError(
+            f"{what} must be an artifact of the current run ({run_root}); "
+            f"a foreign-run or historical artifact was supplied instead: {resolved}"
+        )
+
+
+def _load_label_manifest(path, run_dir, what):
+    _require_same_run(path, run_dir, what)
+    payload = json.loads(Path(path).read_text(encoding="utf-8"))
+    if payload.get("schema_version") != 1:
+        raise ValueError(f"{what} has an unsupported schema_version")
+    return payload
+
+
+def _require_artifact_matches_label_manifest(dataset_path, label_manifest, what):
+    expected_sha = label_manifest.get("sha256")
+    if not expected_sha:
+        raise ValueError(f"{what} label manifest does not record an output sha256")
+    observed_sha = sha256_file(dataset_path)
+    if observed_sha != expected_sha:
+        raise ValueError(
+            f"{what} dataset content does not match its Teacher-label manifest contract: "
+            f"{observed_sha} != {expected_sha}"
+        )
+
+
+def _require_matching_teacher_binding(base_manifest, augmentation_manifest):
+    binding = {}
+    for field in ("teacher_model_sha256", "teacher_config_sha256"):
+        base_value = base_manifest.get(field)
+        aug_value = augmentation_manifest.get(field)
+        if not base_value or not aug_value:
+            raise ValueError(
+                f"{field} is missing from a Teacher label manifest; exact Teacher binding "
+                "across base and augmentation label sources cannot be proven"
+            )
+        if base_value != aug_value:
+            raise ValueError(
+                f"base and augmentation datasets were labeled by a different Teacher "
+                f"({field}): {base_value} != {aug_value}"
+            )
+        binding[field] = base_value
+    return binding
+
+
+def prepare_student_distillation_dataset(
+    base_dataset,
+    augmentation_dataset,
+    output,
+    manifest,
+    protection_audit,
+    reference_yaml,
+    base_label_manifest,
+    augmentation_label_manifest,
+    run_dir,
+    grouping_key="parent_structure_id",
+    duplicate_policy="deduplicate-identical-labels",
+):
+    """Normalize same-run Teacher labels into the Student distillation dataset.
+
+    ``base_label_manifest``/``augmentation_label_manifest`` are the ``label_with_teacher``
+    provenance manifests for the two label sources (produced by the ``teacher_baseline`` and
+    ``teacher_labeling`` stages of *this* run). They are used to prove three things a plain
+    frame-level merge cannot: the base and augmentation datasets are both same-run artifacts
+    (not a foreign/historical run's already-computed labels), each dataset's bytes actually
+    match what its own manifest claims to have produced, and both label sources were produced
+    by the exact same Teacher model/config/checkpoint.
+    """
+    if duplicate_policy != "deduplicate-identical-labels":
+        raise ValueError("unsupported Student distillation duplicate policy")
+    from validation.protected_reference import (
+        assert_dataset_geometry_disjoint,
+        assert_parent_lineage_allowed,
+        assert_source_indices_allowed,
+        validate_reference_config,
+    )
+
+    output = Path(output)
+    manifest = Path(manifest)
+    protection_audit = Path(protection_audit)
+    source_offsets = _source_global_offsets_from_reference(reference_yaml)
+    protection = validate_reference_config(reference_yaml)
+
+    _require_same_run(base_dataset, run_dir, "base dataset")
+    _require_same_run(augmentation_dataset, run_dir, "augmentation dataset")
+    base_manifest_payload = _load_label_manifest(
+        base_label_manifest, run_dir, "base Teacher-label manifest")
+    augmentation_manifest_payload = _load_label_manifest(
+        augmentation_label_manifest, run_dir, "augmentation Teacher-label manifest")
+    _require_artifact_matches_label_manifest(base_dataset, base_manifest_payload, "base")
+    _require_artifact_matches_label_manifest(
+        augmentation_dataset, augmentation_manifest_payload, "augmentation")
+    teacher_binding = _require_matching_teacher_binding(
+        base_manifest_payload, augmentation_manifest_payload)
+
+    merged = []
+    seen = {}
+    duplicate_count = 0
+    source_records = []
+    for role, raw_path in (("base_teacher_operational", base_dataset),
+                           ("augmentation_teacher_labeled", augmentation_dataset)):
+        path = Path(raw_path).resolve()
+        frames = read(str(path), index=":")
+        accepted = 0
+        for frame_index, atoms in enumerate(frames):
+            energy, forces = _label_signature(atoms)
+            if atoms.info.get("label_source") != "teacher":
+                raise ValueError(f"{role} frame {frame_index} is not marked label_source=teacher")
+            fingerprint = _structure_fingerprint(atoms)
+            if role == "base_teacher_operational":
+                parent_id = _base_parent_id(atoms, source_offsets)
+            else:
+                if grouping_key not in atoms.info:
+                    raise ValueError(
+                        f"augmentation frame {frame_index} is missing {grouping_key!r}"
+                    )
+                parent_id = str(atoms.info[grouping_key])
+            if fingerprint in seen:
+                previous = seen[fingerprint]
+                prev_energy, prev_forces = previous["label"]
+                if (
+                    not np.isclose(prev_energy, energy, rtol=0.0, atol=1e-10)
+                    or not np.allclose(prev_forces, forces, rtol=0.0, atol=1e-10)
+                ):
+                    raise ValueError(
+                        f"conflicting Teacher labels for duplicate geometry in {role} frame {frame_index}"
+                    )
+                duplicate_count += 1
+                continue
+            atoms.info.setdefault("structure_id", f"{role}:{frame_index:08d}")
+            atoms.info["source_structure_id"] = str(atoms.info["structure_id"])
+            atoms.info[grouping_key] = parent_id
+            atoms.info["student_distillation_source"] = role
+            atoms.info["label_source"] = "teacher"
+            atoms.calc = None
+            seen[fingerprint] = {"role": role, "frame_index": frame_index,
+                                 "label": (energy, np.asarray(forces, dtype=float))}
+            merged.append(atoms)
+            accepted += 1
+        source_records.append({
+            "role": role,
+            "path": str(path),
+            "integrity": artifact_digest(path),
+            "n_frames": len(frames),
+            "n_accepted": accepted,
+        })
+
+    if not merged:
+        raise ValueError("Student distillation merge produced no frames")
+
+    output.parent.mkdir(parents=True, exist_ok=True)
+    manifest.parent.mkdir(parents=True, exist_ok=True)
+    protection_audit.parent.mkdir(parents=True, exist_ok=True)
+    tmp_output = output.with_name(output.name + ".tmp.extxyz")
+    tmp_manifest = manifest.with_suffix(manifest.suffix + ".tmp")
+    tmp_audit = protection_audit.with_suffix(protection_audit.suffix + ".tmp")
+    try:
+        write(tmp_output, merged, format="extxyz")
+        assert_dataset_geometry_disjoint(tmp_output, protection["reference_fingerprints"])
+        assert_parent_lineage_allowed(tmp_output, protection["protected_source_indices"])
+        # Every frame's parent_structure_id is guaranteed "seed-pool:<global_index>" at this
+        # point (assert_parent_lineage_allowed above would have raised otherwise), so the
+        # source-index level check can be proven for real instead of stubbed as an empty list.
+        selected_source_indices = sorted({
+            int(str(atoms.info["parent_structure_id"]).split(":", 1)[1]) for atoms in merged
+        })
+        assert_source_indices_allowed(selected_source_indices, protection["protected_source_indices"])
+        result = {
+            "schema_version": 1,
+            "operation": "base-plus-augmentation-student-distillation-merge",
+            "grouping_key": grouping_key,
+            "duplicate_policy": duplicate_policy,
+            "n_frames_pre_dedup": sum(record["n_frames"] for record in source_records),
+            "n_frames": len(merged),
+            "n_exact_duplicates": duplicate_count,
+            "sources": source_records,
+            "output": str(output.resolve()),
+            "output_integrity": artifact_digest(tmp_output),
+            "teacher_label_contract": {
+                "energy_key": "teacher_energy",
+                "forces_key": "teacher_forces",
+                "energy_unit": "eV",
+                "force_unit": "eV/Angstrom",
+            },
+            "same_run_verified": True,
+            "run_dir": str(Path(run_dir).resolve()),
+            "teacher_binding": teacher_binding,
+        }
+        tmp_manifest.write_text(json.dumps(result, indent=2) + "\n", encoding="utf-8")
+        audit = {
+            "schema_version": 1,
+            "stage": "dataset_split",
+            "selected_source_indices": selected_source_indices,
+            "datasets": [{"role": "student_distillation_merged", "path": str(output.resolve())}],
+            "checks": {
+                "protected_source_indices": "PASS",
+                "protected_logical_geometries": "PASS",
+                "protected_parent_lineage": "PASS",
+            },
+        }
+        tmp_audit.write_text(json.dumps(audit, indent=2) + "\n", encoding="utf-8")
+        tmp_output.replace(output)
+        tmp_manifest.replace(manifest)
+        tmp_audit.replace(protection_audit)
+        return result
+    finally:
+        for path in (tmp_output, tmp_manifest, tmp_audit):
+            if path.exists():
+                path.unlink()
+
 def merge_datasets(sources, output, manifest, grouping_key="parent_structure_id",
                    duplicate_policy="error"):
     """Merge acquisition outputs while preserving lineage and recording schemas.

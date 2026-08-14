@@ -114,6 +114,7 @@ def _default_stage_route(stage_name):
         "reference_validation": ("simulation", "validate_teacher_reference", "costly_teacher_labeling"),
         "acquisition": ("data-curator", "acquire_structures", "costly_teacher_labeling"),
         "teacher_labeling": ("data-curator", "label_with_teacher", "costly_teacher_labeling"),
+        "dataset_split": ("data-curator", "generate_group_split", None),
         "training": ("ml-trainer", "train_committee", "costly_training"),
         "evaluation": ("ml-trainer", "evaluate_heldout_fidelity", None),
         "teacher_md": ("simulation", "run_teacher_md", "production_md"),

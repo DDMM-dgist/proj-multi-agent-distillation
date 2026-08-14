@@ -80,13 +80,86 @@ def _exec_committee_disagreement(proposal):
 
 
 def _exec_generate_group_split(proposal):
-    from workflow.steps import split_dataset
+    from workflow.steps import prepare_student_distillation_dataset, split_dataset
+    from workflow.integrity import artifact_digest
     p = _params(proposal)
-    manifest = split_dataset(p["dataset"], p["output_dir"], p["manifest"],
-                             seed=int(p.get("seed", 2026)),
-                             validation_fraction=float(p.get("validation_fraction", 0.1)))
-    return {"path": p["manifest"], "manifest": manifest,
-            "sha256": manifest.get("integrity", {}).get("sha256", "")}
+    dataset = p["dataset"]
+    merge_manifest = None
+    protection_audit = p.get("protection_audit_path")
+    generated = []
+    try:
+        if p.get("base_dataset") or p.get("augmentation_dataset"):
+            required = ["base_dataset", "augmentation_dataset", "merged_dataset",
+                        "merge_manifest", "protection_audit_path", "reference_yaml",
+                        "base_label_manifest", "augmentation_label_manifest", "run_dir"]
+            missing = [key for key in required if not p.get(key)]
+            if missing:
+                raise ValueError("base-plus-augmentation dataset route missing: " + ", ".join(missing))
+            merge_manifest = prepare_student_distillation_dataset(
+                p["base_dataset"], p["augmentation_dataset"], p["merged_dataset"],
+                p["merge_manifest"], p["protection_audit_path"], p["reference_yaml"],
+                p["base_label_manifest"], p["augmentation_label_manifest"], p["run_dir"],
+                grouping_key=p.get("grouping_key", "parent_structure_id"),
+                duplicate_policy=p.get("duplicate_policy", "deduplicate-identical-labels"),
+            )
+            dataset = p["merged_dataset"]
+            generated.extend([p["merged_dataset"], p["merge_manifest"], p["protection_audit_path"]])
+        manifest = split_dataset(dataset, p["output_dir"], p["manifest"],
+                                 seed=int(p.get("seed", 2026)),
+                                 validation_fraction=float(p.get("validation_fraction", 0.1)),
+                                 test_fraction=float(p.get("test_fraction", 0.1)),
+                                 grouping_key=p.get("grouping_key", "parent_structure_id"),
+                                 allow_unique_parent_fallback=bool(p.get("allow_unique_parent_fallback", False)))
+        generated.extend([p["manifest"], *(record["path"] for record in manifest.get("splits", {}).values())])
+        if protection_audit and p.get("reference_yaml"):
+            from ase.io import read as _read_frames
+            from validation.protected_reference import (
+                assert_dataset_geometry_disjoint,
+                assert_parent_lineage_allowed,
+                assert_source_indices_allowed,
+                validate_reference_config,
+            )
+            protection = validate_reference_config(p["reference_yaml"])
+            split_records = sorted(manifest.get("splits", {}).items())
+            selected_source_indices = set()
+            for _, record in split_records:
+                split_path = record["path"]
+                assert_dataset_geometry_disjoint(split_path, protection["reference_fingerprints"])
+                assert_parent_lineage_allowed(split_path, protection["protected_source_indices"])
+                for atoms in _read_frames(str(split_path), index=":"):
+                    parent = str(atoms.info["parent_structure_id"])
+                    selected_source_indices.add(int(parent.split(":", 1)[1]))
+            selected_source_indices = sorted(selected_source_indices)
+            assert_source_indices_allowed(selected_source_indices, protection["protected_source_indices"])
+            audit = {
+                "schema_version": 1,
+                "stage": "dataset_split",
+                "selected_source_indices": selected_source_indices,
+                "datasets": [
+                    {"role": name, "path": record["path"]}
+                    for name, record in split_records
+                ],
+                "checks": {
+                    "protected_source_indices": "PASS",
+                    "protected_logical_geometries": "PASS",
+                    "protected_parent_lineage": "PASS",
+                },
+            }
+            Path(protection_audit).parent.mkdir(parents=True, exist_ok=True)
+            Path(protection_audit).write_text(json.dumps(audit, indent=2) + "\n", encoding="utf-8")
+        return {"path": p["manifest"], "manifest": manifest,
+                "integrity": artifact_digest(p["manifest"]),
+                "merge_manifest": merge_manifest,
+                "protection_audit_path": protection_audit}
+    except Exception:
+        for raw in generated:
+            try:
+                path = Path(raw)
+                if path.exists() and path.is_file():
+                    path.unlink()
+            except Exception:
+                pass
+        raise
 
 
 def _exec_compute_rdf(proposal):
