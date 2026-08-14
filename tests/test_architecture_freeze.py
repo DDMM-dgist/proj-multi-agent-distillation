@@ -23,6 +23,12 @@ audit found in v10: contract establishment was still an optional, manual CLI ste
 actually stopped a real run from executing Teacher-side scientific stages before the target
 contract existed. v11 deliberately re-froze workflow/controller.py again for the same reason as
 v10 — see FREEZE_REVISION below for exactly what changed and what deliberately did not.
+
+v12 (recovery-taxonomy-and-capability-unification) COMPLETES the existing recovery state
+machine (Gate failure -> pending recovery -> recovery proposal/approval -> iteration ->
+invalidation/re-entry -> verified execution -> revalidation -> same-stage Gate -> recovery
+resolution) rather than replacing it — see FREEZE_REVISION below for exactly what changed and
+what deliberately did not.
 """
 from __future__ import annotations
 
@@ -79,7 +85,106 @@ FREEZE_REVISION = (
     "workflow.contracts.build_validation_contract_components instead of duplicating the "
     "domain-equality/component-building logic inline — a pure refactor with no behavior change, "
     "verified by the pre-existing test suite. No role/action-set/Judge/schema_version change; "
-    "schema_version remains 8)"
+    "schema_version remains 8); "
+    "v12 (recovery-taxonomy-and-capability-unification; schema_version bumped 8->9) COMPLETES "
+    "the existing recovery state machine rather than replacing it -- the deterministic path "
+    "(record_gate REVISE/FAIL -> pending_recovery -> propose_recovery -> approve_recovery -> "
+    "start_iteration -> verify_recovery_execution -> record_gate PASS on the same stage -> "
+    "recovery resolved) is UNCHANGED end to end. What changed: (1) RECOVERY_CATEGORIES is now "
+    "DERIVED from the new workflow.recovery_taxonomy module's registered failure_code registry "
+    "(a superset of the original 8 hardcoded values) instead of being its own independent fixed "
+    "set, and propose_recovery resolves a submitted failure_category against the LIVE registry "
+    "(recovery_taxonomy.resolve_failure_code), not a frozen snapshot, so this is the single "
+    "shared vocabulary runtimes.pydantic_ai.root_cause.RootCauseClassification.failure_category "
+    "also resolves against -- every one of the original 8 values remains registered, so every "
+    "historical plan's failure_category still validates identically; an optional failure_domain "
+    "plan field is cross-checked against the registry if supplied, never required. (2) "
+    "responsible_agent routing gained an OPTIONAL, additive responsible_capability path: "
+    "RunController.initialize() accepts an optional top-level recovery_capability_roster mapping "
+    "(capability -> role) for this run only; DEFAULT_RECOVERY_CAPABILITY_ROSTER's value-set is "
+    "exactly the original fixed RECOVERY_AGENTS tuple, so a plan supplying only "
+    "responsible_agent (every historical plan) validates exactly as before via the same "
+    "membership check against the roster's value-set; a plan may instead supply "
+    "responsible_capability, resolved through the roster, with responsible_agent (if also "
+    "present) cross-checked for consistency. (3) propose_recovery gained OPTIONAL plan fields -- "
+    "diagnosis_binding (hash-verified diagnosis artifact + triggering-evidence provenance, fails "
+    "closed on a missing/mismatched hash if present), required_input_artifact_roles / "
+    "expected_output_artifact_roles (cross-checked against a new optional run-declared "
+    "protected_reference_roles list; a plan may not route a protected-reference role into a "
+    "training/acquisition input or output without a separate, explicit, human-approved "
+    "protected_reference_reuse_authorization {authorized_by, rationale} on that same plan), and "
+    "escalation_acknowledged/escalation_rationale -- every one is a no-op for a plan that omits "
+    "it. (4) every proposed recovery now always gets a deterministic recovery_signature (hash of "
+    "trigger evidence + failure_category + return_stage + corrective-action types) recorded on "
+    "it (additive record field, never a required input); an OPTIONAL run-level recovery_policy "
+    "mapping (max_recovery_attempts, allowed_action_types, cumulative_budget, "
+    "max_repeated_signature) is enforced by propose_recovery ONLY when present -- no default "
+    "retry count or budget is invented when it is absent, matching every existing "
+    "run/workflow.yaml exactly. (5) two new methods, authorize_recovery_capabilities and "
+    "verify_recovery_authorization, add an explicit, human-approval-created, hash-bound "
+    "RecoveryAuthorizationEnvelope scoped to the CURRENT activated recovery iteration; "
+    "approve_recovery (unchanged) still only approves the recovery PLAN and never authorizes a "
+    "costly child action by itself -- authorize_recovery_capabilities is a separate, explicit "
+    "call, and verify_recovery_authorization returning None means \"no envelope covers this "
+    "action\", not \"this action is forbidden\": a dispatcher must still fall back to the run's "
+    "unweakened normal per-action APPROVAL_GATED_ACTIONS requirement in that case. (6) that "
+    "dispatcher contract is now actually wired: runtimes.pydantic_ai.dispatch.authorize_and_"
+    "execute gained an OPTIONAL recovery_authorization parameter consulted ONLY at the point an "
+    "approval-gated action already lacks a normal per-action approval record, as one additional "
+    "narrower alternative -- a run/call that never passes recovery_authorization (every existing "
+    "caller before this revision) behaves identically to before; runtimes.pydantic_ai."
+    "controller_bridge (frozen) gained a ControllerRecoveryAuthorizationStore delegating straight "
+    "to verify_recovery_authorization, wired into dispatch_via_controller, so a costly child "
+    "action proposed through the controller bridge during an activated recovery iteration gets "
+    "exactly one extra, narrower chance to be authorized via that iteration's "
+    "RecoveryAuthorizationEnvelope before APPROVAL_REQUIRED is returned; the resulting "
+    "ActionOutcome gained an additive recovery_authorization_envelope_sha256 field (audit-only, "
+    "None unless an envelope was actually used). dispatch.py is not itself a frozen file; only "
+    "controller_bridge.py's hash changes for this sub-revision. No stage, "
+    "gate, adjudication, artifact-integrity, or Judge-vote semantics changed; no role/action-set/"
+    "Judge change) (7) RunController._validate_protected_reference_roles (called from "
+    "propose_recovery) gained one additive check: beyond the existing top-level "
+    "required_input_artifact_roles/expected_output_artifact_roles scan, it now also unions in "
+    "any `artifact_roles` list found on each of the plan's own proposed_changes entries (e.g. "
+    "runtimes.pydantic_ai.acquisition_targeting.AcquisitionTargetProposal/DataRepairProposal's "
+    "own artifact-role declarations, new this revision) before checking against the run's "
+    "protected_reference_roles -- closing the gap where a protected-reference role named only "
+    "inside one typed proposed_changes entry, never lifted into the plan's own top-level role "
+    "lists, would otherwise bypass the v12 check entirely. This assumes no particular "
+    "proposed_changes shape/kind (any dict with an `artifact_roles` key is scanned) and requires "
+    "the exact same protected_reference_reuse_authorization override as before; a plan whose "
+    "proposed_changes never declare artifact_roles (every existing plan before this revision) "
+    "behaves identically to v12. No other method changed) (8) "
+    "recovery-proposal-approval-authority-separation: propose_recovery now requires a NEW plan "
+    "field, proposed_by (a bare human display-name string, or a structured "
+    "{actor_kind: human|agent|system, canonical_id, display_name?} mapping -- see the new, "
+    "unfrozen workflow/actor_identity.py module), and records the resolved ActorIdentity onto "
+    "the recovery record; a plan omitting it is rejected exactly like any other required field "
+    "(root_cause, return_stage) -- this closes a real gap, since propose_recovery accepts a raw "
+    "plan dict directly from disk and a hand-authored plan.json was never required to route "
+    "through any agent-facing bridge, so the requirement is enforced here, not only in "
+    "runtimes.pydantic_ai.recovery_bridge.RecoveryPlanDraft (which also gained the same "
+    "required proposed_by field, passed through build_recovery_plan_draft, purely additively). "
+    "approve_recovery now enforces two invariants, both fail-closed and neither previously "
+    "implemented: the resolved approved_by actor_kind must be \"human\" (an automated Agent/"
+    "System actor can never satisfy human approval, regardless of what identity it supplies), "
+    "and -- only if the recovery has a recorded proposed_by -- the approver's canonical_id "
+    "(whitespace/case-normalized via ActorIdentity, never a raw string ==) must differ from the "
+    "proposer's; a recovery record with no recorded proposed_by (a historical manifest that "
+    "predates this revision) skips only the second check, never the first, so it can never "
+    "become silently self-approved merely by lacking a proposer. authorize_recovery_capabilities "
+    "gained the identical pair of checks against the same recorded proposed_by, independently of "
+    "approve_recovery's own check, so a RecoveryAuthorizationEnvelope can never be self-issued by "
+    "the original proposing actor even after a different human has validly approved the "
+    "recovery. Both human_approval.approved_by and each authorization envelope's authorized_by "
+    "now store the resolved {actor_kind, canonical_id, display_name} dict (previously a bare "
+    "string) -- an additive record-shape change only; every existing call site (approve_recovery/"
+    "authorize_recovery_capabilities' own positional argument, the CLI's --approved-by/"
+    "--authorized-by) still accepts a plain string unchanged. No permissive same-human "
+    "propose+approve mode exists anywhere in this framework, and none was introduced. "
+    "start_iteration, verify_recovery_execution, the recovery state machine's stage sequencing, "
+    "and every other method are UNCHANGED; the normal per-action approval mechanism (grant_"
+    "action_approval/has_action_approval) is entirely separate machinery and was not touched.)"
 )
 FROZEN_MODEL = "qwen2.5-7b-instruct"
 
@@ -105,11 +210,11 @@ FROZEN = {
     "runtimes/pydantic_ai/actions.py":
         "c63f8d42bf208f87c2b7d220264e27556fd3ce79ac5d48c13becb0557c66c141",
     "runtimes/pydantic_ai/controller_bridge.py":
-        "3eb11b9075bd25d5b45f09fc9d0b7c0c65f032c1293bd5e38f754fa26b752100",
+        "e423a05981463b21b766b7b77d71f790aa3aedb60a3a85833e324089568bd46c",
     "orchestration/specs.py":
         "4b6dc829fe2b6b594cc87e8a62bd944ea9df181cd7f420ae3732c861ce8e43cb",
     "workflow/controller.py":
-        "5832123d9fb1ce235cb705bb551bd56598e3a9655a9dbecc2c8dc0bec89ab851",
+        "0d5e9ed9e96c9557fa0697d739abccc3bb4fadd75e5b8907e943809b57473cee",
     "orchestration/schema/agent_result.schema.json":
         "a38afea9c06c21e647376efd835dec32a16b2f247583a090560cb1843e0eda31",
     "orchestration/schema/agent_spec.schema.json":

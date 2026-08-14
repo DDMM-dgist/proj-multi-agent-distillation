@@ -377,7 +377,7 @@ class RecoveryPreservesContractTests(unittest.TestCase):
 
             plan = root / "recovery-plan.json"
             plan.write_text(json.dumps({
-                "schema_version": 1, "failed_stage": "evaluation",
+                "schema_version": 1, "proposed_by": "automation", "failed_stage": "evaluation",
                 "failure_category": "student_fidelity",
                 "root_cause": "teacher baseline needs to be regenerated deterministically",
                 "responsible_agent": "simulation", "return_stage": "teacher_baseline",

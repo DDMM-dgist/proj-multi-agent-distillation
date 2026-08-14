@@ -9,20 +9,37 @@ classify_root_cause is NOT a deterministic executor — it is the Analyst's type
 The classification is evidence-bound: every cited artifact must exist. It cannot change a Judge
 verdict or mutate controller stage state (it carries no such fields and the validator touches no
 controller state).
+
+``failure_category`` is a registered ``failure_code`` from ``workflow.recovery_taxonomy`` — the
+same shared registry ``workflow.controller.RECOVERY_CATEGORIES`` resolves against — rather than a
+locally-declared ``Literal``. This is what lets diagnosis (this module) and recovery
+(``workflow.controller.propose_recovery``) share one vocabulary instead of two independently
+maintained category sets: an unregistered string fails closed here exactly as it does in the
+controller. ``failure_domain`` is never supplied by a caller; it is always derived from
+``failure_category`` via ``workflow.recovery_taxonomy.domain_of`` so the two can never disagree.
 """
 from __future__ import annotations
 
-from typing import Literal, Optional
+from typing import Optional
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator, model_validator
+
+from workflow import recovery_taxonomy
 
 from .models import EvidenceReference, NonEmptyStr
 
-FailureCategory = Literal[
-    "data_coverage", "lineage_or_leakage", "teacher_applicability", "student_fidelity",
-    "training_instability", "simulation_instability", "structural_invalidity",
-    "reference_disagreement", "missing_evidence", "operational_failure", "unknown",
-]
+# A registered failure_code (see workflow.recovery_taxonomy) — validated dynamically against the
+# shared registry rather than pinned to a fixed Literal, so new campaigns can register additional
+# codes without editing this module.
+FailureCategory = str
+
+
+def _resolve_or_raise(value: str) -> str:
+    try:
+        recovery_taxonomy.resolve_failure_code(value)
+    except KeyError as exc:
+        raise ValueError(str(exc)) from exc
+    return value
 
 
 class RootCauseClassification(BaseModel):
@@ -30,6 +47,7 @@ class RootCauseClassification(BaseModel):
     run_id: NonEmptyStr
     stage: NonEmptyStr
     failure_category: FailureCategory
+    failure_domain: str = ""
     affected_channel: str = ""
     affected_artifact_refs: list[EvidenceReference] = Field(default_factory=list)
     evidence_refs: list[EvidenceReference] = Field(default_factory=list)
@@ -41,15 +59,38 @@ class RootCauseClassification(BaseModel):
     recommended_next_action: NonEmptyStr
     requires_human_approval: bool = True
 
+    @field_validator("failure_category")
+    @classmethod
+    def _check_failure_category(cls, value):
+        return _resolve_or_raise(value)
+
+    @model_validator(mode="after")
+    def _bind_failure_domain(self):
+        # Always derived, never trusted from the caller: this is what makes failure_domain
+        # incapable of drifting from the registered failure_category.
+        self.failure_domain = recovery_taxonomy.domain_of(self.failure_category)
+        return self
+
 
 class RecoveryRecommendation(BaseModel):
     model_config = {"extra": "forbid"}
     run_id: NonEmptyStr
     target_stage: NonEmptyStr
     failure_category: FailureCategory
+    failure_domain: str = ""
     actions: list[NonEmptyStr] = Field(default_factory=list)
     rationale: NonEmptyStr
     requires_human_approval: bool = True
+
+    @field_validator("failure_category")
+    @classmethod
+    def _check_failure_category(cls, value):
+        return _resolve_or_raise(value)
+
+    @model_validator(mode="after")
+    def _bind_failure_domain(self):
+        self.failure_domain = recovery_taxonomy.domain_of(self.failure_category)
+        return self
 
 
 class RootCauseValidationError(ValueError):

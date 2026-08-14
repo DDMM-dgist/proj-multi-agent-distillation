@@ -37,6 +37,10 @@ class ActionOutcome(BaseModel):
     idempotency_key: str = ""
     executor: str = ""
     artifact: Optional[dict] = None
+    # Set only when an approval-gated action was authorized via a RecoveryAuthorizationEnvelope
+    # (workflow.controller.verify_recovery_authorization) instead of a normal per-action approval
+    # record -- present for audit/traceability, never itself a source of authorization.
+    recovery_authorization_envelope_sha256: Optional[str] = None
 
     @property
     def executed(self) -> bool:
@@ -92,6 +96,28 @@ def _get(proposal, name: str, default=None):
     return getattr(proposal, name, default)
 
 
+def _artifact_roles(proposal) -> list:
+    """Roles of the proposal's declared input artifacts (for RecoveryAuthorizationEnvelope
+    artifact-role matching). Never invents a role for an artifact that doesn't declare one."""
+    roles = []
+    for item in (_get(proposal, "input_artifacts", []) or []):
+        role = item.role if isinstance(item, BaseModel) else (
+            item.get("role") if isinstance(item, dict) else None)
+        if role:
+            roles.append(role)
+    return roles
+
+
+def _resource_usage(proposal) -> Optional[dict]:
+    """An agent-declared ``parameters.resource_usage`` dict, or None. Never estimated on the
+    agent's behalf -- a proposal that omits it simply cannot be checked against resource limits
+    (see workflow.controller.verify_recovery_authorization, which then trivially passes that
+    check rather than fail closed on an absence this module cannot honestly fill in)."""
+    params = _get(proposal, "parameters", {}) or {}
+    usage = params.get("resource_usage") if isinstance(params, dict) else None
+    return usage if isinstance(usage, dict) else None
+
+
 def default_registry() -> dict:
     """A registry entry for every in-scope role action, with approval boundaries wired but NO
     inline executor (dry-run by default). The trusted-executor wiring to controller/adapters is
@@ -107,9 +133,21 @@ def default_registry() -> dict:
 
 
 def authorize_and_execute(proposal, *, registry: dict, approvals, idempotency,
-                          mode: str = "dry_run", manifest_lookup=manifest_for) -> ActionOutcome:
+                          mode: str = "dry_run", manifest_lookup=manifest_for,
+                          recovery_authorization=None) -> ActionOutcome:
     """Run the full enforcement pipeline for one proposed action. ``mode`` in
-    {"dry_run","validate_only","primary"}; only "primary" runs a real executor."""
+    {"dry_run","validate_only","primary"}; only "primary" runs a real executor.
+
+    ``recovery_authorization``, if given, is a duck-typed object with a
+    ``verify(*, action_type, capability=None, artifact_roles=None, resource_usage=None)`` method
+    (see ``controller_bridge.ControllerRecoveryAuthorizationStore``, which delegates to
+    ``workflow.controller.RunController.verify_recovery_authorization``). It is consulted ONLY
+    when an approval-gated action lacks a normal per-action approval record, as an ADDITIONAL,
+    narrower alternative path -- never a replacement for or weakening of
+    ``APPROVAL_GATED_ACTIONS``: an action with no approval boundary is unaffected, and one with a
+    boundary still requires either a normal approval or a matching envelope, exactly as before if
+    ``recovery_authorization`` is omitted or returns no match.
+    """
     role = _get(proposal, "requested_by_role", "")
     action = _get(proposal, "action_type", "")
     key = _get(proposal, "idempotency_key", "") or ""
@@ -151,10 +189,16 @@ def authorize_and_execute(proposal, *, registry: dict, approvals, idempotency,
             plan_sha256 = acquisition_plan_sha256_from_proposal(proposal)
         except Exception as exc:  # noqa: BLE001 - fail closed before approval/idempotency/executor
             return out("INVALID", f"PLAN_INPUT_REQUIRED: {exc}")
+    envelope_sha256 = None
     if desc.approval_boundary and not approvals.has_approval(
             run_id, desc.approval_boundary, key, plan_sha256=plan_sha256):
-        suffix = f" plan_sha256={plan_sha256}" if plan_sha256 else ""
-        return out("APPROVAL_REQUIRED", f"action requires approval: {desc.approval_boundary}{suffix}")
+        if recovery_authorization is not None:
+            envelope_sha256 = recovery_authorization.verify(
+                action_type=action, artifact_roles=_artifact_roles(proposal),
+                resource_usage=_resource_usage(proposal))
+        if envelope_sha256 is None:
+            suffix = f" plan_sha256={plan_sha256}" if plan_sha256 else ""
+            return out("APPROVAL_REQUIRED", f"action requires approval: {desc.approval_boundary}{suffix}")
 
     # (5) typed parameter + artifact/hash check
     if desc.param_validator is not None:
@@ -172,7 +216,8 @@ def authorize_and_execute(proposal, *, registry: dict, approvals, idempotency,
     if mode != "primary" or desc.executor is None:
         # A dry-run/validate-only never consumes the idempotency key (no real side effect).
         return out("DRY_RUN", "dry-run: validated, no side effects",
-                   executor=(desc.executor.__name__ if desc.executor else "none"))
+                   executor=(desc.executor.__name__ if desc.executor else "none"),
+                   recovery_authorization_envelope_sha256=envelope_sha256)
     try:
         artifact = desc.executor(proposal)
     except Exception as exc:  # noqa: BLE001 - executor/validator failure is fail-closed
@@ -180,7 +225,8 @@ def authorize_and_execute(proposal, *, registry: dict, approvals, idempotency,
         # artifact. INVALID for a validation failure, EXECUTOR_ERROR otherwise. Key not consumed.
         status = "INVALID" if type(exc).__name__ == "_ValidationFailure" else "EXECUTOR_ERROR"
         return out(status, f"{type(exc).__name__}: {exc}")
-    outcome = out("EXECUTED", executor=desc.executor.__name__, artifact=artifact)
+    outcome = out("EXECUTED", executor=desc.executor.__name__, artifact=artifact,
+                 recovery_authorization_envelope_sha256=envelope_sha256)
     if key:
         idempotency.record(key, outcome)  # only real executions consume the key
     return outcome

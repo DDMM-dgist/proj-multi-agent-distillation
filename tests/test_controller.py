@@ -507,7 +507,7 @@ class RunControllerTests(unittest.TestCase):
             self.assertEqual(controller.state["pending_recovery"]["status"], "required")
             plan = root / "recovery-plan.json"
             plan.write_text(json.dumps({
-                "schema_version": 1, "failed_stage": "validation",
+                "schema_version": 1, "proposed_by": "automation", "failed_stage": "validation",
                 "failure_category": "evidence_gap", "root_cause": "needs new evidence",
                 "responsible_agent": "analyst", "return_stage": "validation",
                 "proposed_changes": [{"type": "clarify_scope"}],
@@ -558,7 +558,7 @@ class RunControllerTests(unittest.TestCase):
 
             plan = root / "recovery-plan.json"
             plan.write_text(json.dumps({
-                "schema_version": 1, "failed_stage": "validation",
+                "schema_version": 1, "proposed_by": "automation", "failed_stage": "validation",
                 "failure_category": "dataset_coverage",
                 "root_cause": "deployment liquid configurations are missing",
                 "responsible_agent": "data-curator", "return_stage": "data",
@@ -627,7 +627,7 @@ class RunControllerTests(unittest.TestCase):
             controller.record_gate("validation", "FAIL")
             plan = root / "plan.json"
             plan.write_text(json.dumps({
-                "schema_version": 1, "failed_stage": "validation",
+                "schema_version": 1, "proposed_by": "automation", "failed_stage": "validation",
                 "failure_category": "physical_validation", "root_cause": "unstable",
                 "responsible_agent": "simulation", "return_stage": "validation",
                 "proposed_changes": [{"type": "fix_protocol"}],
@@ -657,7 +657,7 @@ class RunControllerTests(unittest.TestCase):
             controller.record_gate("validation", "REVISE")
             plan = root / "plan.json"
             plan.write_text(json.dumps({
-                "schema_version": 1, "failed_stage": "validation",
+                "schema_version": 1, "proposed_by": "automation", "failed_stage": "validation",
                 "failure_category": "physical_validation", "root_cause": "revise protocol",
                 "responsible_agent": "simulation", "return_stage": "validation",
                 "proposed_changes": [{"type": "fix_protocol"}],

@@ -47,14 +47,34 @@ class ControllerIdempotencyStore:
                               artifact_ref=artifact_ref)
 
 
+class ControllerRecoveryAuthorizationStore:
+    """RecoveryAuthorizationEnvelope check backed by the controller's own
+    verify_recovery_authorization -- an ADDITIONAL, narrower pre-check dispatch.py consults only
+    when a normal per-action approval is absent; it never replaces or weakens
+    APPROVAL_GATED_ACTIONS (see workflow.controller.verify_recovery_authorization's docstring)."""
+    def __init__(self, controller):
+        self._c = controller
+
+    def verify(self, *, action_type, capability=None, artifact_roles=None, resource_usage=None):
+        return self._c.verify_recovery_authorization(
+            action_type=action_type, capability=capability,
+            artifact_roles=artifact_roles, resource_usage=resource_usage)
+
+
 def dispatch_via_controller(proposal, *, controller, registry=None, mode="dry_run"):
     """Authorize + (optionally) execute a proposed action with controller-backed approval and
     idempotency. Returns the ActionOutcome. Heavy compute runs only inside a registered trusted
     executor, only in mode='primary', and only after every enforcement check passes.
+
+    A costly child action lacking a normal per-action approval is given one additional, narrower
+    chance to be authorized via the current activated recovery iteration's
+    RecoveryAuthorizationEnvelope (if any) -- never a substitute for approval on a run with no
+    active recovery, and never a way to widen what an envelope itself was scoped to permit.
     """
     registry = registry if registry is not None else default_registry()
     outcome = authorize_and_execute(
         proposal, registry=registry,
         approvals=ControllerApprovalStore(controller),
-        idempotency=ControllerIdempotencyStore(controller), mode=mode)
+        idempotency=ControllerIdempotencyStore(controller),
+        recovery_authorization=ControllerRecoveryAuthorizationStore(controller), mode=mode)
     return outcome

@@ -38,8 +38,11 @@ def _write_run(d: Path, state) -> Path:
 
 
 class SchemaVersionTests(unittest.TestCase):
-    def test_new_runs_target_is_eight(self):
-        self.assertEqual(SCHEMA_VERSION, 8)
+    def test_new_runs_target_is_nine(self):
+        # v9 additively carries the recovery taxonomy/policy/capability-roster fields
+        # (workflow.recovery_taxonomy, recovery_policy, recovery_signature) introduced
+        # alongside the frozen-architecture v12 revision; see test_architecture_freeze.py.
+        self.assertEqual(SCHEMA_VERSION, 9)
 
     def test_v6_manifest_loads_and_stays_v6_on_disk(self):
         with tempfile.TemporaryDirectory() as tmp:

@@ -4,12 +4,38 @@ from __future__ import annotations
 import json
 from collections import Counter
 from pathlib import Path
-from typing import Iterable
+from typing import Callable, Iterable
 
 from workflow.integrity import artifact_digest, sha256_file
 
 MAX_EVIDENCE_BYTES = 256 * 1024
 DIRECT_JUDGE_ARTIFACT_BYTES = 1_000_000
+
+# --- Extensible JSON-evidence adapter registry -------------------------------------------------
+#
+# `_json_summary` never grows a new campaign-specific `if payload.get(...) == "<name>":` branch.
+# Instead each adapter is a (summary_key, predicate, summarizer) triple: `predicate(payload)`
+# decides -- generically, off the payload's own declared shape (a "profile" field, or a
+# required-key signature) -- whether the adapter applies; `summarizer(payload)` then produces the
+# semantic sub-summary nested under `summary[summary_key]`. New evidence kinds (e.g. a future
+# coverage direction, a new report profile) register an adapter; they never edit this dispatch.
+_JsonEvidencePredicate = Callable[[dict], bool]
+_JsonEvidenceSummarizer = Callable[[dict], dict]
+_JSON_EVIDENCE_ADAPTERS: list[tuple[str, _JsonEvidencePredicate, _JsonEvidenceSummarizer]] = []
+
+
+def register_json_evidence_adapter(
+    summary_key: str, predicate: _JsonEvidencePredicate, summarizer: _JsonEvidenceSummarizer,
+) -> None:
+    """Register an extensible bounded-evidence adapter for `.json` artifacts.
+
+    `predicate(payload) -> bool` must decide applicability generically (a self-declared
+    "profile" field, or a required-key signature) -- never a campaign/dataset name. `summarizer
+    (payload) -> dict` must return only bounded, semantic, human/agent-facing fields (descriptive
+    counts, fractions, distributions, identities, provenance hashes, limitations) -- never raw
+    vectors, index/backend objects, or representation/search-backend parameter internals.
+    """
+    _JSON_EVIDENCE_ADAPTERS.append((summary_key, predicate, summarizer))
 
 
 def _frame_summary(path: Path) -> dict:
@@ -74,22 +100,25 @@ def _json_summary(path: Path) -> dict:
             "n_models": len(payload.get("models", []))
             if isinstance(payload.get("models"), list) else None,
         }
-        if payload.get("profile") == "teacher_baseline":
-            summary["teacher_baseline"] = _teacher_baseline_report_summary(payload)
-        if {"teacher_model_sha256", "source_sha256", "n_frames"} & set(payload):
-            summary["label_manifest"] = {
-                "n_frames": payload.get("n_frames"),
-                "labels": payload.get("labels"),
-                "teacher_model_sha256": payload.get("teacher_model_sha256"),
-                "teacher_config_sha256": payload.get("teacher_config_sha256"),
-                "source_sha256": payload.get("source_sha256"),
-                "output_sha256": payload.get("sha256"),
-                "environment": payload.get("environment"),
-            }
+        for summary_key, predicate, summarizer in _JSON_EVIDENCE_ADAPTERS:
+            if predicate(payload):
+                summary[summary_key] = summarizer(payload)
         return summary
     if isinstance(payload, list):
         return {"json_type": "list", "length": len(payload)}
     return {"json_type": type(payload).__name__}
+
+
+def _label_manifest_summary(payload: dict) -> dict:
+    return {
+        "n_frames": payload.get("n_frames"),
+        "labels": payload.get("labels"),
+        "teacher_model_sha256": payload.get("teacher_model_sha256"),
+        "teacher_config_sha256": payload.get("teacher_config_sha256"),
+        "source_sha256": payload.get("source_sha256"),
+        "output_sha256": payload.get("sha256"),
+        "environment": payload.get("environment"),
+    }
 
 
 def _teacher_baseline_report_summary(payload: dict) -> dict:
@@ -135,6 +164,92 @@ def _teacher_baseline_report_summary(payload: dict) -> dict:
         "fresh_label_output_integrity": details.get("fresh_label_output_integrity"),
         "fresh_label_manifest_integrity": details.get("fresh_label_manifest_integrity"),
     }
+
+
+def _is_directed_coverage_evidence(payload: dict) -> bool:
+    """Generic shape-signature match for a coverage.report.build_directed_coverage_evidence
+    payload -- never a campaign/dataset name check."""
+    required = {"direction", "query_population", "reference_population", "overall_global_summary"}
+    return required <= set(payload)
+
+
+def _coverage_distance_view(stat: dict) -> dict:
+    """Recast one coverage.aggregate summary stat (see coverage.aggregate.summarize /
+    _summarize_with_unmatched) into the supported/unsupported + descriptive-distribution shape
+    an Analyst is allowed to see."""
+    from coverage.aggregate import SUMMARY_STATS
+
+    n_matched = stat.get("n", 0) or 0
+    n_unmatched = stat.get("n_unmatched", 0) or 0
+    total = n_matched + n_unmatched
+    return {
+        "supported_count": n_matched,
+        "unsupported_count": n_unmatched,
+        "supported_fraction": (n_matched / total) if total else 0.0,
+        "unsupported_fraction": stat.get("unmatched_fraction", 0.0),
+        "distance_distribution": {k: stat[k] for k in SUMMARY_STATS if k in stat},
+    }
+
+
+def _structural_coverage_evidence_summary(payload: dict) -> dict:
+    """Analyst-facing summary of one directed structural-coverage evidence payload (Priority #2,
+    see coverage/report.py). Exposes only: coverage direction; query/reference population
+    identities; slice/domain memberships; supported/unsupported counts and fractions; descriptive
+    distance distributions; provenance hashes; limitations. Deliberately never passes through
+    `payload["provenance"]["representation_provenance"]` / `["search_backend_provenance"]` --
+    those carry representation/search-backend internals (e.g. SOAP descriptor hyperparameters,
+    cKDTree worker counts) that this summary is not allowed to leak, per the coverage evidence
+    architecture's own representation-agnostic contract.
+    """
+    provenance = payload.get("provenance") if isinstance(payload.get("provenance"), dict) else {}
+    query_slices = payload.get("query_slice_resolved_summaries")
+    query_slices = query_slices if isinstance(query_slices, dict) else {}
+    reference_slices = payload.get("reference_slice_resolved_summaries")
+    reference_slices = reference_slices if isinstance(reference_slices, dict) else {}
+    overall = payload.get("overall_global_summary")
+    return {
+        "direction": payload.get("direction"),
+        "query_population": payload.get("query_population"),
+        "reference_population": payload.get("reference_population"),
+        "n_query_environments": payload.get("n_query_environments"),
+        "n_query_structures": payload.get("n_query_structures"),
+        "reference_population_counts": {
+            "slice_counts": provenance.get("reference_slice_counts"),
+            "total_atoms": provenance.get("reference_total_atoms"),
+            "total_frames": provenance.get("reference_total_frames"),
+        },
+        "overall_distance_distribution": (
+            _coverage_distance_view(overall) if isinstance(overall, dict) else None
+        ),
+        "query_slice_memberships": sorted(query_slices),
+        "query_slice_distance_distributions": {
+            label: _coverage_distance_view(stat) for label, stat in query_slices.items()
+        },
+        "reference_slice_memberships": sorted(reference_slices),
+        "reference_slice_distance_distributions": {
+            label: _coverage_distance_view(stat) for label, stat in reference_slices.items()
+        },
+        "provenance_hashes": {
+            "representation_hash": provenance.get("representation_hash"),
+            "reference_manifest_sha256": provenance.get("reference_manifest_sha256"),
+        },
+        "limitations": list(payload.get("excluded_partitions") or []),
+    }
+
+
+register_json_evidence_adapter(
+    "teacher_baseline", lambda payload: payload.get("profile") == "teacher_baseline",
+    _teacher_baseline_report_summary,
+)
+register_json_evidence_adapter(
+    "label_manifest",
+    lambda payload: bool({"teacher_model_sha256", "source_sha256", "n_frames"} & set(payload)),
+    _label_manifest_summary,
+)
+register_json_evidence_adapter(
+    "structural_coverage_evidence", _is_directed_coverage_evidence,
+    _structural_coverage_evidence_summary,
+)
 
 
 def summarize_artifact(path: str | Path) -> dict:

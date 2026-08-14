@@ -13,6 +13,8 @@ from pathlib import Path
 import yaml
 
 from orchestration.exchange import validate_judge_vote
+from workflow import recovery_taxonomy
+from workflow.actor_identity import normalize_actor_identity, same_actor
 from workflow.integrity import artifact_digest, sha256_file, verify_artifact
 from workflow.contracts import (
     build_validation_contract_components, validate_md_manifest, validate_validation_manifest,
@@ -20,11 +22,33 @@ from workflow.contracts import (
 from workflow.review_lenses import normalize_review_lenses
 
 
-RECOVERY_CATEGORIES = {
-    "data_quality", "dataset_coverage", "student_fidelity", "teacher_applicability",
-    "physical_validation", "simulation_protocol", "evidence_gap", "other",
+# RECOVERY_CATEGORIES is DERIVED from the shared workflow.recovery_taxonomy registry (see that
+# module) rather than declared as its own independent fixed set: it is exactly the registry's
+# full set of registered failure_code values at import time. That registry also reconciles
+# runtimes.pydantic_ai.root_cause.RootCauseClassification.failure_category, so diagnosis and
+# recovery share one vocabulary rather than two independently-maintained category sets.
+# propose_recovery() below resolves a submitted failure_category directly against the live
+# registry (not this frozen snapshot) so a code registered by a campaign at runtime is accepted
+# immediately; this constant remains for introspection/back-compat only. Every one of the
+# original 8 controller-only values is still registered (see recovery_taxonomy's legacy block),
+# so historical recovery plans validate identically.
+RECOVERY_CATEGORIES = frozenset(recovery_taxonomy.registered_codes())
+
+# DEFAULT_RECOVERY_CAPABILITY_ROSTER maps a registered recovery CAPABILITY to the concrete role
+# that fills it when a run does not declare its own recovery_capability_roster (see
+# RunController.initialize). Its value-set is exactly the original fixed RECOVERY_AGENTS tuple,
+# so a historical plan that supplies only responsible_agent (never responsible_capability)
+# validates identically to before: capability-based routing is additive, not a replacement of
+# the direct-role path. A run declaring its own roster is not limited to these five roles/names;
+# they are a default binding, not a framework constant.
+DEFAULT_RECOVERY_CAPABILITY_ROSTER = {
+    "data_repair": "data-curator",
+    "model_retrain": "ml-trainer",
+    "simulation_rerun": "simulation",
+    "root_cause_analysis": "analyst",
+    "orchestration": "orchestrator",
 }
-RECOVERY_AGENTS = {"data-curator", "ml-trainer", "simulation", "analyst", "orchestrator"}
+RECOVERY_AGENTS = frozenset(DEFAULT_RECOVERY_CAPABILITY_ROSTER.values())
 ADJUDICATION_DECISIONS = {"ACCEPT_DECLARED_LIMITATION", "REQUIRE_SCIENTIFIC_RECOVERY"}
 ADJUDICATION_SCOPE_EFFECT = "restrict_scope_to_declared_limitations"
 
@@ -121,7 +145,27 @@ def git_revision(project_dir):
 # every existing run/workflow, because the new stage flag defaults to False (no existing
 # workflow.yaml sets it) and validation_contract defaults to None — so migrated v7 manifests and
 # their workflows behave exactly as before unless a workflow config opts in explicitly.
-SCHEMA_VERSION = 8
+#
+# v9 completes (does not replace) the existing recovery state machine with genuinely-unified
+# diagnosis/recovery vocabulary, capability-based responsible-agent routing, an explicit
+# human-approval-created RecoveryAuthorizationEnvelope for costly child actions, optional
+# cumulative loop-safety policy, and fail-closed protected-reference-role isolation. Every new
+# top-level state key (recovery_capability_roster, recovery_policy, protected_reference_roles)
+# defaults to None/[] exactly like v8's validation_contract_sources pattern: a workflow that
+# declares none of them gets byte-for-byte v8 behavior. propose_recovery() gained OPTIONAL plan
+# fields (responsible_capability, failure_domain, diagnosis_binding,
+# required_input_artifact_roles, expected_output_artifact_roles,
+# protected_reference_reuse_authorization, escalation_acknowledged/escalation_rationale) that a
+# historical plan supplying only the original required fields never has to set; every existing
+# recovery-plan fixture (responsible_agent + failure_category from the original 8-value set,
+# nothing else new) continues to validate identically because every new check is gated on the
+# corresponding optional field being present, or on an explicitly-opted-in recovery_policy /
+# protected_reference_roles / recovery_capability_roster. A new recovery_signature is now always
+# computed and stored (an additive record field, not a new required input) so repeated proposals
+# under materially unchanged evidence/diagnosis/return-stage/corrective-action can be detected
+# for the (opt-in) stagnation-escalation policy. No stage/gate/adjudication semantics changed;
+# schema_version bumped 8->9 because the recovery-record shape gained new fields.
+SCHEMA_VERSION = 9
 
 
 class RunController:
@@ -182,6 +226,25 @@ class RunController:
                 if not source.exists():
                     raise FileNotFoundError(f"validation_contract_sources.{key} is missing: {source}")
                 prepared_contract_sources[key] = source
+        recovery_capability_roster_spec = cfg.get("recovery_capability_roster")
+        if recovery_capability_roster_spec is not None:
+            if (not isinstance(recovery_capability_roster_spec, dict) or not recovery_capability_roster_spec or
+                    any(not isinstance(k, str) or not k.strip() or
+                        not isinstance(v, str) or not v.strip()
+                        for k, v in recovery_capability_roster_spec.items())):
+                raise ValueError(
+                    "recovery_capability_roster must be a non-empty mapping of "
+                    "non-empty capability -> non-empty role strings"
+                )
+        recovery_policy_spec = cfg.get("recovery_policy")
+        if recovery_policy_spec is not None and not isinstance(recovery_policy_spec, dict):
+            raise ValueError("recovery_policy must be a mapping")
+        protected_reference_roles_spec = cfg.get("protected_reference_roles")
+        if protected_reference_roles_spec is not None:
+            if (not isinstance(protected_reference_roles_spec, list) or
+                    any(not isinstance(role, str) or not role.strip()
+                        for role in protected_reference_roles_spec)):
+                raise ValueError("protected_reference_roles must be a list of non-empty strings")
         stages = []
         raw_stages = cfg.get("stages", [])
         if not isinstance(raw_stages, list) or any(not isinstance(item, dict)
@@ -334,7 +397,19 @@ class RunController:
                      # (propose_recovery/start_iteration/verify_recovery_execution) ever writes
                      # this key, so recovery can re-run any stage — including one that
                      # cross-checks against the contract — but can never mutate it.
-                     "validation_contract": validation_contract_record}
+                     "validation_contract": validation_contract_record,
+                     # v9 additive (all None/[] unless the workflow opts in explicitly):
+                     # recovery_capability_roster overrides DEFAULT_RECOVERY_CAPABILITY_ROSTER
+                     # for this run only; recovery_policy carries optional, explicitly-authored
+                     # loop-safety limits (max_recovery_attempts, max_repeated_signature,
+                     # allowed_action_types, cumulative_budget) that propose_recovery enforces
+                     # only when present — no default retry count or budget is ever invented;
+                     # protected_reference_roles names which artifact roles this run considers
+                     # protected-reference so propose_recovery can fail closed if a recovery plan
+                     # tries to route one into a training/acquisition input or output role.
+                     "recovery_capability_roster": recovery_capability_roster_spec,
+                     "recovery_policy": recovery_policy_spec,
+                     "protected_reference_roles": protected_reference_roles_spec or []}
             if validation_contract_record is not None:
                 state["events"].append({
                     "at": validation_contract_record["established_at"],
@@ -1209,8 +1284,205 @@ class RunController:
                                "trigger": None})
         return iterations[-1]
 
+    def _recovery_capability_roster(self):
+        return self.state.get("recovery_capability_roster") or DEFAULT_RECOVERY_CAPABILITY_ROSTER
+
+    def _resolve_recovery_routing(self, plan):
+        """Resolve responsible_capability/responsible_agent against this run's roster.
+
+        A plan may supply either responsible_capability (preferred; a registered capability
+        resolved at runtime to a role from this run's roster) or responsible_agent directly
+        (legacy path). Both may be supplied together only if consistent. Returns the resolved
+        agent string and the capability (or None if the legacy path was used).
+        """
+        roster = self._recovery_capability_roster()
+        capability = plan.get("responsible_capability")
+        agent = plan.get("responsible_agent")
+        if capability is not None:
+            if not isinstance(capability, str) or not capability.strip():
+                raise ValueError("recovery plan responsible_capability must be a non-empty string")
+            if capability not in roster:
+                raise ValueError(
+                    f"recovery responsible_capability is not registered in this run's roster: "
+                    f"{capability!r}"
+                )
+            resolved_agent = roster[capability]
+            if agent is not None and agent != resolved_agent:
+                raise ValueError(
+                    "recovery plan responsible_agent does not match responsible_capability's "
+                    f"roster-resolved role ({resolved_agent!r})"
+                )
+            return resolved_agent, capability
+        if not isinstance(agent, str) or not agent.strip():
+            raise ValueError("recovery plan requires non-empty responsible_agent or responsible_capability")
+        if agent not in set(roster.values()):
+            raise ValueError("recovery responsible_agent is not a registered recovery role")
+        return agent, None
+
+    def _validate_diagnosis_binding(self, plan):
+        """If present, hash-verify the diagnosis artifact and its triggering evidence.
+
+        Fails closed on a nonexistent path or a stale (mismatched) hash so a recovery proposal
+        can never claim provenance from a diagnosis artifact that does not, in fact, still exist
+        with that exact content. Optional: absent for a plan proposed without a typed diagnosis
+        bridge (e.g. a historical/manual plan).
+        """
+        binding = plan.get("diagnosis_binding")
+        if binding is None:
+            return
+        if not isinstance(binding, dict):
+            raise ValueError("recovery plan diagnosis_binding must be an object")
+
+        def _verify(raw_path, sha256, label):
+            if (not isinstance(raw_path, str) or not raw_path.strip() or
+                    not isinstance(sha256, str) or not sha256.strip()):
+                raise ValueError(f"recovery plan {label} requires a path and sha256")
+            path = Path(raw_path)
+            if not path.is_absolute():
+                path = self.run_dir / path
+            if not path.is_file() or sha256_file(path) != sha256:
+                raise ValueError(f"recovery plan {label} artifact is missing or hash-mismatched: {raw_path}")
+
+        _verify(binding.get("diagnosis_artifact_path"), binding.get("diagnosis_artifact_sha256"),
+               "diagnosis_binding")
+        triggering_evidence = binding.get("triggering_evidence", [])
+        if not isinstance(triggering_evidence, list):
+            raise ValueError("recovery plan diagnosis_binding.triggering_evidence must be a list")
+        for item in triggering_evidence:
+            if not isinstance(item, dict):
+                raise ValueError("diagnosis_binding.triggering_evidence entries must be objects")
+            _verify(item.get("path"), item.get("sha256"), "diagnosis_binding.triggering_evidence")
+
+    def _validate_protected_reference_roles(self, plan):
+        """Fail closed if a plan routes a protected-reference artifact role into a
+        training/acquisition input or output role, unless a separate, explicit,
+        human-approved protected_reference_reuse_authorization is attached to THIS plan.
+
+        protected_reference_roles is a run-declared, free-form set of role names (see
+        RunController.initialize) -- this method never hardcodes any chemistry- or
+        campaign-specific role name.
+
+        Also scans each of the plan's own `proposed_changes` for a generic, optional
+        `artifact_roles` list (e.g. runtimes.pydantic_ai.acquisition_targeting.
+        AcquisitionTargetProposal/DataRepairProposal's own artifact-role declarations) -- a
+        protected-reference role named only inside one typed proposed change, never lifted into
+        the plan's own top-level required_input_artifact_roles/expected_output_artifact_roles,
+        must fail closed exactly the same way. This never assumes any particular proposed_change
+        shape/kind -- any change dict that happens to declare `artifact_roles` is checked.
+        """
+        for label in ("required_input_artifact_roles", "expected_output_artifact_roles"):
+            roles = plan.get(label, [])
+            if (not isinstance(roles, list) or
+                    any(not isinstance(role, str) or not role.strip() for role in roles)):
+                raise ValueError(f"recovery plan {label} must be a list of non-empty strings")
+        protected = set(self.state.get("protected_reference_roles", []))
+        if not protected:
+            return
+        proposed_change_roles = set()
+        for change in plan.get("proposed_changes", []) or []:
+            if isinstance(change, dict):
+                proposed_change_roles.update(
+                    role for role in change.get("artifact_roles", []) or []
+                    if isinstance(role, str))
+        touched = protected & (set(plan.get("required_input_artifact_roles", [])) |
+                               set(plan.get("expected_output_artifact_roles", [])) |
+                               proposed_change_roles)
+        if not touched:
+            return
+        override = plan.get("protected_reference_reuse_authorization")
+        valid_override = (
+            isinstance(override, dict) and
+            isinstance(override.get("authorized_by"), str) and override["authorized_by"].strip() and
+            isinstance(override.get("rationale"), str) and override["rationale"].strip()
+        )
+        if not valid_override:
+            raise ValueError(
+                "recovery plan declares protected-reference artifact role(s) as a "
+                f"training/acquisition input or output ({sorted(touched)}) without a "
+                "separate, explicit, human-approved protected_reference_reuse_authorization "
+                "{authorized_by, rationale}"
+            )
+
+    def _recovery_signature(self, pending, category, plan):
+        """Deterministic stagnation fingerprint binding trigger evidence + diagnosis + return
+        stage + corrective-action semantics, so repetition under materially unchanged evidence
+        is detectable (see recovery_policy.max_repeated_signature)."""
+        payload = {
+            "failed_stage": pending["failed_stage"],
+            "artifact_sha256": pending["artifact_sha256"],
+            "failure_category": category,
+            "return_stage": plan["return_stage"],
+            "corrective_action_types": sorted({item["type"] for item in plan["proposed_changes"]}),
+        }
+        return hashlib.sha256(json.dumps(payload, sort_keys=True).encode()).hexdigest()
+
+    def _enforce_recovery_policy(self, plan, category, signature):
+        """Enforce OPTIONAL, explicitly-authored loop-safety limits. Absent recovery_policy
+        (or an absent individual limit within it) means that limit is unenforced -- no default
+        retry count or budget is ever invented here."""
+        policy = self.state.get("recovery_policy")
+        if not policy:
+            return
+        max_attempts = policy.get("max_recovery_attempts")
+        if max_attempts is not None:
+            attempt_number = len(self.state.get("recoveries", [])) + 1
+            if attempt_number > max_attempts:
+                raise ValueError(
+                    f"recovery attempt {attempt_number} would exceed "
+                    f"recovery_policy.max_recovery_attempts ({max_attempts})"
+                )
+        allowed_types = policy.get("allowed_action_types")
+        if allowed_types is not None:
+            disallowed = sorted({item["type"] for item in plan["proposed_changes"]} - set(allowed_types))
+            if disallowed:
+                raise ValueError(
+                    "recovery proposed_changes use action types not permitted by "
+                    f"recovery_policy.allowed_action_types: {disallowed}"
+                )
+        cumulative_budget = policy.get("cumulative_budget")
+        if cumulative_budget is not None:
+            totals = {}
+            for prior in self.state.get("recoveries", []):
+                for key, value in (prior.get("plan", {}).get("estimated_cost") or {}).items():
+                    if isinstance(value, (int, float)):
+                        totals[key] = totals.get(key, 0) + value
+            for key, value in (plan.get("estimated_cost") or {}).items():
+                if isinstance(value, (int, float)):
+                    totals[key] = totals.get(key, 0) + value
+            over_budget = {key: (value, cumulative_budget[key]) for key, value in totals.items()
+                          if key in cumulative_budget and value > cumulative_budget[key]}
+            if over_budget:
+                raise ValueError(
+                    "recovery cumulative estimated_cost exceeds "
+                    f"recovery_policy.cumulative_budget: {over_budget}"
+                )
+        max_repeats = policy.get("max_repeated_signature")
+        if max_repeats is not None:
+            prior_repeats = sum(1 for item in self.state.get("recoveries", [])
+                                if item.get("recovery_signature") == signature)
+            if prior_repeats >= max_repeats:
+                override_ok = (
+                    plan.get("escalation_acknowledged") is True and
+                    isinstance(plan.get("escalation_rationale"), str) and
+                    plan["escalation_rationale"].strip()
+                )
+                if not override_ok:
+                    raise ValueError(
+                        f"recovery_signature repeats {prior_repeats} prior proposal(s) under "
+                        "materially unchanged evidence, diagnosis, return stage, and corrective "
+                        "action -- this meets or exceeds recovery_policy.max_repeated_signature "
+                        f"({max_repeats}); set plan.escalation_acknowledged=true with a non-empty "
+                        "plan.escalation_rationale to proceed anyway"
+                    )
+
     def propose_recovery(self, plan_path):
-        """Bind a scientific recovery proposal to the failed gate and its evidence."""
+        """Bind a scientific recovery proposal to the failed gate and its evidence.
+
+        This is the sole authoritative deterministic validator for a RecoveryPlan: an
+        agent-facing typed bridge (see runtimes.pydantic_ai.recovery_bridge) may PRODUCE a
+        candidate plan file, but only this method ever binds it to the pending gate, and doing
+        so never implies approval or execution -- see approve_recovery/start_iteration.
+        """
         pending = self.state.get("pending_recovery")
         if not pending or pending.get("status") != "required":
             raise RuntimeError("no REVISE/FAIL gate is waiting for a recovery proposal")
@@ -1222,13 +1494,27 @@ class RunController:
         if plan.get("failed_stage") != failed_stage:
             raise ValueError("recovery plan failed_stage does not match the pending gate")
         category = plan.get("failure_category")
-        if category not in RECOVERY_CATEGORIES:
+        try:
+            resolved_code = recovery_taxonomy.resolve_failure_code(category) if isinstance(category, str) else None
+        except KeyError:
+            resolved_code = None
+        if resolved_code is None:
             raise ValueError(f"recovery plan has invalid failure_category: {category!r}")
-        for field in ("root_cause", "responsible_agent", "return_stage"):
+        declared_domain = plan.get("failure_domain")
+        if declared_domain is not None and declared_domain != resolved_code.domain:
+            raise ValueError(
+                f"recovery plan failure_domain {declared_domain!r} does not match the "
+                f"registered domain for failure_category {category!r} ({resolved_code.domain!r})"
+            )
+        for field in ("root_cause", "return_stage"):
             if not isinstance(plan.get(field), str) or not plan[field].strip():
                 raise ValueError(f"recovery plan requires non-empty {field}")
-        if plan["responsible_agent"] not in RECOVERY_AGENTS:
-            raise ValueError("recovery responsible_agent is not a registered recovery role")
+        # proposed_by is a provenance-bound proposer identity, required on every NEW proposal
+        # (a manual/hand-authored plan.json is still a proposal and is not exempt) so
+        # approve_recovery/authorize_recovery_capabilities can later enforce that the same
+        # canonical actor never both proposes and approves/authorizes the same recovery.
+        proposer = normalize_actor_identity(plan.get("proposed_by"), field_name="proposed_by")
+        resolved_agent, resolved_capability = self._resolve_recovery_routing(plan)
         try:
             return_index = self._stage_index(plan["return_stage"])
         except StopIteration as exc:
@@ -1261,6 +1547,10 @@ class RunController:
             raise ValueError("recovery revalidation requires reuse_profile and non-empty targets")
         if "estimated_cost" not in plan or not isinstance(plan["estimated_cost"], dict):
             raise ValueError("recovery estimated_cost must be an object")
+        self._validate_diagnosis_binding(plan)
+        self._validate_protected_reference_roles(plan)
+        signature = self._recovery_signature(pending, category, plan)
+        self._enforce_recovery_policy(plan, category, signature)
 
         recovery_id = len(self.state.setdefault("recoveries", [])) + 1
         recovery_dir = self.run_dir / "recovery"
@@ -1276,6 +1566,12 @@ class RunController:
                 "votes_integrity": pending.get("votes_integrity"),
             },
             "plan": plan, "human_approval": None,
+            "proposed_by": proposer.as_dict(),
+            "failure_domain": resolved_code.domain,
+            "resolved_responsible_agent": resolved_agent,
+            "resolved_responsible_capability": resolved_capability,
+            "recovery_signature": signature,
+            "authorization_envelopes": [],
         }
         destination.write_text(json.dumps(record, indent=2) + "\n")
         record["path"] = str(destination)
@@ -1303,11 +1599,38 @@ class RunController:
         return matches[0]
 
     def approve_recovery(self, approved_by, note=None):
-        """Record explicit human approval without claiming identity verification."""
+        """Record explicit human approval, enforcing separation of proposal and approval
+        authority.
+
+        approved_by accepts a bare human display-name string (the historical/manual shape,
+        preserved for backward compatibility -- see workflow.actor_identity) or a structured
+        {actor_kind, canonical_id} identity. Two invariants are enforced fail-closed, never
+        implicitly satisfied: (1) the resolved actor_kind must be "human" -- an automated
+        Agent/System actor can never satisfy this approval regardless of what string it
+        supplies; (2) if this recovery's proposal recorded a proposer identity, the approver's
+        canonical_id must differ from it -- the same canonical actor may not both propose and
+        approve the same recovery. A historical recovery record with no recorded proposer
+        identity (pre-dates this feature) skips only check (2); check (1) still applies to
+        every approval unconditionally.
+        """
         recovery = self._pending_recovery_record("proposed")
-        if not isinstance(approved_by, str) or not approved_by.strip():
-            raise ValueError("recovery approval requires approved_by")
-        approval = {"approved_at": now(), "approved_by": approved_by.strip(),
+        approver = normalize_actor_identity(approved_by, field_name="approved_by")
+        if approver.actor_kind != "human":
+            raise ValueError(
+                "recovery approval requires an authorized human approval actor; got "
+                f"actor_kind={approver.actor_kind!r} -- an automated Agent/System actor can "
+                "never satisfy the human-approval requirement"
+            )
+        proposed_by = recovery.get("proposed_by")
+        if proposed_by is not None:
+            proposer = normalize_actor_identity(proposed_by, field_name="proposed_by")
+            if same_actor(approver, proposer):
+                raise ValueError(
+                    "recovery approval actor matches this recovery's recorded proposer "
+                    f"identity (canonical_id={approver.canonical_id!r}) -- the same actor "
+                    "cannot both propose and approve a recovery"
+                )
+        approval = {"approved_at": now(), "approved_by": approver.as_dict(),
                     "note": note or ""}
         recovery.update(status="approved", human_approval=approval)
         self.state["pending_recovery"] = {"status": "approved",
@@ -1492,6 +1815,113 @@ class RunController:
                     "the recovered stage cannot PASS until recovery execution is verified"
                 )
 
+    def _activated_recovery_for_current_iteration(self):
+        iteration = self._current_iteration()
+        trigger = iteration.get("trigger")
+        if not trigger:
+            return None, None
+        matches = [item for item in self.state.get("recoveries", [])
+                  if item.get("id") == trigger.get("recovery_id")]
+        if len(matches) != 1 or matches[0].get("status") != "activated":
+            return None, iteration
+        return matches[0], iteration
+
+    def authorize_recovery_capabilities(self, authorized_by, *, capabilities=None,
+                                        action_types=None, resource_limits=None,
+                                        parameter_envelope=None, permitted_artifact_roles=None,
+                                        note=""):
+        """Create a hash-bound RecoveryAuthorizationEnvelope for the CURRENT activated recovery
+        iteration's costly child actions.
+
+        This is a human-approval-created record stating exactly which capabilities/action
+        types/resource limits/parameter envelope/artifact roles are authorized for that
+        iteration. Approving the recovery itself (approve_recovery) never authorizes a costly
+        child action by itself -- this is a SEPARATE, explicit call. dispatch.py's
+        authorize_and_execute() consults verify_recovery_authorization as an ADDITIONAL,
+        narrower pre-check; it never replaces or weakens the run's normal per-action
+        APPROVAL_GATED_ACTIONS requirement, which still applies unchanged whenever no envelope
+        (or no matching envelope) covers a given child action.
+        """
+        recovery, iteration = self._activated_recovery_for_current_iteration()
+        if recovery is None:
+            raise RuntimeError("no activated recovery iteration is available to authorize")
+        authorizer = normalize_actor_identity(authorized_by, field_name="authorized_by")
+        if authorizer.actor_kind != "human":
+            raise ValueError(
+                "recovery authorization requires an authorized human actor; got "
+                f"actor_kind={authorizer.actor_kind!r} -- an automated Agent/System actor can "
+                "never issue a RecoveryAuthorizationEnvelope"
+            )
+        proposed_by = recovery.get("proposed_by")
+        if proposed_by is not None:
+            proposer = normalize_actor_identity(proposed_by, field_name="proposed_by")
+            if same_actor(authorizer, proposer):
+                raise ValueError(
+                    "recovery authorization actor matches this recovery's recorded proposer "
+                    f"identity (canonical_id={authorizer.canonical_id!r}) -- a "
+                    "RecoveryAuthorizationEnvelope can never be self-issued by the proposing "
+                    "actor"
+                )
+        permitted_roles = sorted(set(permitted_artifact_roles or []))
+        protected = set(self.state.get("protected_reference_roles", []))
+        conflict = protected & set(permitted_roles)
+        if conflict:
+            raise ValueError(
+                "recovery authorization envelope cannot permit protected-reference artifact "
+                f"role(s): {sorted(conflict)}"
+            )
+        envelope = {
+            "authorized_at": now(), "authorized_by": authorizer.as_dict(), "note": note or "",
+            "capabilities": sorted(set(capabilities or [])),
+            "action_types": sorted(set(action_types or [])),
+            "resource_limits": dict(resource_limits or {}),
+            "parameter_envelope": dict(parameter_envelope or {}),
+            "permitted_artifact_roles": permitted_roles,
+            "recovery_id": recovery["id"], "iteration": iteration["id"],
+        }
+        envelope["envelope_sha256"] = hashlib.sha256(
+            json.dumps(envelope, sort_keys=True).encode()
+        ).hexdigest()
+        recovery.setdefault("authorization_envelopes", []).append(envelope)
+        self.state["events"].append({
+            "at": now(), "type": "recovery_authorization_envelope_granted",
+            "recovery_id": recovery["id"], "envelope_sha256": envelope["envelope_sha256"],
+        })
+        self.save()
+        return envelope
+
+    def verify_recovery_authorization(self, *, action_type, capability=None, artifact_roles=None,
+                                      resource_usage=None):
+        """Deterministically check whether a CHILD action is covered by the current recovery
+        iteration's authorization envelope(s).
+
+        Returns the matching envelope's envelope_sha256, or None if no envelope authorizes it.
+        Returning None does NOT mean the action is forbidden -- callers (dispatch.py) MUST fall
+        back to the run's normal per-action approval requirement in that case; this method never
+        grants an approval by itself and never runs outside an active recovery iteration.
+        """
+        recovery, _ = self._activated_recovery_for_current_iteration()
+        if recovery is None:
+            return None
+        roles = set(artifact_roles or [])
+        usage = resource_usage or {}
+        for envelope in recovery.get("authorization_envelopes", []):
+            if envelope["action_types"] and action_type not in envelope["action_types"]:
+                continue
+            if (capability is not None and envelope["capabilities"] and
+                    capability not in envelope["capabilities"]):
+                continue
+            if (envelope["permitted_artifact_roles"] and
+                    not roles.issubset(set(envelope["permitted_artifact_roles"]))):
+                continue
+            limits = envelope.get("resource_limits") or {}
+            if any(key in limits and isinstance(value, (int, float)) and
+                  isinstance(limits[key], (int, float)) and value > limits[key]
+                  for key, value in usage.items()):
+                continue
+            return envelope["envelope_sha256"]
+        return None
+
     def summary(self):
         return [(s["name"], s["status"], s["gate"], s["attempts"]) for s in self.state["stages"]]
 
@@ -1534,6 +1964,11 @@ def main():
     approve.add_argument("--note")
     iteration = sub.add_parser("start-iteration")
     iteration.add_argument("run_dir")
+    authorize = sub.add_parser("authorize-recovery")
+    authorize.add_argument("run_dir")
+    authorize.add_argument("envelope")
+    authorize.add_argument("--authorized-by", required=True)
+    authorize.add_argument("--note")
     verify_recovery = sub.add_parser("verify-recovery")
     verify_recovery.add_argument("run_dir")
     verify_recovery.add_argument("report")
@@ -1565,6 +2000,10 @@ def main():
         controller.approve_recovery(args.approved_by, args.note)
     elif args.action == "start-iteration":
         controller.start_iteration()
+    elif args.action == "authorize-recovery":
+        envelope_spec = json.loads(Path(args.envelope).read_text())
+        controller.authorize_recovery_capabilities(
+            args.authorized_by, note=args.note, **envelope_spec)
     elif args.action == "verify-recovery":
         controller.verify_recovery_execution(args.report)
     elif args.action == "gate-context":
