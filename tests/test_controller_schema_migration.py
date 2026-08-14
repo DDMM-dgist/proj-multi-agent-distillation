@@ -13,7 +13,7 @@ import unittest
 from pathlib import Path
 
 from workflow.controller import RunController, SCHEMA_VERSION
-from workflow.manifest_migration import migrate_run_manifest
+from workflow.manifest_migration import migrate_run_manifest, migrate_run_manifest_to_v8
 
 UTC = dt.timezone.utc
 
@@ -38,8 +38,8 @@ def _write_run(d: Path, state) -> Path:
 
 
 class SchemaVersionTests(unittest.TestCase):
-    def test_new_runs_target_is_seven(self):
-        self.assertEqual(SCHEMA_VERSION, 7)
+    def test_new_runs_target_is_eight(self):
+        self.assertEqual(SCHEMA_VERSION, 8)
 
     def test_v6_manifest_loads_and_stays_v6_on_disk(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -165,6 +165,58 @@ class MigrationTests(unittest.TestCase):
             again = RunController(dst)
             self.assertEqual(again.state["schema_version"], 7)  # stays v7 across save/load
             self.assertEqual(len(again.state["runtime_attempts"]), 1)
+
+    def test_migrate_v6_to_v8_becomes_v8_with_null_contract_and_source_untouched(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            src = _write_run(Path(tmp) / "src", _v6_state())
+            dst = Path(tmp) / "dst"
+            manifest = migrate_run_manifest_to_v8(src, dst)
+            migrated = json.loads(manifest.read_text())
+            self.assertEqual(migrated["schema_version"], 8)
+            self.assertIn("runtime_attempts", migrated)
+            self.assertIsNone(migrated["validation_contract"])
+            self.assertTrue(any(e["type"] == "schema_migrated" and e["to"] == 8
+                                for e in migrated["events"]))
+            original = json.loads((src / "manifest.json").read_text())
+            self.assertEqual(original["schema_version"], 6)
+            self.assertNotIn("validation_contract", original)
+
+    def test_migrate_v7_to_v8_preserves_v7_fields_and_adds_null_contract(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            v7_state = _v6_state()
+            v7_state["schema_version"] = 7
+            v7_state.update(runtime_attempts=[], idempotency={}, action_approvals={},
+                            scheduler_jobs={})
+            src = _write_run(Path(tmp) / "src", v7_state)
+            dst = Path(tmp) / "dst"
+            manifest = migrate_run_manifest_to_v8(src, dst)
+            migrated = json.loads(manifest.read_text())
+            self.assertEqual(migrated["schema_version"], 8)
+            self.assertIsNone(migrated["validation_contract"])
+
+    def test_v8_migration_refuses_existing_destination(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            src = _write_run(Path(tmp) / "src", _v6_state())
+            dst = _write_run(Path(tmp) / "dst", _v6_state())
+            with self.assertRaises(FileExistsError):
+                migrate_run_manifest_to_v8(src, dst)
+
+    def test_v8_round_trip_after_migration_and_contract_can_still_be_established(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            src = _write_run(Path(tmp) / "src", _v6_state())
+            dst = Path(tmp) / "dst"
+            migrate_run_manifest_to_v8(src, dst)
+            c = RunController(dst)
+            self.assertEqual(c.state["schema_version"], 8)
+            self.assertIsNone(c.state["validation_contract"])
+            c.establish_validation_contract({
+                "teacher_applicability_domain": {"system": "Si-O"},
+                "validation_scope": {"checks": ["rdf"]},
+                "dataset_split_policy": {"seed": 2026},
+            })
+            again = RunController(dst)
+            self.assertEqual(again.state["schema_version"], 8)
+            self.assertIsNotNone(again.state["validation_contract"])
 
 
 if __name__ == "__main__":  # pragma: no cover

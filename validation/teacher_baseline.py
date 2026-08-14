@@ -1,4 +1,5 @@
 """Deterministic contract for a teacher-first validation baseline."""
+import hashlib
 import json
 from pathlib import Path
 
@@ -14,8 +15,15 @@ def validate_teacher_baseline_report(manifest_path, required_observables=None,
                                      required_pass_observables=None,
                                      accepted_applicability=None,
                                      submitted_artifacts=None, allowed_evidence=None,
-                                     enforce_required_pass=False):
-    """Validate scope, provenance, and frozen targets before student training."""
+                                     enforce_required_pass=False,
+                                     validation_contract_path=None):
+    """Validate scope, provenance, and frozen targets before student training.
+
+    If validation_contract_path is given, the report's deployment_domain must hash-match the
+    run's locked validation contract's teacher_applicability_domain component exactly — a
+    re-executed teacher_baseline (e.g. via recovery) may only pass under the SAME frozen Teacher
+    applicability domain, never a redefined one.
+    """
     manifest_path = Path(manifest_path).resolve()
     payload = json.loads(manifest_path.read_text())
     validate_validation_report(
@@ -74,6 +82,18 @@ def validate_teacher_baseline_report(manifest_path, required_observables=None,
     domain = payload.get("deployment_domain")
     if not isinstance(domain, dict) or not domain:
         raise ValueError("teacher baseline requires a non-empty deployment_domain")
+    if validation_contract_path is not None:
+        contract = json.loads(Path(validation_contract_path).read_text())
+        locked = contract["components"]["teacher_applicability_domain"]
+        domain_hash = hashlib.sha256(
+            json.dumps(domain, indent=2, sort_keys=True).encode()
+        ).hexdigest()
+        if domain_hash != locked["sha256"]:
+            raise ValueError(
+                "teacher baseline deployment_domain does not match the run's locked "
+                "validation contract; a genuine change to the Teacher applicability domain "
+                "requires a new run, not a re-executed teacher_baseline stage"
+            )
     applicability = payload.get("applicability")
     if not isinstance(applicability, dict) or applicability.get("status") not in APPLICABILITY_STATUSES:
         raise ValueError("teacher baseline requires a valid applicability.status")

@@ -64,8 +64,7 @@ class StageBFixtureTests(unittest.TestCase):
             "simulation", "analyst", "judge"})
 
     def test_v7_manifest_written_by_runner_loads(self):
-        from workflow.controller import RunController, SCHEMA_VERSION
-        self.assertEqual(SCHEMA_VERSION, 7)
+        from workflow.controller import RunController
         with tempfile.TemporaryDirectory() as tmp:
             d = Path(tmp)
             (d / "manifest.json").write_text(json.dumps(V7_MANIFEST))

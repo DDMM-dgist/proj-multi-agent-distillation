@@ -109,7 +109,8 @@ def _exec_generate_group_split(proposal):
                                  validation_fraction=float(p.get("validation_fraction", 0.1)),
                                  test_fraction=float(p.get("test_fraction", 0.1)),
                                  grouping_key=p.get("grouping_key", "parent_structure_id"),
-                                 allow_unique_parent_fallback=bool(p.get("allow_unique_parent_fallback", False)))
+                                 allow_unique_parent_fallback=bool(p.get("allow_unique_parent_fallback", False)),
+                                 validation_contract_path=p.get("validation_contract_path"))
         generated.extend([p["manifest"], *(record["path"] for record in manifest.get("splits", {}).values())])
         if protection_audit and p.get("reference_yaml"):
             from ase.io import read as _read_frames

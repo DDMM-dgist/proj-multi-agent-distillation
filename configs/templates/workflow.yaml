@@ -1,5 +1,9 @@
 run_id: null
 inputs: []
+validation_contract_sources:  # bind before initialization: RunController.initialize() snapshots
+  distillation_scope: null    # these three files into the run and freezes the write-once
+  validation_profile: null    # validation_contract from them before any scientific stage runs.
+  dataset_policy: null
 stages:
   - name: teacher_baseline
     command: null
@@ -8,6 +12,8 @@ stages:
       kind: validation_manifest
       manifest: artifacts/teacher_baseline.json
       validator: validation.teacher_baseline.validate_teacher_baseline_report
+      options:
+        validation_contract_path: "{run_dir}/validation_contract.json"
     gate:
       criteria: []  # bind applicability and target criteria before initialization
   - name: acquisition
@@ -22,6 +28,8 @@ stages:
       kind: validation_manifest
       manifest: artifacts/data_coverage.json
       validator: validation.data_coverage.validate_data_coverage_report
+      options:
+        validation_contract_path: "{run_dir}/validation_contract.json"
     gate:
       criteria: []
   - name: teacher_labeling
@@ -37,6 +45,7 @@ stages:
   - name: training
     command: null
     outputs: []
+    produces_student_results: true
     gate:
       criteria: []
   - name: evaluation

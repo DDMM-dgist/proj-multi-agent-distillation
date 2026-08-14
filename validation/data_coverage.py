@@ -1,8 +1,10 @@
 """Deterministic contract for dataset-source and deployment-coverage reports."""
+import hashlib
 import json
 import math
 from pathlib import Path
 
+import yaml
 from ase.io import read
 
 from validation.report import validate_evidence
@@ -62,10 +64,19 @@ def _source_statistics(path, config):
 
 def validate_data_coverage_report(manifest_path, required_source_categories=None,
                                   accepted_statuses=None, submitted_artifacts=None,
-                                  allowed_evidence=None, enforce_required_pass=False):
-    """Validate an auditable coverage assessment without imposing one descriptor."""
+                                  allowed_evidence=None, enforce_required_pass=False,
+                                  validation_contract_path=None):
+    """Validate an auditable coverage assessment without imposing one descriptor.
+
+    If validation_contract_path is given, this report's deployment_domain and its
+    dataset_policy file's split_policy block must hash-match the run's locked validation
+    contract exactly — a re-executed data_coverage stage may only pass under the SAME frozen
+    Teacher applicability domain and dataset split policy, never redefined ones.
+    """
     manifest_path = Path(manifest_path).resolve()
     payload = json.loads(manifest_path.read_text())
+    contract = (json.loads(Path(validation_contract_path).read_text())
+               if validation_contract_path is not None else None)
     if payload.get("schema_version") != 1:
         raise ValueError("data coverage report requires schema_version=1")
     access = payload.get("teacher_training_data_access")
@@ -78,6 +89,17 @@ def validate_data_coverage_report(manifest_path, required_source_categories=None
         raise ValueError("unavailable teacher data must be reported as NOT_ASSESSABLE")
     if not isinstance(payload.get("deployment_domain"), dict) or not payload["deployment_domain"]:
         raise ValueError("data coverage report requires a non-empty deployment_domain")
+    if contract is not None:
+        locked_domain = contract["components"]["teacher_applicability_domain"]
+        domain_hash = hashlib.sha256(
+            json.dumps(payload["deployment_domain"], indent=2, sort_keys=True).encode()
+        ).hexdigest()
+        if domain_hash != locked_domain["sha256"]:
+            raise ValueError(
+                "data coverage deployment_domain does not match the run's locked validation "
+                "contract; a genuine change to the Teacher applicability domain requires a new "
+                "run, not a re-executed data_coverage stage"
+            )
     sources = payload.get("dataset_sources")
     if not isinstance(sources, list) or not sources:
         raise ValueError("data coverage report requires non-empty dataset_sources")
@@ -193,6 +215,21 @@ def validate_data_coverage_report(manifest_path, required_source_categories=None
                      (manifest_path.parent / evidence_path).resolve())
     if evidence_path != policy_path:
         raise ValueError("dataset_policy does not match dataset_policy evidence")
+    if contract is not None:
+        locked_split_policy = contract["components"]["dataset_split_policy"]
+        policy_cfg = yaml.safe_load(policy_path.read_text())
+        split_policy = policy_cfg.get("split_policy") if isinstance(policy_cfg, dict) else None
+        if not isinstance(split_policy, dict) or not split_policy:
+            raise ValueError("data coverage dataset_policy file requires a non-empty split_policy")
+        split_policy_hash = hashlib.sha256(
+            json.dumps(split_policy, indent=2, sort_keys=True).encode()
+        ).hexdigest()
+        if split_policy_hash != locked_split_policy["sha256"]:
+            raise ValueError(
+                "data coverage dataset_policy split_policy does not match the run's locked "
+                "validation contract; a genuine change to the dataset split policy requires a "
+                "new run, not a re-executed data_coverage stage"
+            )
     accepted = set(accepted_statuses or COVERAGE_STATUSES)
     if enforce_required_pass and status not in accepted:
         raise ValueError("data coverage status is outside the accepted statuses")

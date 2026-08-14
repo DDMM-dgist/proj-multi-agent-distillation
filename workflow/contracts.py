@@ -76,6 +76,40 @@ def validate_md_manifest(manifest_path, expected_committee_manifest, submitted_a
     return payload
 
 
+def build_validation_contract_components(scope_cfg, profile_cfg, policy_cfg):
+    """Build the write-once validation-contract components from parsed config mappings.
+
+    ``scope_cfg``'s deployment_domain is the sole authoritative source; if ``profile_cfg``'s
+    own copy differs, this hard-fails rather than silently picking one (the two declarations
+    must be reconciled in the source configs first). This is the single shared construction
+    path used both by the manual ``establish-validation-contract`` CLI helper
+    (workflow.steps.establish_validation_contract_from_configs) and by
+    ``RunController.initialize()`` when a workflow declares ``validation_contract_sources`` —
+    callers differ only in where the three configs come from (arbitrary paths vs. a run's own
+    snapshotted source copies), never in how the components are derived from them.
+    """
+    authoritative_domain = scope_cfg.get("deployment_domain") if isinstance(scope_cfg, dict) else None
+    if not isinstance(authoritative_domain, dict) or not authoritative_domain:
+        raise ValueError("distillation_scope requires a non-empty deployment_domain")
+    duplicate_domain = profile_cfg.get("deployment_domain") if isinstance(profile_cfg, dict) else None
+    if duplicate_domain != authoritative_domain:
+        raise ValueError(
+            "validation_profile's deployment_domain does not match the authoritative "
+            "deployment_domain declared in distillation_scope; reconcile the source "
+            "configs before establishing the validation contract"
+        )
+    checks = profile_cfg.get("checks")
+    if not isinstance(checks, list) or not checks:
+        raise ValueError("validation_profile requires a non-empty checks list")
+    validation_scope = {"shared_md_protocol": profile_cfg.get("shared_md_protocol"),
+                        "checks": checks}
+    split_policy = policy_cfg.get("split_policy") if isinstance(policy_cfg, dict) else None
+    if not isinstance(split_policy, dict) or not split_policy:
+        raise ValueError("dataset_policy requires a non-empty split_policy")
+    return {"teacher_applicability_domain": authoritative_domain,
+           "validation_scope": validation_scope, "dataset_split_policy": split_policy}
+
+
 def validate_validation_manifest(manifest_path, validator, options=None, submitted_artifacts=None,
                                  allowed_evidence=None, enforce_required_pass=False):
     """Dispatch an external validation artifact to a config-selected validator.

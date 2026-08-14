@@ -19,12 +19,68 @@ def _write_json(path, value):
     Path(path).write_text(json.dumps(value, indent=2, default=str) + "\n")
 
 
+def establish_validation_contract_from_configs(run_dir, distillation_scope, validation_profile,
+                                               dataset_policy):
+    """Freeze the Teacher-applicability/validation-scope/dataset-split-policy contract for a run
+    from its three per-run declaration files, before any Student-producing stage may execute.
+
+    This is a manual/compatibility entry point that reads the three config files from
+    arbitrary, mutable paths. New template-driven production runs establish the contract
+    automatically at ``RunController.initialize()`` time instead, from run-bound snapshotted
+    copies (see RunController.initialize's ``validation_contract_sources`` handling); both
+    paths build the contract's components via the single shared
+    ``workflow.contracts.build_validation_contract_components``, so there is never a second,
+    divergent construction path. Write-once: calling this again for the same run with
+    identical config content is a no-op; differing content is a hard failure requiring a new
+    run (see RunController.establish_validation_contract).
+    """
+    from workflow.contracts import build_validation_contract_components
+    from workflow.controller import RunController
+
+    scope_path = Path(distillation_scope).resolve()
+    profile_path = Path(validation_profile).resolve()
+    policy_path = Path(dataset_policy).resolve()
+    scope_cfg = yaml.safe_load(scope_path.read_text())
+    profile_cfg = yaml.safe_load(profile_path.read_text())
+    policy_cfg = yaml.safe_load(policy_path.read_text())
+
+    components = build_validation_contract_components(scope_cfg, profile_cfg, policy_cfg)
+
+    controller = RunController(run_dir)
+    return controller.establish_validation_contract(
+        components,
+        source_files={
+            "distillation_scope": {"path": str(scope_path), "sha256": sha256_file(scope_path)},
+            "validation_profile": {"path": str(profile_path), "sha256": sha256_file(profile_path)},
+            "dataset_policy": {"path": str(policy_path), "sha256": sha256_file(policy_path)},
+        },
+    )
+
+
 def split_dataset(dataset, output_dir, manifest, seed=2026, validation_fraction=0.1,
                   test_fraction=0.1, grouping_key="parent_structure_id",
-                  allow_unique_parent_fallback=False):
-    """Create leakage-resistant splits by keeping related structures together."""
+                  allow_unique_parent_fallback=False, validation_contract_path=None):
+    """Create leakage-resistant splits by keeping related structures together.
+
+    If validation_contract_path is given, seed/validation_fraction/test_fraction/grouping_key
+    must exactly equal the locked dataset_split_policy component of that contract — a run whose
+    validation targets were frozen (constraint: before Student results are interpreted) cannot
+    have its split parameters silently redefined by a later proposal or recovery attempt.
+    """
     if validation_fraction < 0 or test_fraction <= 0 or validation_fraction + test_fraction >= 1:
         raise ValueError("split fractions require test > 0 and validation + test < 1")
+    if validation_contract_path is not None:
+        contract = json.loads(Path(validation_contract_path).read_text())
+        locked = contract["components"]["dataset_split_policy"]["value"]
+        actual = {"seed": int(seed), "validation_fraction": validation_fraction,
+                  "test_fraction": test_fraction, "grouping_key": grouping_key}
+        mismatched = {key: (locked.get(key), actual[key]) for key in actual
+                     if key in locked and locked[key] != actual[key]}
+        if mismatched:
+            raise ValueError(
+                "dataset split parameters do not match the locked validation contract's "
+                f"dataset_split_policy: {mismatched}"
+            )
     frames = read(dataset, index=":")
     if len(frames) < 3:
         raise ValueError("at least three structures are required for train/validation/test splitting")
@@ -521,6 +577,10 @@ def main():
     split.add_argument("--test-fraction", type=float, default=0.1)
     split.add_argument("--grouping-key", default="parent_structure_id")
     split.add_argument("--allow-unique-parent-fallback", action="store_true")
+    split.add_argument("--validation-contract-path")
+    contract = sub.add_parser("establish-validation-contract")
+    contract.add_argument("run_dir"); contract.add_argument("distillation_scope")
+    contract.add_argument("validation_profile"); contract.add_argument("dataset_policy")
     merge = sub.add_parser("merge-datasets")
     merge.add_argument("output"); merge.add_argument("manifest")
     merge.add_argument("--source", action="append", required=True)
@@ -531,7 +591,10 @@ def main():
     if args.action == "split-dataset":
         split_dataset(args.dataset, args.output_dir, args.manifest, args.seed,
                       args.validation_fraction, args.test_fraction, args.grouping_key,
-                      args.allow_unique_parent_fallback)
+                      args.allow_unique_parent_fallback, args.validation_contract_path)
+    elif args.action == "establish-validation-contract":
+        establish_validation_contract_from_configs(args.run_dir, args.distillation_scope,
+                                                   args.validation_profile, args.dataset_policy)
     elif args.action == "merge-datasets":
         merge_datasets(args.source, args.output, args.manifest, args.grouping_key,
                        args.duplicate_policy)

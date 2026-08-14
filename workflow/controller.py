@@ -14,7 +14,9 @@ import yaml
 
 from orchestration.exchange import validate_judge_vote
 from workflow.integrity import artifact_digest, sha256_file, verify_artifact
-from workflow.contracts import validate_md_manifest, validate_validation_manifest
+from workflow.contracts import (
+    build_validation_contract_components, validate_md_manifest, validate_validation_manifest,
+)
 from workflow.review_lenses import normalize_review_lenses
 
 
@@ -25,6 +27,36 @@ RECOVERY_CATEGORIES = {
 RECOVERY_AGENTS = {"data-curator", "ml-trainer", "simulation", "analyst", "orchestrator"}
 ADJUDICATION_DECISIONS = {"ACCEPT_DECLARED_LIMITATION", "REQUIRE_SCIENTIFIC_RECOVERY"}
 ADJUDICATION_SCOPE_EFFECT = "restrict_scope_to_declared_limitations"
+
+VALIDATION_CONTRACT_COMPONENTS = (
+    "teacher_applicability_domain", "validation_scope", "dataset_split_policy",
+)
+
+
+def _build_validation_contract_record(components, source_files=None):
+    """Canonicalize validation-contract components into the write-once record shape.
+
+    The single construction path for a ``validation_contract`` record: used both by
+    ``RunController.establish_validation_contract`` (post-init, explicit call) and by
+    ``RunController.initialize`` (automatic, from run-bound ``validation_contract_sources``
+    snapshots) so there is exactly one authoritative way a contract record is ever built.
+    """
+    if not isinstance(components, dict) or set(components) != set(VALIDATION_CONTRACT_COMPONENTS):
+        raise ValueError(
+            "validation contract requires exactly the components: "
+            + ", ".join(VALIDATION_CONTRACT_COMPONENTS)
+        )
+    canonical = {}
+    for key, value in components.items():
+        payload = json.dumps(value, indent=2, sort_keys=True).encode()
+        canonical[key] = {"value": value, "sha256": hashlib.sha256(payload).hexdigest()}
+    contract_sha256 = hashlib.sha256(
+        json.dumps({key: entry["sha256"] for key, entry in canonical.items()},
+                   sort_keys=True).encode()
+    ).hexdigest()
+    return {"established_at": now(), "components": canonical,
+           "source_files": dict(source_files or {}), "contract_sha256": contract_sha256,
+           "student_stage_ever_completed": False}
 
 
 def now():
@@ -82,7 +114,14 @@ def git_revision(project_dir):
 # stage/gate/retry/recovery scientific semantics. v6 manifests remain readable as-is; a v6 run
 # is never version-bumped in place — migration happens only on a copy (workflow.manifest_migration)
 # or when a fresh run is initialized. See MIGRATION.md / the schema-bump report.
-SCHEMA_VERSION = 7
+#
+# v8 adds the write-once validation-target contract (validation_contract, plus the per-stage
+# produces_student_results flag). It IS a scientific-semantics change: a stage flagged
+# produces_student_results cannot run until a contract is established. It is still additive for
+# every existing run/workflow, because the new stage flag defaults to False (no existing
+# workflow.yaml sets it) and validation_contract defaults to None — so migrated v7 manifests and
+# their workflows behave exactly as before unless a workflow config opts in explicitly.
+SCHEMA_VERSION = 8
 
 
 class RunController:
@@ -122,6 +161,27 @@ class RunController:
                 if not source.is_file():
                     raise ValueError("directory inputs must use copy: false and are hash-bound in place")
             prepared_inputs.append((source, bool(spec.get("copy", True)), source_integrity))
+        contract_sources_spec = cfg.get("validation_contract_sources")
+        prepared_contract_sources = None
+        if contract_sources_spec is not None:
+            if not isinstance(contract_sources_spec, dict):
+                raise ValueError("validation_contract_sources must be a mapping")
+            required_source_keys = ("distillation_scope", "validation_profile", "dataset_policy")
+            missing_source_keys = [key for key in required_source_keys
+                                   if not isinstance(contract_sources_spec.get(key), (str, os.PathLike))]
+            if missing_source_keys:
+                raise ValueError(
+                    "validation_contract_sources requires non-empty paths for: "
+                    + ", ".join(required_source_keys)
+                )
+            prepared_contract_sources = {}
+            for key in required_source_keys:
+                source = Path(str(contract_sources_spec[key]).format(project_dir=str(project_dir)))
+                if not source.is_absolute():
+                    source = (workflow_config.parent / source).resolve()
+                if not source.exists():
+                    raise FileNotFoundError(f"validation_contract_sources.{key} is missing: {source}")
+                prepared_contract_sources[key] = source
         stages = []
         raw_stages = cfg.get("stages", [])
         if not isinstance(raw_stages, list) or any(not isinstance(item, dict)
@@ -146,6 +206,11 @@ class RunController:
             env = item.get("env")
             if env is not None and (not isinstance(env, str) or not env.strip()):
                 raise ValueError(f"stage {item['name']!r} env must be a non-empty string")
+            produces_student_results = item.get("produces_student_results", False)
+            if not isinstance(produces_student_results, bool):
+                raise ValueError(
+                    f"stage {item['name']!r} produces_student_results must be a bool"
+                )
             gate_config = item.get("gate")
             if gate_config is not None and not isinstance(gate_config, dict):
                 raise ValueError(f"stage {item['name']!r} gate must be a mapping")
@@ -200,6 +265,7 @@ class RunController:
                            "env": env, "contract": contract,
                            "gate_criteria": gate_criteria,
                            "gate_review_lenses": gate_review_lenses,
+                           "produces_student_results": produces_student_results,
                            "started_at": None, "completed_at": None, "attempts": 0})
         run_dir.parent.mkdir(parents=True, exist_ok=True)
         temporary = Path(tempfile.mkdtemp(prefix=f".{run_dir.name}.init-", dir=run_dir.parent))
@@ -220,6 +286,34 @@ class RunController:
                                       "size": source_integrity["size"],
                                       "sha256": source_integrity["sha256"],
                                       "source_sha256": source_integrity["sha256"]})
+            validation_contract_record = None
+            if prepared_contract_sources is not None:
+                # Run-bind the three contract source files: snapshot their exact content into
+                # the run's own inputs area FIRST, then build the contract from those
+                # snapshots (not the external, still-mutable declared paths) — so later edits
+                # to the original distillation_scope/validation_profile/dataset_policy files
+                # can never change what this run's frozen contract says.
+                contract_source_dir = temporary / "inputs" / "contract_sources"
+                contract_source_dir.mkdir()
+                snapshots = {}
+                contract_source_files = {}
+                for key, source in prepared_contract_sources.items():
+                    destination = contract_source_dir / f"{key}.yaml"
+                    shutil.copy2(source, destination)
+                    snapshots[key] = destination
+                    contract_source_files[key] = {
+                        "source": str(source),
+                        "snapshot": str(run_dir / "inputs" / "contract_sources" / destination.name),
+                        "sha256": artifact_digest(destination)["sha256"],
+                    }
+                components = build_validation_contract_components(
+                    yaml.safe_load(snapshots["distillation_scope"].read_text()),
+                    yaml.safe_load(snapshots["validation_profile"].read_text()),
+                    yaml.safe_load(snapshots["dataset_policy"].read_text()),
+                )
+                validation_contract_record = _build_validation_contract_record(
+                    components, source_files=contract_source_files
+                )
             created_at = now()
             state = {"schema_version": SCHEMA_VERSION, "run_id": cfg["run_id"],
                      "created_at": created_at,
@@ -231,8 +325,27 @@ class RunController:
                      "recoveries": [], "adjudications": [], "pending_recovery": None,
                      # v7 additive operational metadata (safe empty defaults):
                      "runtime_attempts": [], "idempotency": {}, "action_approvals": {},
-                     "scheduler_jobs": {}}
+                     "scheduler_jobs": {},
+                     # v8: write-once validation-target contract. None unless the workflow
+                     # declares validation_contract_sources (established automatically, right
+                     # here, from run-bound snapshots) or establish_validation_contract() is
+                     # called later. A stage flagged produces_student_results cannot run until
+                     # it is set. No recovery method
+                     # (propose_recovery/start_iteration/verify_recovery_execution) ever writes
+                     # this key, so recovery can re-run any stage — including one that
+                     # cross-checks against the contract — but can never mutate it.
+                     "validation_contract": validation_contract_record}
+            if validation_contract_record is not None:
+                state["events"].append({
+                    "at": validation_contract_record["established_at"],
+                    "type": "validation_contract_established",
+                    "contract_sha256": validation_contract_record["contract_sha256"],
+                })
             (temporary / "manifest.json").write_text(json.dumps(state, indent=2) + "\n")
+            if validation_contract_record is not None:
+                (temporary / "validation_contract.json").write_text(
+                    json.dumps(validation_contract_record, indent=2) + "\n"
+                )
             temporary.rename(run_dir)
         except Exception:
             shutil.rmtree(temporary, ignore_errors=True)
@@ -532,6 +645,58 @@ class RunController:
                 raise RuntimeError(f"artifact integrity check failed for stage {name!r}: {path}") from exc
         return records
 
+    # --- v8: write-once validation-target contract ------------------------------------------
+    VALIDATION_CONTRACT_COMPONENTS = VALIDATION_CONTRACT_COMPONENTS
+
+    def establish_validation_contract(self, components, source_files=None):
+        """Freeze the Teacher-applicability/validation-scope/dataset-split-policy contract.
+
+        Write-once for the lifetime of this run: an identical re-establishment (same canonical
+        component values) is an idempotent no-op; any differing content is a hard failure. This
+        is the ONLY method (besides RunController.initialize's automatic establishment, which
+        shares the same record-construction path via ``_build_validation_contract_record``)
+        that ever writes ``self.state["validation_contract"]`` — no recovery method touches it,
+        so recovery can re-run any stage (including one that cross-checks against the contract)
+        but can never mutate, re-establish, or replace it. A genuine change to the Teacher
+        applicability domain, validation scope, or dataset split policy requires a new run, not
+        a call to this method on an existing one.
+        """
+        candidate = _build_validation_contract_record(components, source_files)
+        existing = self.state.get("validation_contract")
+        if existing is not None:
+            if existing["contract_sha256"] == candidate["contract_sha256"]:
+                return existing
+            raise ValueError(
+                "validation contract is already established for this run with different "
+                "content; changing the Teacher applicability domain, validation scope, or "
+                "dataset split policy requires a new run, not a mutation of this one"
+            )
+        if any(stage["status"] != "pending" for stage in self.state["stages"]):
+            raise RuntimeError(
+                "validation contract must be established before any stage in this run executes"
+            )
+        record = candidate
+        self.state["validation_contract"] = record
+        lock_path = self.run_dir / "validation_contract.json"
+        lock_path.write_text(json.dumps(record, indent=2) + "\n")
+        self.state["events"].append({"at": now(), "type": "validation_contract_established",
+                                     "contract_sha256": record["contract_sha256"]})
+        self.save()
+        return record
+
+    def _require_validation_contract_for_student_stage(self, name, stage):
+        if stage.get("produces_student_results") and self.state.get("validation_contract") is None:
+            raise RuntimeError(
+                f"stage {name!r} produces Student results and cannot run until "
+                "establish_validation_contract has been called for this run"
+            )
+
+    def _mark_student_stage_completed(self, stage):
+        if stage.get("produces_student_results"):
+            contract = self.state.get("validation_contract")
+            if contract is not None:
+                contract["student_stage_ever_completed"] = True
+
     def run_stage(self, name):
         self._ensure_no_pending_recovery()
         self.verify_inputs()
@@ -539,6 +704,7 @@ class RunController:
         stage = self.stage(name)
         if not stage["command"]:
             raise ValueError(f"stage {name!r} has no command")
+        self._require_validation_contract_for_student_stage(name, stage)
         self.invalidate_from(name)
         self.quarantine_artifacts({name})
         self.state["artifacts"] = [a for a in self.state["artifacts"] if a["stage"] != name]
@@ -594,6 +760,7 @@ class RunController:
         stage["status"] = "completed"
         for path in output_paths:
             self.register_artifact(name, path)
+        self._mark_student_stage_completed(stage)
         self.save()
 
     def register_artifact(self, stage, path):
@@ -660,6 +827,7 @@ class RunController:
         self.verify_inputs()
         self._previous_passed(name)
         stage = self.stage(name)
+        self._require_validation_contract_for_student_stage(name, stage)
         if not artifacts:
             raise ValueError("at least one artifact is required")
         resolved = []
@@ -684,6 +852,7 @@ class RunController:
                      completed_at=now(), attempts=stage["attempts"] + 1, gate="pending")
         for path in resolved:
             self.register_artifact(name, path)
+        self._mark_student_stage_completed(stage)
         self.state["events"].append({"at": now(), "type": "external_stage_completed",
                                      "stage": name, "artifacts": [str(x) for x in resolved],
                                      "contract": stage.get("contract"),

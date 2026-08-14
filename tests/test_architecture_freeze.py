@@ -13,6 +13,16 @@ constant, not a file.
 
 If a frozen file legitimately must change, that is (by definition) a NEW architecture revision and a
 NEW freeze — it must not be done silently while a holdout is in flight.
+
+v10 (validation-target-lock) deliberately re-froze workflow/controller.py: it is a real, disclosed
+architecture change (see FREEZE_REVISION below for exactly what changed and, just as importantly,
+what did NOT), not a workaround to avoid touching frozen code.
+
+v11 (validation-target-lock, automatic establishment) closed a real wiring gap a runtime-route
+audit found in v10: contract establishment was still an optional, manual CLI step, so nothing
+actually stopped a real run from executing Teacher-side scientific stages before the target
+contract existed. v11 deliberately re-froze workflow/controller.py again for the same reason as
+v10 — see FREEZE_REVISION below for exactly what changed and what deliberately did not.
 """
 from __future__ import annotations
 
@@ -22,13 +32,54 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
 FREEZE_REVISION = (
-    "approval-boundary reconciliation (v9; costly_teacher_labeling added to "
-    "agent_specs/simulation.yaml to match SIMULATION_ACTIONS gaining "
-    "build_teacher_baseline/validate_teacher_reference, and evaluate_heldout_fidelity "
-    "added to APPROVAL_GATED_ACTIONS in actions.py to close a gap where its HPC binding "
-    "was READY_HPC_APPROVAL_GATED with a real executor but was never actually gated by "
-    "dispatch.authorize_and_execute's approval-boundary check; no role/action-set/contract/"
-    "Judge change)"
+    "validation-target-lock (v10; schema_version bumped 7->8 and workflow/controller.py "
+    "gained a write-once validation_contract: a new top-level state key, None until "
+    "establish_validation_contract() freezes it from the Teacher applicability domain, "
+    "validation scope, and dataset split policy, each hash-bound at establishment; "
+    "identical re-establishment is an idempotent no-op, differing content hard-fails and "
+    "requires a new run; stages may declare produces_student_results, and BOTH run_stage() "
+    "and complete_external_stage() (via the shared "
+    "_require_validation_contract_for_student_stage helper) refuse to run/complete one "
+    "until the contract exists — the guard was applied to both execution paths because "
+    "real workflows complete Student-producing stages externally (agent/executor "
+    "dispatch), not via run_stage's subprocess path; completing one via either path sets "
+    "a permanent student_stage_ever_completed provenance marker on the contract record "
+    "(via the shared _mark_student_stage_completed helper). "
+    "propose_recovery/start_iteration/verify_recovery_execution were deliberately left "
+    "UNCHANGED — no recovery method writes validation_contract, so recovery may re-run any "
+    "stage, including a contract-consuming one like teacher_baseline or "
+    "reference_validation under the unchanged frozen contract, but can never mutate, "
+    "re-establish, or replace it; no role/action-set/Judge change); "
+    "v11 (automatic establishment) closes the wiring gap a runtime-route audit found in v10: "
+    "RunController.initialize() now accepts an optional top-level validation_contract_sources "
+    "mapping ({distillation_scope, validation_profile, dataset_policy} paths); when a workflow "
+    "declares it, initialize() snapshots the exact content of those three files into the new "
+    "run's own inputs/contract_sources/ area (via shutil.copy2, inside the same temporary "
+    "init directory used for every other run-bound artifact) BEFORE building anything from "
+    "them, then builds the contract's components from those run-local snapshots — never from "
+    "the still-mutable external paths — via the single shared "
+    "workflow.contracts.build_validation_contract_components, and establishes the record via "
+    "the single shared _build_validation_contract_record (module-level in workflow/controller.py) "
+    "that both RunController.establish_validation_contract and initialize() now call — there is "
+    "exactly one construction path, never two independently-mutable representations; the "
+    "resulting record is written to state['validation_contract'] AND to a validation_contract.json "
+    "file inside the same temporary directory, so both are byte-identical from the same write. "
+    "Initialization remains atomic: source resolution/snapshotting, domain-equality verification "
+    "(distillation_scope's deployment_domain is authoritative; validation_profile's copy must "
+    "match exactly or this hard-fails), and contract establishment all happen inside initialize()'s "
+    "existing temporary-directory transaction, so any failure (a missing source file, a domain "
+    "mismatch) is caught by the existing except-Exception/rmtree(temporary)/raise handler and "
+    "leaves no run directory behind at all — no new rollback mechanism was introduced. Existing/"
+    "historical workflows that do not declare validation_contract_sources are entirely unaffected: "
+    "validation_contract stays None exactly as before, so v10 behavior is preserved byte-for-byte "
+    "for them (this is why R11, which has no validation_contract_sources key, was never touched). "
+    "The manual establish-validation-contract CLI helper "
+    "(workflow.steps.establish_validation_contract_from_configs) still exists as a compatibility/"
+    "manual tool and now itself calls the same shared "
+    "workflow.contracts.build_validation_contract_components instead of duplicating the "
+    "domain-equality/component-building logic inline — a pure refactor with no behavior change, "
+    "verified by the pre-existing test suite. No role/action-set/Judge/schema_version change; "
+    "schema_version remains 8)"
 )
 FROZEN_MODEL = "qwen2.5-7b-instruct"
 
@@ -58,7 +109,7 @@ FROZEN = {
     "orchestration/specs.py":
         "4b6dc829fe2b6b594cc87e8a62bd944ea9df181cd7f420ae3732c861ce8e43cb",
     "workflow/controller.py":
-        "ec81c8db63ea64874d677077c32a46d6bfc8fc6f920e294249e79695004999b6",
+        "5832123d9fb1ce235cb705bb551bd56598e3a9655a9dbecc2c8dc0bec89ab851",
     "orchestration/schema/agent_result.schema.json":
         "a38afea9c06c21e647376efd835dec32a16b2f247583a090560cb1843e0eda31",
     "orchestration/schema/agent_spec.schema.json":
