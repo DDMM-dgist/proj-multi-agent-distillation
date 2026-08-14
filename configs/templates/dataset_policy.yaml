@@ -1,5 +1,18 @@
 kind: generic
 teacher_training_data_access: null  # full | representative | unavailable
+# NOTE: the field above is the legacy schema_version=1 single-value semantics --
+# it does not distinguish "we have the source dataset" from "we know split
+# membership" from "we know which checkpoint was deployed", and validation.data_coverage's
+# schema_version=1 path still requires it unchanged for historical/existing reports.
+# New (schema_version=2) reports must instead populate the `provenance` block below,
+# which represents those three questions separately and explicitly, per the same
+# Priority #2 design that keeps deployment-domain coverage, Teacher-training
+# structural coverage, and protected-reference DFT accuracy as separate,
+# non-conflated evidentiary channels (see configs/provenance/PROVENANCE.md).
+provenance:
+  source_dataset_access: null  # full | representative | unavailable -- do we have the raw source dataset itself
+  split_membership_status: null  # e.g. reconstructed_unverified_cross_version_rng | cryptographically_verified | unknown
+  deployed_checkpoint_linkage_status: null  # e.g. bit_exact_tensor_match | unverified | unknown
 sources: []
 # Each source declares category, path/selection rule, label_sources, target count,
 # and parent lineage. Common categories are generated_teacher_labeled,

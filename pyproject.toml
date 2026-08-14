@@ -44,6 +44,19 @@ anthropic = [
 local-openai = [
     "pydantic-ai-slim[openai]>=0.8,<0.9",
 ]
+# Local-environment (SOAP) descriptor computation for structural coverage evidence
+# (coverage/soap_representation.py, Priority #2), one implementation of the generic
+# coverage.representation.CoverageRepresentation protocol. The core workflow does NOT
+# depend on this -- coverage.soap_representation raises ModuleNotFoundError if dscribe
+# isn't installed, and callers must handle that explicitly (same optional-dependency
+# convention as pydantic-ai above). Version pinned to the combination actually
+# installed and tested (dscribe 2.1.2, 2026-08-14); dscribe has no `__version__`
+# attribute on the package itself, so provenance reads installed metadata instead
+# (see coverage.soap_representation.dscribe_version).
+#   pip install -e ".[structural-coverage]"
+structural-coverage = [
+    "dscribe>=2.1,<3",
+]
 
 [project.scripts]
 distill-run = "workflow.controller:main"
@@ -53,7 +66,7 @@ distill-agent = "orchestration.cli:main"
 distill-agent-run = "runtimes.pydantic_ai.cli:main"
 
 [tool.setuptools]
-packages = ["adapters", "orchestration", "validation", "workflow", "runtimes.pydantic_ai"]
+packages = ["adapters", "orchestration", "validation", "workflow", "runtimes.pydantic_ai", "coverage"]
 
 [tool.setuptools.data-files]
 "share/distillation-agents/agent_specs" = ["agent_specs/*.yaml"]
