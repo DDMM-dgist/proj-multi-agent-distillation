@@ -20,6 +20,7 @@ returns:
   - SimulationManifest
   - ValidationEvidence
 approval_boundaries:
+  - costly_teacher_labeling
   - production_md
   - reference_calculation
   - scheduler_submission

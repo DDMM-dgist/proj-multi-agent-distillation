@@ -124,6 +124,7 @@ APPROVAL_GATED_ACTIONS = {
     "acquire_structures": "costly_teacher_labeling",
     "label_with_teacher": "costly_teacher_labeling",
     "train_committee": "costly_training",
+    "evaluate_heldout_fidelity": "costly_training",
     "run_teacher_md": "production_md",
     "run_student_md": "production_md",
     "submit_scheduler_job": "scheduler_submission",

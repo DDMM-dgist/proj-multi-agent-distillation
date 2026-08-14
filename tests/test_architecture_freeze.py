@@ -21,7 +21,15 @@ import unittest
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
-FREEZE_REVISION = "AcquisitionPlan lifecycle amendment (v8; exact-plan approval, no role/action/contract/Judge change)"
+FREEZE_REVISION = (
+    "approval-boundary reconciliation (v9; costly_teacher_labeling added to "
+    "agent_specs/simulation.yaml to match SIMULATION_ACTIONS gaining "
+    "build_teacher_baseline/validate_teacher_reference, and evaluate_heldout_fidelity "
+    "added to APPROVAL_GATED_ACTIONS in actions.py to close a gap where its HPC binding "
+    "was READY_HPC_APPROVAL_GATED with a real executor but was never actually gated by "
+    "dispatch.authorize_and_execute's approval-boundary check; no role/action-set/contract/"
+    "Judge change)"
+)
 FROZEN_MODEL = "qwen2.5-7b-instruct"
 
 FROZEN = {
@@ -44,7 +52,7 @@ FROZEN = {
     "runtimes/pydantic_ai/driver.py":
         "571636918a2827ceded12e9ee3b0cad7f23ab73887d61ed0cc2b6d5727986719",
     "runtimes/pydantic_ai/actions.py":
-        "58f236d47cb9e7dda1878c2aadd1cbea2de7cf3ddef3ab0c6f0516d1b0179fff",
+        "c63f8d42bf208f87c2b7d220264e27556fd3ce79ac5d48c13becb0557c66c141",
     "runtimes/pydantic_ai/controller_bridge.py":
         "3eb11b9075bd25d5b45f09fc9d0b7c0c65f032c1293bd5e38f754fa26b752100",
     "orchestration/specs.py":
@@ -72,7 +80,7 @@ FROZEN = {
     "agent_specs/orchestrator.yaml":
         "37bb4da36e5075f7f94cb0008a44d07ef7c600db8da48a3b247aaf8b815c3950",
     "agent_specs/simulation.yaml":
-        "aab7a7842f1aefe175ca718c830469d6fa42b1ffae3e9cc1c599936f22fdf7f3",
+        "6b9fd7de3a5248b50622a3c33950411e3864c6b9ef1d28b17f7a27b19d7544e9",
 }
 
 
