@@ -73,6 +73,12 @@ class RecoveryPlanDraft(BaseModel):
     # workflow.actor_identity.normalize_actor_identity, propose_recovery's sole authoritative
     # validator for this field). Required -- an agent-driven draft must always declare who/what
     # is proposing it, never leave that to be inferred or added later by whoever writes the file.
+    # NOT an authority claim in its own right: once this draft's rendered JSON reaches
+    # propose_recovery through an agent-facing bridge that supplies its own trusted `proposer`
+    # kwarg (e.g. orchestrator_bridge._exec_propose_recovery), that trusted identity -- not this
+    # field -- is what gets recorded, and a mismatch fails closed. This field is only trusted
+    # outright when propose_recovery is invoked directly with no trusted proposer (the
+    # human-operated CLI's call shape).
     proposed_by: Any
     routing: RecoveryRouting
     return_stage: NonEmptyStr

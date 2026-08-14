@@ -1475,13 +1475,26 @@ class RunController:
                         "plan.escalation_rationale to proceed anyway"
                     )
 
-    def propose_recovery(self, plan_path):
+    def propose_recovery(self, plan_path, *, proposer=None):
         """Bind a scientific recovery proposal to the failed gate and its evidence.
 
         This is the sole authoritative deterministic validator for a RecoveryPlan: an
         agent-facing typed bridge (see runtimes.pydantic_ai.recovery_bridge) may PRODUCE a
         candidate plan file, but only this method ever binds it to the pending gate, and doing
         so never implies approval or execution -- see approve_recovery/start_iteration.
+
+        Trust boundary for the recorded proposer identity: ``proposer``, when supplied, must be
+        a TRUSTED caller/runtime identity (e.g. an orchestrator bridge's own Pydantic
+        ``Literal``-typed ``requested_by_role``, never something an LLM-authored plan payload
+        can forge) and is always authoritative over ``plan["proposed_by"]``. A plan payload
+        field is never itself trusted as an authority claim once a trusted ``proposer`` is
+        given -- it may only agree with it; any mismatch in either actor_kind or canonical_id
+        fails closed rather than silently preferring one or the other. This is how an
+        agent-facing path is prevented from having its plan payload assert a human (or any
+        other) identity it does not actually hold. Only when ``proposer`` is omitted (the
+        historical shape, used by the human-operated CLI and by direct/manual calls) does this
+        method fall back to trusting ``plan["proposed_by"]`` outright -- acceptable only because
+        that call shape is reserved for genuinely human-operated entry points.
         """
         pending = self.state.get("pending_recovery")
         if not pending or pending.get("status") != "required":
@@ -1512,8 +1525,24 @@ class RunController:
         # proposed_by is a provenance-bound proposer identity, required on every NEW proposal
         # (a manual/hand-authored plan.json is still a proposal and is not exempt) so
         # approve_recovery/authorize_recovery_capabilities can later enforce that the same
-        # canonical actor never both proposes and approves/authorizes the same recovery.
-        proposer = normalize_actor_identity(plan.get("proposed_by"), field_name="proposed_by")
+        # canonical actor never both proposes and approves/authorizes the same recovery. When a
+        # trusted caller identity (`proposer`) is supplied, it -- not the payload -- is
+        # authoritative; see the trust-boundary note in this method's docstring.
+        payload_proposed_by = plan.get("proposed_by")
+        if proposer is not None:
+            trusted = normalize_actor_identity(proposer, field_name="proposer")
+            if payload_proposed_by is not None:
+                payload_identity = normalize_actor_identity(payload_proposed_by, field_name="proposed_by")
+                if (payload_identity.actor_kind != trusted.actor_kind or
+                        payload_identity.canonical_id != trusted.canonical_id):
+                    raise ValueError(
+                        "recovery plan payload's proposed_by conflicts with the trusted "
+                        "caller-supplied proposer identity -- an untrusted plan payload field "
+                        "can never override or impersonate a trusted caller identity"
+                    )
+            proposer = trusted
+        else:
+            proposer = normalize_actor_identity(payload_proposed_by, field_name="proposed_by")
         resolved_agent, resolved_capability = self._resolve_recovery_routing(plan)
         try:
             return_index = self._stage_index(plan["return_stage"])

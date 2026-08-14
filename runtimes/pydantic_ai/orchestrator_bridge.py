@@ -52,7 +52,13 @@ def _exec_propose_recovery(proposal: "OrchestratorActionProposal", *, controller
     plan_path = proposal.parameters.get("plan_path")
     if not plan_path:
         raise ValueError("propose_recovery requires parameters.plan_path")
-    recovery = controller.propose_recovery(plan_path)
+    # Trust boundary: the recorded proposer identity comes from this proposal's own
+    # Pydantic Literal-typed `requested_by_role` (an LLM authoring the plan_path JSON cannot
+    # forge this field's value), never from whatever `proposed_by` the plan payload itself may
+    # contain. See RunController.propose_recovery's docstring for the fail-closed conflict
+    # policy this enforces.
+    trusted_proposer = {"actor_kind": "system", "canonical_id": proposal.requested_by_role}
+    recovery = controller.propose_recovery(plan_path, proposer=trusted_proposer)
     return {"recovery_id": recovery["id"], "status": recovery["status"],
             "path": recovery["path"], "integrity": recovery["integrity"]}
 

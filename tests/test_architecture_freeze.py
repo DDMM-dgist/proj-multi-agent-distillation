@@ -184,7 +184,36 @@ FREEZE_REVISION = (
     "propose+approve mode exists anywhere in this framework, and none was introduced. "
     "start_iteration, verify_recovery_execution, the recovery state machine's stage sequencing, "
     "and every other method are UNCHANGED; the normal per-action approval mechanism (grant_"
-    "action_approval/has_action_approval) is entirely separate machinery and was not touched.)"
+    "action_approval/has_action_approval) is entirely separate machinery and was not touched.) (9) "
+    "trust-boundary hardening for the recorded proposer identity: propose_recovery gained one "
+    "new OPTIONAL keyword-only argument, proposer (default None), used exclusively by trusted, "
+    "non-payload callers -- an agent-facing plan.json's own proposed_by field was never itself a "
+    "trustworthy authority claim (an LLM authoring that file could write proposed_by: "
+    "\"researcher\" or {actor_kind: \"human\", ...} and, before this revision, have it accepted "
+    "outright by normalize_actor_identity). When proposer is supplied, it -- not "
+    "plan[\"proposed_by\"] -- is the identity actually recorded on the recovery record; if the "
+    "plan payload also declares a proposed_by, it may only AGREE with the trusted proposer "
+    "(matching both actor_kind and canonical_id) and is never itself authoritative -- any "
+    "disagreement in either field fails closed with a ValueError rather than silently preferring "
+    "one side. When proposer is omitted (every call site before this revision: the human-operated "
+    "CLI's propose-recovery subcommand, direct/manual calls, and every existing test), behavior is "
+    "byte-for-byte unchanged from (8) -- plan[\"proposed_by\"] is trusted outright, which remains "
+    "correct only because that omitted-proposer call shape is reserved for genuinely "
+    "human-operated entry points (confirmed: no agent-driven/programmatic code anywhere in this "
+    "repository shells out to the CLI). The one real wired agent-facing path to propose_recovery, "
+    "runtimes.pydantic_ai.orchestrator_bridge._exec_propose_recovery, now derives its trusted "
+    "proposer from proposal.requested_by_role -- a Pydantic Literal[\"orchestrator\"]-typed field "
+    "on OrchestratorActionProposal that an LLM cannot forge to any other value -- rather than "
+    "leaving the plan payload's own proposed_by as the sole source of provenance; this closes the "
+    "one confirmed agent-impersonates-human gap. approve_recovery/authorize_recovery_capabilities "
+    "and their human-actor-kind/no-self-approval checks from (8) are entirely UNCHANGED by this "
+    "revision; no agent-callable path exists anywhere (runtimes.pydantic_ai.dispatch.py, "
+    "controller_bridge.py) that could supply an approved_by/authorized_by value to either method, "
+    "and the orchestrator bridge's only two declared human-approval-adjacent actions, "
+    "request_human_approval and read_human_decision, remain unwired and fail closed as "
+    "BLOCKED_CAPABILITY, exactly as before this revision. No stage, gate, recovery-taxonomy, "
+    "capability-routing, protected-reference, or schema_version change; no role/action-set/Judge "
+    "change.)"
 )
 FROZEN_MODEL = "qwen2.5-7b-instruct"
 
@@ -214,7 +243,7 @@ FROZEN = {
     "orchestration/specs.py":
         "4b6dc829fe2b6b594cc87e8a62bd944ea9df181cd7f420ae3732c861ce8e43cb",
     "workflow/controller.py":
-        "0d5e9ed9e96c9557fa0697d739abccc3bb4fadd75e5b8907e943809b57473cee",
+        "e26af4c19c4a0b1668c80880130eaf28d1ba03861389d5bc0f520ce94b71af85",
     "orchestration/schema/agent_result.schema.json":
         "a38afea9c06c21e647376efd835dec32a16b2f247583a090560cb1843e0eda31",
     "orchestration/schema/agent_spec.schema.json":
