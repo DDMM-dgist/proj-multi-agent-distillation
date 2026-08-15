@@ -116,7 +116,7 @@ class PydanticAIRuntime:
         # role-scoped ActionProposal, Orchestrator/Literature -> typed plan/evidence); unknown
         # roles fall back to the generic AgentResult. See role_outputs.select_output_model.
         from .role_outputs import select_output_model
-        output_model = select_output_model(spec)
+        output_model = select_output_model(spec, task)
         toolset = ReadOnlyToolset(context.read_allow_prefixes)
         agent = self._build_agent(spec, toolset, output_model, context)
         # Values that must never reach provenance/logs, masked wherever they appear.

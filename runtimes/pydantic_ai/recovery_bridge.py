@@ -14,6 +14,19 @@ does not touch controller state and cannot be mistaken for any of those steps.
 ``RootCauseClassification`` (diagnosis) and ``RecoveryPlan`` (recovery) stay distinct types: this
 bridge reads the former and produces the latter's typed draft, it never subclasses or merges them,
 so a caller can never confuse "the Analyst's interpretation" with "the approved recovery contract".
+
+``RecoveryPlanProposal`` (below) closes a second gap: ``RootCauseClassification`` alone cannot
+supply ``build_recovery_plan_draft``'s scientific-choice fields (``capability``,
+``proposed_changes``, ``labeling``, ``student_training``, ``revalidation``, and — since the
+Analyst's suggested ``recommended_recovery_target`` is advisory, not binding — ``return_stage``).
+Those choices are still genuinely scientific, so this module never fills them in deterministically:
+instead ``RecoveryPlanProposal`` is a second, distinct typed reasoning output — produced by a live
+PydanticAI Orchestrator role through the exact same generic ``typed_reasoning_output`` acceptance
+path as ``RootCauseClassification`` (see ``role_outputs.register_reasoning_output_model``), evidence
+-bound back to the diagnosis it was given (``diagnosis_artifact_sha256``), and validated (fail
+-closed, contextually, via ``validate_recovery_plan_proposal``) before ``build_recovery_plan_draft_
+from_proposal`` re-projects it into the existing, unchanged ``build_recovery_plan_draft`` call.
+``propose_recovery`` remains the sole authoritative validator either way.
 """
 from __future__ import annotations
 
@@ -23,6 +36,7 @@ from pydantic import BaseModel, Field, model_validator
 
 from workflow import recovery_taxonomy
 
+from .actions import ROLE_ALLOWED_ACTIONS
 from .models import NonEmptyStr
 from .root_cause import RootCauseClassification
 
@@ -147,6 +161,111 @@ class RecoveryPlanDraft(BaseModel):
         return payload
 
 
+class RecoveryPlanValidationError(ValueError):
+    pass
+
+
+class RecoveryPlanProposal(BaseModel):
+    """The Orchestrator's typed reasoning output proposing HOW to recover from a diagnosed
+    failure -- distinct from ``RootCauseClassification`` (WHY it failed) and from the approved
+    ``RecoveryPlan`` itself (this is still only a proposal; ``propose_recovery`` is what actually
+    binds it to a pending gate). ``diagnosis_artifact_sha256`` ties this proposal back to the exact
+    diagnosis it was asked to act on, so a proposal answering a stale or different diagnosis fails
+    closed rather than being silently accepted."""
+    model_config = {"extra": "forbid"}
+    run_id: NonEmptyStr
+    failed_stage: NonEmptyStr
+    diagnosis_artifact_sha256: NonEmptyStr
+    capability: NonEmptyStr
+    return_stage: NonEmptyStr
+    proposed_changes: list[dict[str, Any]] = Field(min_length=1)
+    labeling: dict[str, bool]
+    student_training: dict[str, Any]
+    revalidation: dict[str, Any]
+    rationale: NonEmptyStr
+    # Optional: the ONE concrete, already-registered action (role-appropriate for `capability`)
+    # that a generic driver (run-campaign) may dispatch automatically, without any human/Claude
+    # out-of-band step, to actually perform this recovery's corrective work once approved. A
+    # proposal that leaves this unset relies entirely on the workflow's own declared stage graph
+    # naturally re-running return_stage (and everything after it) once the recovery iteration
+    # quarantines their prior outputs -- still valid, just with no NEW parameters to apply.
+    corrective_action: Optional[dict[str, Any]] = None
+
+
+def validate_recovery_plan_proposal(proposal: RecoveryPlanProposal, *, expected_failed_stage: str,
+                                    expected_diagnosis_sha256: str, capability_roster: dict,
+                                    valid_stage_names) -> RecoveryPlanProposal:
+    """Contextual, fail-closed validation beyond Pydantic shape (mirrors
+    ``root_cause.validate_root_cause_classification``'s role for ``RootCauseClassification``).
+
+    ``capability_roster`` maps each registered recovery capability name to the role responsible
+    for it (e.g. ``workflow.controller.DEFAULT_RECOVERY_CAPABILITY_ROSTER``) -- the same roster
+    ``propose_recovery`` itself resolves ``responsible_capability`` against. It replaces a bare
+    ``valid_capabilities`` name-set because ``corrective_action.action_type``, when supplied, must
+    be validated against the actions THAT role is actually allowed to dispatch
+    (``actions.ROLE_ALLOWED_ACTIONS``) -- a plain set of capability names carries no role.
+    """
+    if proposal.failed_stage != expected_failed_stage:
+        raise RecoveryPlanValidationError(
+            f"proposal targets failed_stage {proposal.failed_stage!r}, expected "
+            f"{expected_failed_stage!r}")
+    if proposal.diagnosis_artifact_sha256 != expected_diagnosis_sha256:
+        raise RecoveryPlanValidationError(
+            "proposal's diagnosis_artifact_sha256 does not match the diagnosis it was given "
+            "-- refusing to bind a recovery plan to the wrong (or stale) diagnosis")
+    if proposal.capability not in capability_roster:
+        raise RecoveryPlanValidationError(f"unregistered recovery capability: {proposal.capability!r}")
+    if proposal.return_stage not in set(valid_stage_names):
+        raise RecoveryPlanValidationError(f"invalid return stage: {proposal.return_stage!r}")
+    if proposal.corrective_action is not None:
+        action = proposal.corrective_action
+        if not isinstance(action, dict) or not isinstance(action.get("action_type"), str) or \
+                not action.get("action_type"):
+            raise RecoveryPlanValidationError(
+                "corrective_action must be a dict with a non-empty string 'action_type'")
+        if not isinstance(action.get("parameters", {}), dict):
+            raise RecoveryPlanValidationError("corrective_action.parameters must be a dict")
+        role = capability_roster[proposal.capability]
+        if action["action_type"] not in ROLE_ALLOWED_ACTIONS.get(role, set()):
+            raise RecoveryPlanValidationError(
+                f"corrective_action.action_type {action['action_type']!r} is not an action "
+                f"{role!r} (the role responsible for capability {proposal.capability!r}) may "
+                "dispatch")
+    return proposal
+
+
+def build_recovery_plan_draft_from_proposal(
+    classification: RootCauseClassification, proposal: RecoveryPlanProposal, *,
+    proposed_by: Any,
+    diagnosis_artifact_path: str,
+    diagnosis_artifact_sha256: str,
+    expected_role: Optional[str] = None,
+    estimated_cost: Optional[dict] = None,
+    triggering_evidence: Optional[list] = None,
+    required_input_artifact_roles: Optional[list] = None,
+    expected_output_artifact_roles: Optional[list] = None,
+    resource_request: Optional[dict] = None,
+    policy_budget_request: Optional[dict] = None,
+) -> RecoveryPlanDraft:
+    """Re-project an already-validated ``RecoveryPlanProposal`` (the Orchestrator's scientific
+    choices) plus the diagnosis it answers into the existing, unchanged
+    ``build_recovery_plan_draft`` -- so this new reasoning-output path adds no second way to
+    construct a ``RecoveryPlanDraft``, only a new, agent-driven SOURCE of its scientific fields."""
+    return build_recovery_plan_draft(
+        classification, proposed_by=proposed_by, failed_stage=proposal.failed_stage,
+        capability=proposal.capability, return_stage=proposal.return_stage,
+        proposed_changes=proposal.proposed_changes, labeling=proposal.labeling,
+        student_training=proposal.student_training, revalidation=proposal.revalidation,
+        estimated_cost=estimated_cost, diagnosis_artifact_path=diagnosis_artifact_path,
+        diagnosis_artifact_sha256=diagnosis_artifact_sha256, triggering_evidence=triggering_evidence,
+        expected_role=expected_role, required_input_artifact_roles=required_input_artifact_roles,
+        expected_output_artifact_roles=expected_output_artifact_roles,
+        resource_request=resource_request, policy_budget_request=policy_budget_request,
+        extra_recovery_context=(
+            {"corrective_action": proposal.corrective_action}
+            if proposal.corrective_action is not None else None))
+
+
 def build_recovery_plan_draft(
     classification: RootCauseClassification, *,
     proposed_by: Any,
@@ -166,6 +285,7 @@ def build_recovery_plan_draft(
     expected_output_artifact_roles: Optional[list] = None,
     resource_request: Optional[dict] = None,
     policy_budget_request: Optional[dict] = None,
+    extra_recovery_context: Optional[dict] = None,
 ) -> RecoveryPlanDraft:
     """Bridge an evidence-bound RootCauseClassification into a typed RecoveryPlanDraft.
 
@@ -211,5 +331,6 @@ def build_recovery_plan_draft(
         resource_request=resource_request or {},
         policy_budget_request=policy_budget_request or {},
         requires_human_approval=classification.requires_human_approval,
-        recovery_context={"run_id": classification.run_id, "diagnosed_stage": classification.stage},
+        recovery_context={"run_id": classification.run_id, "diagnosed_stage": classification.stage,
+                          **(extra_recovery_context or {})},
     )

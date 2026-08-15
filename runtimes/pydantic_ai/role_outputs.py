@@ -14,6 +14,18 @@ Each role's PydanticAI ``output_type`` is a role-specific typed model, never a f
 ActionProposals (see actions.py); the executor bridge that turns an accepted proposal into a
 validated artifact + AgentResult lands in Phase 4-5. Until then the driver keeps using the
 canonical AgentResult path for producers; this module and its tests lock the typed contract.
+
+A role is not always locked to exactly one typed output for every task it ever performs: a task
+may declare ``context.expected_output_model`` naming a *registered reasoning-output model*
+(``register_reasoning_output_model`` below) to ask that role to produce a different, genuinely
+distinct typed result for that one invocation instead of its role's default proposal/plan model
+-- e.g. the Analyst returning a typed ``RootCauseClassification`` (diagnosis) rather than an
+``AnalystActionProposal`` (executable action) when asked to diagnose, not act. This is how
+``production_router``'s ``typed_reasoning_output`` acceptance strategy stays generic: it never
+special-cases a role or model name itself, it only asks this selector which model a given
+(spec, task) pair resolves to. An unregistered name fails closed rather than silently falling
+back to the role default, since that would mean silently accepting a different-shaped result
+than the task actually asked for.
 """
 from __future__ import annotations
 
@@ -99,8 +111,49 @@ _ROLE_OUTPUT_MODELS = {
 }
 
 
-def select_output_model(spec):
-    """Return the typed output model for a role. Falls back to the generic AgentResultModel
-    for any spec whose name is not one of the seven known roles (keeps backward compatibility)."""
+# --- Typed reasoning-output registry ----------------------------------------------
+#
+# Advisory, evidence-bound scientific reasoning results (RootCauseClassification,
+# RecoveryPlanProposal, ...) that a role may be asked to produce for ONE task instead of its
+# usual proposal/plan output. Registered here by name -- not by role -- so any current or future
+# role can be asked, per-task, for any registered reasoning output; this module stays the single
+# place that knows the mapping, and production_router never hardcodes a model name.
+_REASONING_OUTPUT_MODELS: dict[str, type[BaseModel]] = {}
+
+
+def register_reasoning_output_model(name: str, model: type[BaseModel]) -> None:
+    _REASONING_OUTPUT_MODELS[name] = model
+
+
+def is_reasoning_output_model(model: type) -> bool:
+    return model in _REASONING_OUTPUT_MODELS.values()
+
+
+def select_output_model(spec, task: Optional[dict] = None):
+    """Return the typed output model for one (spec, task) invocation.
+
+    If ``task.context.expected_output_model`` names a registered reasoning-output model, that
+    model wins for this invocation regardless of role -- an unregistered name fails closed
+    (raises) rather than silently falling back to the role's default output. Otherwise falls back
+    to the generic AgentResultModel for any spec whose name is not one of the known roles (keeps
+    backward compatibility).
+    """
+    if task is not None:
+        hint = (task.get("context") or {}).get("expected_output_model")
+        if hint is not None:
+            try:
+                return _REASONING_OUTPUT_MODELS[hint]
+            except KeyError:
+                raise ValueError(f"unregistered reasoning output model: {hint!r}") from None
     name = getattr(spec, "name", None)
     return _ROLE_OUTPUT_MODELS.get(name, AgentResultModel)
+
+
+# Registered late (after the registry function exists) to avoid import-order issues; neither
+# root_cause nor recovery_bridge depends on this module, so importing them here cannot create a
+# cycle.
+from .root_cause import RootCauseClassification  # noqa: E402
+from .recovery_bridge import RecoveryPlanProposal  # noqa: E402
+
+register_reasoning_output_model("RootCauseClassification", RootCauseClassification)
+register_reasoning_output_model("RecoveryPlanProposal", RecoveryPlanProposal)

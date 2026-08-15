@@ -7,20 +7,30 @@ Strategies (selected from the role's typed output model, not by the caller):
                      -> trusted executor -> controller record (dispatch_via_controller).
 - typed_result    : OrchestratorPlan / LiteratureEvidence -> Pydantic-validated typed output,
                      recorded as provenance; NO controller mutation.
+- typed_reasoning_output: a task-declared, REGISTERED reasoning-output model (e.g. the Analyst's
+                     RootCauseClassification) -> Pydantic-validated + an optional caller-supplied
+                     contextual validator (fail-closed) -> hash-bound persisted artifact; NO
+                     controller mutation and NO executor/action dispatch. Distinct from
+                     typed_result: it is selected per-TASK (role_outputs.select_output_model's
+                     ``task`` argument), carries its own contextual (not just shape) validation,
+                     and its accepted artifact is bound to a sha256 for downstream provenance
+                     (e.g. RecoveryPlanDraft.diagnosis_binding) rather than only written to the
+                     provenance record. Generic: this router never names a specific reasoning
+                     model; see role_outputs.register_reasoning_output_model for the registry.
 - agent_result    : generic AgentResult (fallback / unknown role).
 
-Mode semantics are uniform: only ``primary`` may mutate exchange/controller state; ``shadow`` and
-``dry_run`` never do. Wrong role/output combinations are fail-closed. Provenance is written on
-every path. This router changes NO scientific (gate/recovery) semantics.
+Mode semantics are uniform: only ``primary`` may mutate exchange/controller/reasoning-artifact
+state; ``shadow`` and ``dry_run`` never do. Wrong role/output combinations are fail-closed.
+Provenance is written on every path. This router changes NO scientific (gate/recovery) semantics.
 """
 from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Optional
+from typing import Any, Callable, Optional
 
 from .driver import _write_provenance
-from .role_outputs import select_output_model
+from .role_outputs import is_reasoning_output_model, select_output_model
 
 
 @dataclass
@@ -33,13 +43,26 @@ class RouteResult:
     detail: object = None  # validated payload (judge/typed) or ActionOutcome (producer)
 
 
-def acceptance_strategy(spec) -> str:
-    model = select_output_model(spec).__name__
-    if model == "JudgeVoteModel":
+@dataclass
+class ReasoningOutputAcceptance:
+    """``RouteResult.detail`` for the ``typed_reasoning_output`` strategy. ``instance`` is the
+    validated Pydantic model (None if rejected); ``artifact_path``/``artifact_sha256`` are the
+    hash-bound persisted copy a caller can bind downstream provenance to (e.g. a RecoveryPlan
+    draft's diagnosis_binding), present only when accepted."""
+    instance: object = None
+    artifact_path: Optional[Path] = None
+    artifact_sha256: Optional[str] = None
+
+
+def acceptance_strategy(spec, task: Optional[dict] = None) -> str:
+    model = select_output_model(spec, task)
+    if model.__name__ == "JudgeVoteModel":
         return "judge_gate"
-    if model.endswith("ActionProposal"):
+    if is_reasoning_output_model(model):
+        return "typed_reasoning_output"
+    if model.__name__.endswith("ActionProposal"):
         return "producer_dispatch"
-    if model in ("OrchestratorPlan", "LiteratureEvidence"):
+    if model.__name__ in ("OrchestratorPlan", "LiteratureEvidence"):
         return "typed_result"
     return "agent_result"
 
@@ -48,13 +71,20 @@ def _get(candidate, key, default=None):
     return candidate.get(key, default) if isinstance(candidate, dict) else default
 
 
-def run_role(runtime, task, spec, context, *, controller=None, registry=None, mode="shadow") -> RouteResult:
+def run_role(runtime, task, spec, context, *, controller=None, registry=None, mode="shadow",
+            reasoning_validator: Optional[Callable[[Any], Any]] = None) -> RouteResult:
     """Invoke one role and accept its result via the role-appropriate strategy. ``mode`` in
-    {"primary","shadow","dry_run","validate_only"} — only primary mutates state."""
+    {"primary","shadow","dry_run","validate_only"} — only primary mutates state.
+
+    ``reasoning_validator``, used only by the ``typed_reasoning_output`` strategy, is an optional
+    ``instance -> instance`` callable performing CONTEXTUAL fail-closed validation beyond Pydantic
+    shape (e.g. root_cause.validate_root_cause_classification bound to this run's available
+    artifacts/valid recovery targets). It raises to reject; this router stays ignorant of what it
+    checks."""
     invocation = runtime.run(task, spec, context)
     rec = invocation.provenance
     rec.mode = mode
-    strategy = acceptance_strategy(spec)
+    strategy = acceptance_strategy(spec, task)
 
     # A provider attempt that raised before output is a preserved failure; no acceptance.
     if getattr(rec, "failure_category", ""):
@@ -64,27 +94,29 @@ def run_role(runtime, task, spec, context, *, controller=None, registry=None, mo
     if strategy in ("judge_gate", "agent_result"):
         return _accept_via_exchange(invocation, spec, task, context, mode, strategy)
 
-    # producer_dispatch / typed_result: fail-closed Pydantic validation of the typed output
-    # against the role's model (so a malformed/wrong-shape output is rejected regardless of which
-    # runtime produced it — the real runtime already enforces output_type; this guards test/other
-    # runtimes too).
-    ok, err = _validate_typed(invocation.candidate, spec)
-    if not ok:
+    # producer_dispatch / typed_result / typed_reasoning_output: fail-closed Pydantic validation
+    # of the typed output against the role's model (so a malformed/wrong-shape output is rejected
+    # regardless of which runtime produced it — the real runtime already enforces output_type;
+    # this guards test/other runtimes too).
+    instance, err = _validate_typed(invocation.candidate, spec, task)
+    if err:
         path = _write_provenance(context, invocation)
         return RouteResult(strategy, False, False, err, path)
 
     if strategy == "producer_dispatch":
         return _accept_via_dispatch(invocation, spec, context, controller, registry, mode)
+    if strategy == "typed_reasoning_output":
+        return _accept_typed_reasoning_output(invocation, spec, context, mode, instance,
+                                              reasoning_validator)
     return _accept_typed_result(invocation, spec, context, mode)
 
 
-def _validate_typed(candidate, spec):
-    model = select_output_model(spec)
+def _validate_typed(candidate, spec, task: Optional[dict] = None):
+    model = select_output_model(spec, task)
     try:
-        model(**(candidate or {}))
-        return True, None
+        return model(**(candidate or {})), None
     except Exception as exc:  # pydantic.ValidationError etc. -> fail-closed
-        return False, f"typed-output validation failed: {type(exc).__name__}"
+        return None, f"typed-output validation failed: {type(exc).__name__}: {exc}"
 
 
 def _accept_via_exchange(invocation, spec, task, context, mode, strategy) -> RouteResult:
@@ -161,3 +193,41 @@ def _accept_typed_result(invocation, spec, context, mode) -> RouteResult:
     rec.controller_mutated = False
     path = _write_provenance(context, invocation)
     return RouteResult("typed_result", accepted, False, None, path, invocation.candidate)
+
+
+def _persist_reasoning_artifact(context, rec, instance) -> tuple[Path, str]:
+    """Hash-bind the accepted reasoning output as its own on-disk artifact (distinct from the
+    provenance record, which is a per-attempt log): attempt-scoped filename so a retry never
+    overwrites a prior accepted artifact, mirroring driver._write_record's convention."""
+    from workflow.integrity import sha256_file
+    out_dir = Path(context.exchange_dir).resolve() / "reasoning_outputs"
+    out_dir.mkdir(parents=True, exist_ok=True)
+    path = out_dir / f"{rec.task_id}.{rec.attempt_id}.{type(instance).__name__}.json"
+    path.write_text(instance.model_dump_json(indent=2) + "\n")
+    return path, sha256_file(path)
+
+
+def _accept_typed_reasoning_output(invocation, spec, context, mode, instance,
+                                   reasoning_validator) -> RouteResult:
+    """A registered reasoning-output model (see role_outputs.register_reasoning_output_model):
+    Pydantic-validated shape (already done by the caller) + an optional contextual validator,
+    then — only in primary mode, only if accepted — persisted as a hash-bound artifact. Never
+    mutates the controller and never dispatches an executor: accepting a diagnosis/reasoning
+    result is not the same as acting on it."""
+    rec = invocation.provenance
+    error = None
+    if reasoning_validator is not None:
+        try:
+            instance = reasoning_validator(instance)
+        except Exception as exc:  # fail-closed: any contextual rejection is a rejection
+            error = f"reasoning output validation failed: {type(exc).__name__}: {exc}"
+    accepted = error is None and mode == "primary"
+    rec.accepted = accepted
+    rec.controller_mutated = False
+    artifact_path = artifact_sha256 = None
+    if accepted:
+        artifact_path, artifact_sha256 = _persist_reasoning_artifact(context, rec, instance)
+    path = _write_provenance(context, invocation)
+    detail = ReasoningOutputAcceptance(instance=instance if error is None else None,
+                                      artifact_path=artifact_path, artifact_sha256=artifact_sha256)
+    return RouteResult("typed_reasoning_output", accepted, False, error, path, detail)

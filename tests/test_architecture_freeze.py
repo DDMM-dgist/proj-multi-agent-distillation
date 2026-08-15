@@ -29,6 +29,12 @@ machine (Gate failure -> pending recovery -> recovery proposal/approval -> itera
 invalidation/re-entry -> verified execution -> revalidation -> same-stage Gate -> recovery
 resolution) rather than replacing it — see FREEZE_REVISION below for exactly what changed and
 what deliberately did not.
+
+v13 (post-init lifecycle completion), v14 (generic typed reasoning-output acceptance path), and
+v15 (recovery-plan reasoning output) deliberately re-froze pydantic_ai_runtime.py/role_outputs.py/
+production_router.py (v14), role_outputs.py again (v15), and workflow/controller.py (v13) for the
+same reason as v10-v12 — see FREEZE_REVISION below for exactly what changed and what deliberately
+did not.
 """
 from __future__ import annotations
 
@@ -237,7 +243,80 @@ FREEZE_REVISION = (
     "still call verify_inputs(), whose project-code-revision/source-input-hash checks are "
     "entirely unchanged); a run that never calls either new method behaves byte-for-byte as before "
     "this revision. No stage, gate, contract, recovery-taxonomy, capability-routing, protected-"
-    "reference, or schema_version change; no role/action-set/Judge change."
+    "reference, or schema_version change; no role/action-set/Judge change. "
+    "v14 (generic typed reasoning-output acceptance path) closes a real production gap: before "
+    "this revision, RootCauseClassification (runtimes.pydantic_ai.root_cause) had NO production "
+    "dispatch path at all -- every non-test reference either hand-constructed it directly in "
+    "Python (bypassing the agent runtime) or consumed an already-constructed instance "
+    "(recovery_bridge.build_recovery_plan_draft); the Analyst's only wired production output "
+    "remained AnalystActionProposal, and classify_root_cause's executor was, and remains, an "
+    "unimplemented reasoning stub (executors._reasoning, fn=None, always DRY_RUN -- UNCHANGED by "
+    "this revision). This revision adds a FOURTH, generic acceptance strategy, typed_reasoning_"
+    "output, alongside the existing judge_gate/producer_dispatch/typed_result -- for advisory, "
+    "evidence-bound scientific reasoning results that must be genuinely produced by a live "
+    "PydanticAI role, Pydantic-validated, and hash-bound as their own persisted artifact, but must "
+    "never dispatch an executor or mutate the controller merely because they were accepted. "
+    "role_outputs.select_output_model gained an optional second parameter, task (every existing "
+    "call site passed none before this revision and gets None here too, so a task-blind caller is "
+    "unaffected): if task['context']['expected_output_model'] names a model registered via the new "
+    "register_reasoning_output_model(name, model) registry, THAT model -- not the role's fixed "
+    "default -- is what pydantic_ai_runtime.PydanticAIRuntime.run enforces as output_type and what "
+    "production_router validates against, for that one invocation only; an unregistered name fails "
+    "closed (raises) rather than silently falling back to the role default. A task that omits "
+    "expected_output_model (every task shape that existed before this revision) resolves exactly "
+    "as before: select_output_model(spec) and select_output_model(spec, None) are identical. "
+    "RootCauseClassification is registered as the first (not the only ever) member of this "
+    "registry; this lets a future scientific role reuse the identical mechanism for a different "
+    "registered reasoning model without touching production_router again. production_router."
+    "acceptance_strategy gained the matching optional task parameter and now checks role_outputs."
+    "is_reasoning_output_model before the existing ActionProposal/typed_result checks (ordering is "
+    "immaterial today since no reasoning-output model name collides with either, but reasoning-"
+    "output resolution intentionally take priority as the most specific, explicitly-registered "
+    "match). run_role gained an optional reasoning_validator keyword (default None, so every "
+    "existing caller is unaffected): an instance -> instance callable performing CONTEXTUAL "
+    "fail-closed validation the router itself stays ignorant of (e.g. root_cause.validate_root_"
+    "cause_classification bound to a specific run's available artifacts/valid recovery targets); "
+    "it runs only on the typed_reasoning_output path, only after Pydantic shape validation already "
+    "passed, and any exception it raises is a rejection like any other. Acceptance (mode=primary, "
+    "no validator rejection) persists the instance as its own attempt-scoped, sha256-hashed JSON "
+    "file under <exchange_dir>/reasoning_outputs/ (mirroring driver._write_record's per-attempt-"
+    "filename convention so a retry can never overwrite a prior accepted artifact) IN ADDITION TO "
+    "the unconditional provenance record every path already wrote; RouteResult.detail for this "
+    "strategy is a new ReasoningOutputAcceptance(instance, artifact_path, artifact_sha256) rather "
+    "than reusing typed_result's bare-candidate detail shape, so a caller can bind downstream "
+    "provenance (e.g. a future RecoveryPlanDraft.diagnosis_binding) to a real hash without "
+    "re-deriving one. _validate_typed now returns (instance_or_None, error) instead of (ok, error) "
+    "-- an internal signature change consumed only by run_role itself, needed because the "
+    "reasoning-output path (unlike producer_dispatch/typed_result, which only needed a bool) must "
+    "carry the parsed instance forward to the contextual validator and the persistence step. "
+    "judge_gate/producer_dispatch/typed_result/agent_result acceptance behavior, RouteResult's "
+    "existing fields, and every existing call site that never passes task or reasoning_validator "
+    "are BYTE-FOR-BYTE unchanged by this revision. No stage, gate, recovery-taxonomy, capability-"
+    "routing, protected-reference, schema_version, role/action-set, or Judge change; classify_root_"
+    "cause's executor binding, dispatch.py, and controller_bridge.py are untouched. "
+    "v15 (recovery-plan reasoning output) registers a SECOND member of the v14 typed-reasoning-"
+    "output registry, RecoveryPlanProposal (runtimes.pydantic_ai.recovery_bridge, itself NOT a "
+    "frozen file), closing the remaining gap v14 deliberately left open: RootCauseClassification "
+    "alone cannot supply recovery_bridge.build_recovery_plan_draft's scientific-choice fields "
+    "(capability, proposed_changes, labeling, student_training, revalidation, return_stage -- the "
+    "Analyst's recommended_recovery_target is advisory, not binding on the actual plan). Those "
+    "choices remain genuinely scientific, so nothing deterministic fills them in: RecoveryPlan"
+    "Proposal is produced by a live PydanticAI Orchestrator role through the IDENTICAL typed_"
+    "reasoning_output path RootCauseClassification already uses -- role_outputs.py's only change is "
+    "importing RecoveryPlanProposal and calling the existing register_reasoning_output_model a "
+    "second time; acceptance_strategy/run_role/_accept_typed_reasoning_output/_validate_typed are "
+    "untouched (is_reasoning_output_model already generalized over the whole registry in v14). The "
+    "proposal is evidence-bound back to the diagnosis it answers (diagnosis_artifact_sha256), and "
+    "recovery_bridge.validate_recovery_plan_proposal (a new, non-frozen-file function, used only as "
+    "a caller-supplied reasoning_validator exactly like root_cause.validate_root_cause_classifica"
+    "tion) fails closed on a wrong failed_stage, a stale/mismatched diagnosis binding, an "
+    "unregistered capability, or an invalid return_stage. recovery_bridge.build_recovery_plan_draft_"
+    "from_proposal re-projects an already-validated proposal into the EXISTING, byte-for-byte-"
+    "unchanged build_recovery_plan_draft -- there is still only one function that ever constructs a "
+    "RecoveryPlanDraft; this revision only adds a second, agent-driven source for its scientific "
+    "fields. No stage, gate, recovery-taxonomy, capability-routing, protected-reference, schema_"
+    "version, role/action-set, or Judge change; propose_recovery and every other frozen file are "
+    "untouched."
 )
 FROZEN_MODEL = "qwen2.5-7b-instruct"
 
@@ -253,11 +332,11 @@ FROZEN = {
     "runtimes/pydantic_ai/models.py":
         "b6e5efbb6ccc89c9be17d39e8b0255b8b97178292a6dc0619ada506e71fbfd1a",
     "runtimes/pydantic_ai/pydantic_ai_runtime.py":
-        "3d2105d5f15824fbd26a599996181e09f2bb555c331aff514df14a4122d2bcb9",
+        "2eaf42e35b722f421f6bae0c29a9c03ba903145c8acc774067546ec449f46b82",
     "runtimes/pydantic_ai/role_outputs.py":
-        "929695fad270279f839e8d7cd7ca441516fc2fd6c6717ec0359e5a52050972eb",
+        "2ca372aea8a105504fa8ed08c9e2fe47b04733564046b788b92d586139e4708a",
     "runtimes/pydantic_ai/production_router.py":
-        "cc390924d8ccc02e11963e52c2a3fff70ea86fab4a6f7cdc30bdcd8b1d9d44de",
+        "ad93a43d4cfe963e79e5c6503b4126b718e23c520edf7ad8949b2679b680bdc0",
     "runtimes/pydantic_ai/driver.py":
         "571636918a2827ceded12e9ee3b0cad7f23ab73887d61ed0cc2b6d5727986719",
     "runtimes/pydantic_ai/actions.py":

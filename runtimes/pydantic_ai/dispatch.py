@@ -28,9 +28,17 @@ from .tool_manifests import ROLE_TOOL_MANIFESTS, manifest_for
 _TERMINAL_CAPABILITY = {"NOT_AVAILABLE", "NOT_IMPLEMENTED", "OUT_OF_CURRENT_SCOPE"}
 
 
+class ExternalActionPending(Exception):
+    """A trusted executor raises this to report that the action was legitimately submitted but
+    has not completed yet (e.g. queued external/async work) -- distinct from an ordinary failure
+    (EXECUTOR_ERROR) and from an already-completed replay (DUPLICATE). Never consumes the
+    idempotency key: a later dispatch with the same key re-checks/re-attempts instead of replaying
+    a stale outcome, so polling for completion never looks like a duplicate-execution bug."""
+
+
 class ActionOutcome(BaseModel):
     model_config = {"extra": "forbid"}
-    status: str  # EXECUTED | DRY_RUN | DENIED | BLOCKED_CAPABILITY | APPROVAL_REQUIRED | DUPLICATE | INVALID
+    status: str  # EXECUTED | DRY_RUN | DENIED | BLOCKED_CAPABILITY | APPROVAL_REQUIRED | DUPLICATE | INVALID | PENDING
     action_type: str
     role: str
     reason: str = ""
@@ -220,6 +228,10 @@ def authorize_and_execute(proposal, *, registry: dict, approvals, idempotency,
                    recovery_authorization_envelope_sha256=envelope_sha256)
     try:
         artifact = desc.executor(proposal)
+    except ExternalActionPending as exc:
+        # Legitimately still in flight -- not a failure, and not consumed as a completed
+        # execution, so the SAME idempotency key can be dispatched again later to re-check.
+        return out("PENDING", str(exc))
     except Exception as exc:  # noqa: BLE001 - executor/validator failure is fail-closed
         # A completion/preservation validator raises to signal failure; never emit a passing
         # artifact. INVALID for a validation failure, EXECUTOR_ERROR otherwise. Key not consumed.

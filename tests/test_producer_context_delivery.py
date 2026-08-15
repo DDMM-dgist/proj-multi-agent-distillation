@@ -131,7 +131,8 @@ class ProducerContextDeliveryTests(unittest.TestCase):
         self.assertLessEqual(packet["packet_bytes"], cli.MAX_PRODUCER_EVIDENCE_PACKET_BYTES)
         self.assertFalse(contexts[0].tools_enabled)
         self.assertEqual(contexts[0].read_allow_prefixes, [])
-        self.assertEqual(c.state["idempotency"]["producer-context-test:training:001"]["status"], "EXECUTED")
+        self.assertEqual(
+            c.state["idempotency"]["producer-context-test:training:001:iter1"]["status"], "EXECUTED")
 
     def test_context_budget_failure_is_local_before_runtime_or_executor(self):
         from runtimes.pydantic_ai import cli

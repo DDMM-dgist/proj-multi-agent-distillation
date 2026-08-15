@@ -20,7 +20,9 @@ import argparse
 import json
 import os
 import sys
+from dataclasses import dataclass
 from pathlib import Path
+from typing import Optional
 
 # Meaningful, distinct exit codes.
 EXIT_SUCCESS = 0
@@ -31,6 +33,9 @@ EXIT_APPROVAL_REQUIRED = 5
 EXIT_BLOCKED_POLICY = 6
 EXIT_DUPLICATE = 7
 EXIT_INTERNAL = 8
+EXIT_RECOVERY_REQUIRED = 9
+EXIT_RECOVERY_EXECUTION_UNVERIFIED = 10
+EXIT_RECOVERY_ACTION_PENDING = 11
 
 _PROVIDER_UNAVAILABLE_FAILURES = {"authentication_failure"}
 MAX_PRODUCER_GENERATION_ATTEMPTS = 3
@@ -67,6 +72,34 @@ def _build_parser() -> argparse.ArgumentParser:
                        help="test-only: create three PASS judge votes from frozen evidence")
     stage.add_argument("--mock-judge-response", action="append", default=[],
                        help="test-only: one canned JudgeVote JSON per judge context")
+    campaign = sub.add_parser(
+        "run-campaign",
+        help="drive a run forward across every eligible stage until completion or a pause state")
+    campaign.add_argument("--run-dir", required=True)
+    campaign.add_argument("--runtime", choices=("mock", "pydantic-ai"), required=True,
+                          help="required; use pydantic-ai for production, mock only in tests")
+    campaign.add_argument("--mock-response", default=None,
+                          help="test-only: shared canned producer response (usually omit and let "
+                               "each stage self-generate its deterministic mock proposal)")
+    campaign.add_argument("--agent-specs-dir", default="agent_specs")
+    campaign.add_argument("--exchange-dir", default=None)
+    campaign.add_argument("--repo-root", default=".")
+    campaign.add_argument("--auto-mock-judges", action="store_true",
+                          help="test-only: create three PASS judge votes from frozen evidence")
+    campaign.add_argument("--mock-judge-response", action="append", default=[],
+                          help="test-only: one canned JudgeVote JSON per judge context")
+    campaign.add_argument("--mock-analyst-response", default=None,
+                          help="test-only: canned RootCauseClassification JSON for a pending "
+                               "recovery diagnosis (required with --runtime mock if one is "
+                               "pending)")
+    campaign.add_argument("--mock-orchestrator-response", default=None,
+                          help="test-only: canned RecoveryPlanProposal JSON for a pending "
+                               "recovery plan (required with --runtime mock if one is pending)")
+    approve_recovery = sub.add_parser(
+        "approve-recovery", help="record explicit human approval for a proposed recovery")
+    approve_recovery.add_argument("--run-dir", required=True)
+    approve_recovery.add_argument("--approved-by", required=True)
+    approve_recovery.add_argument("--note", default=None)
     r = sub.add_parser("run-task", help="run one task through the runtime")
     r.add_argument("--runtime", choices=("mock", "pydantic-ai"), required=True)
     r.add_argument("--agent", required=True, help="agent/role name (spec basename)")
@@ -227,6 +260,15 @@ def _proposal_from_stage(controller, stage_name, stage_cfg):
         if existing is not None and str(Path(existing).resolve()) != protected_reference:
             raise ValueError("stage proposal reference_yaml does not match the controller-bound protected reference")
         params["reference_yaml"] = protected_reference
+    # Idempotency is scoped to the CURRENT recovery iteration, not just the stage: quarantining a
+    # stage's outputs at start_iteration() is meaningless if the very next dispatch of that same
+    # stage/action is silently treated as a DUPLICATE of the pre-recovery attempt and never
+    # actually re-executes. Same action + same iteration -> still a duplicate (blocked); same
+    # approved corrective action + a NEW iteration -> a fresh, distinct idempotency identity, so
+    # it genuinely re-executes.
+    iteration_id = controller.state["iterations"][-1]["id"]
+    base_idempotency_key = route.get("idempotency_key",
+                                     f"{controller.state['run_id']}:{stage_name}:001")
     return {
         "schema_version": 1,
         "run_id": controller.state["run_id"],
@@ -236,7 +278,7 @@ def _proposal_from_stage(controller, stage_name, stage_cfg):
         "parameters": params,
         "expected_outputs": list(controller.stage(stage_name).get("outputs", [])),
         "approval_boundary": boundary,
-        "idempotency_key": route.get("idempotency_key", f"{controller.state['run_id']}:{stage_name}:001"),
+        "idempotency_key": f"{base_idempotency_key}:iter{iteration_id}",
         "dry_run": False,
         "requested_by_role": role,
         "action_type": action,
@@ -785,168 +827,811 @@ def _cmd_approve(args) -> int:
     return EXIT_SUCCESS
 
 
-def _cmd_run_stage(args) -> int:
-    from orchestration.specs import load_agent_specs
+@dataclass
+class StageRunResult:
+    """Structured outcome of running one production stage — same information ``_cmd_run_stage``
+    used to print + turn into an exit code, now returned so a non-CLI caller (``run-campaign``)
+    can make its OWN control decisions without parsing printed text or re-deriving exit codes.
+    ``reason`` is a stable, generic code (never a stage name or domain concept)."""
+    reason: str
+    exit_code: int
+    message: str
+    approval_boundary: Optional[str] = None
+    gate_decision: Optional[str] = None
+    evidence_path: Optional[Path] = None
+    action_status: Optional[str] = None
+
+
+def run_production_stage(controller, stage_name, *, runtime, agent_specs_dir="agent_specs",
+                         exchange_dir=None, repo_root=".", auto_mock_judges=False,
+                         mock_response=None, mock_judge_response=None) -> StageRunResult:
+    """Run ONE stage through the real production dispatch + gate path. The single production
+    entry point for a stage: ``_cmd_run_stage`` (the ``run-stage`` CLI command) and
+    ``run-campaign``'s forward-progression loop both call this and only this -- there is no
+    second, parallel implementation of stage execution.
+
+    Generic over ``stage_name``: every stage-specific value it uses (role/action/approval
+    boundary, parameters, outputs, gate criteria/lenses) comes from the controller/workflow
+    config, never a hardcoded name in this function.
+    """
     from workflow.controller import RunController
+    from orchestration.specs import load_agent_specs
     from .bounded_evidence import build_bounded_evidence
     from .executors import build_executor_registry
     from .mock_runtime import MockAgentRuntime
     from .models import RuntimeContext
-    from .production_router import run_role
+    from .production_router import run_role  # noqa: F401  (kept for parity with prior imports)
     from . import provider as _prov
+
+    c = controller
+    c.verify_inputs()
+    stage_cfg = _stage_config(c, stage_name)
+    proposal, role = _proposal_from_stage(c, stage_name, stage_cfg)
+    try:
+        proposal = _bind_acquisition_plan_for_stage(c, proposal)
+    except ValueError as exc:
+        message = str(exc)
+        if message.startswith("PLAN_INPUT_REQUIRED"):
+            return StageRunResult("PLAN_INPUT_REQUIRED", EXIT_VALIDATION_REJECTED, message)
+        raise
+    evidence_path = c.run_dir / "exchange" / "bounded_evidence" / f"{stage_name}.json"
+    upstream = [a["path"] for a in c.state.get("artifacts", [])]
+    build_bounded_evidence(upstream, evidence_path, protocol_refs=[c.state.get("workflow_config")])
+    specs = load_agent_specs(agent_specs_dir)
+    task = _producer_task(stage_name, role, evidence_path, c, proposal)
+    exchange = Path(exchange_dir) if exchange_dir else c.run_dir / "exchange"
+
+    def ctx_factory(_index, provider_name="mock", model_id="mock"):
+        return RuntimeContext(exchange_dir=str(exchange), repo_root=repo_root,
+                              provider=provider_name, model_id=model_id,
+                              read_allow_prefixes=[], tools_enabled=False)
+
+    if runtime == "mock":
+        response_path = Path(mock_response) if mock_response else _write_mock_response(
+            exchange / "stage_runner" / f"{stage_name}.proposal.json", proposal)
+        raw = response_path.read_text()
+        producer_runtime = MockAgentRuntime(lambda t, s, ts: (raw, (0, 0)))
+        if mock_judge_response:
+            if len(mock_judge_response) != 3:
+                raise ValueError("--mock-judge-response must be supplied exactly three times")
+            judge_raw = [Path(path).read_text() for path in mock_judge_response]
+
+            def judge_runtime_factory(index):
+                return MockAgentRuntime(lambda t, s, ts, i=index: (judge_raw[i - 1], (0, 0)))
+        else:
+            judge_runtime_factory = None
+        runtime_provider = "mock"
+        runtime_model = "mock"
+    else:
+        kind = _prov.select_provider_kind()
+        if kind in _prov.LOCAL_KINDS:
+            pf = _prov.preflight_local(probe=False)
+            if pf.status != _prov.LOCAL_READY:
+                return StageRunResult("PROVIDER_UNAVAILABLE", EXIT_PROVIDER_UNAVAILABLE,
+                                      f"provider unavailable: {pf.status}: {pf.reason}")
+            if os.environ.get("PYDANTIC_AI_SMOKE_CONFIRM") != "yes":
+                return StageRunResult(
+                    "APPROVAL_REQUIRED", EXIT_APPROVAL_REQUIRED,
+                    "APPROVAL_REQUIRED: set PYDANTIC_AI_SMOKE_CONFIRM=yes for one live local "
+                    "inference call", approval_boundary="PYDANTIC_AI_SMOKE_CONFIRM")
+            from .pydantic_ai_runtime import PydanticAIRuntime
+
+            def live_runtime_factory(_index):
+                return PydanticAIRuntime(
+                    model=_prov.build_local_model(kind, pf.model_id, pf.base_url),
+                    usage_source="provider")
+            producer_runtime = live_runtime_factory(0)
+            judge_runtime_factory = live_runtime_factory
+            runtime_provider = kind
+            runtime_model = pf.model_id
+        elif kind == "anthropic":
+            pf = _prov.preflight_credentials()
+            if pf.status != "READY":
+                return StageRunResult("PROVIDER_UNAVAILABLE", EXIT_PROVIDER_UNAVAILABLE,
+                                      f"provider unavailable: {pf.status}: {pf.reason}")
+            if os.environ.get("PYDANTIC_AI_SMOKE_CONFIRM") != "yes":
+                return StageRunResult(
+                    "APPROVAL_REQUIRED", EXIT_APPROVAL_REQUIRED,
+                    "APPROVAL_REQUIRED: set PYDANTIC_AI_SMOKE_CONFIRM=yes for one live provider "
+                    "call", approval_boundary="PYDANTIC_AI_SMOKE_CONFIRM")
+            from .pydantic_ai_runtime import PydanticAIRuntime
+
+            def live_runtime_factory(_index):
+                return PydanticAIRuntime(model=_prov.build_provider_model(pf.model_id),
+                                         usage_source="provider")
+            producer_runtime = live_runtime_factory(0)
+            judge_runtime_factory = live_runtime_factory
+            runtime_provider = pf.provider
+            runtime_model = pf.model_id
+        else:
+            return StageRunResult(
+                "PROVIDER_UNAVAILABLE", EXIT_PROVIDER_UNAVAILABLE,
+                "provider unavailable: set PYDANTIC_AI_PROVIDER to local-openai|ollama|anthropic")
+
+    ctx = ctx_factory(0, runtime_provider, runtime_model)
+    producer_budget_policy = producer_context_policy(runtime_provider, runtime_model)
+    registry = build_executor_registry()
+    binding_validator = _proposal_binding_validator(proposal, c)
+    for descriptor in registry.values():
+        descriptor.param_validator = binding_validator
+    def producer_task_factory(feedback):
+        return _producer_task(stage_name, role, evidence_path, c, proposal, retry_feedback=feedback)
+
+    res = _run_producer_with_binding_retries(
+        producer_runtime, task, specs[role], ctx, controller=c, registry=registry,
+        authoritative_proposal=proposal, task_factory=producer_task_factory,
+        budget_policy=producer_budget_policy)
+    status = getattr(res.detail, "status", "")
+    if status == "APPROVAL_REQUIRED":
+        boundary = getattr(res.detail, "reason", "") or proposal.get("approval_boundary")
+        return StageRunResult("APPROVAL_REQUIRED", EXIT_APPROVAL_REQUIRED,
+                              f"APPROVAL_REQUIRED: {boundary}", approval_boundary=boundary,
+                              action_status=status)
+    if status not in {"EXECUTED", "DUPLICATE"}:
+        reason = getattr(res.detail, "reason", res.error)
+        return StageRunResult("DISPATCH_REJECTED", EXIT_VALIDATION_REJECTED,
+                              f"stage dispatch failed: {status}: {reason}", action_status=status)
+
+    declared = [(c.run_dir / rel).resolve() for rel in c.stage(stage_name).get("outputs", [])]
+    missing = [str(path) for path in declared if not path.exists()]
+    if missing:
+        return StageRunResult("MISSING_OUTPUTS", EXIT_VALIDATION_REJECTED,
+                              "stage missing declared outputs: " + ", ".join(missing),
+                              action_status=status)
+    if c.stage(stage_name)["status"] != "completed":
+        c.complete_external_stage(stage_name, declared)
+    c = RunController(c.run_dir)
+    if c.stage(stage_name)["status"] != "completed":
+        return StageRunResult("STAGE_NOT_COMPLETED", EXIT_VALIDATION_REJECTED,
+                              "controller stage did not complete", action_status=status)
+    build_bounded_evidence(declared, evidence_path, protocol_refs=[c.state.get("workflow_config")],
+                           validation_outcomes=_stage_validation_outcomes(c, stage_name))
+
+    decision = "NO_GATE"
+    vote_path = None
+    if c.stage(stage_name).get("gate_criteria"):
+        iteration = c.state["iterations"][-1]
+        trigger = iteration.get("trigger")
+        if (trigger and trigger.get("failed_stage") == stage_name and
+                iteration.get("recovery_execution", {}).get("status") != "verified"):
+            # The stage produced fresh output (needed so its own artifacts can later be checked
+            # for real change), but its approved recovery's corrective actions have not yet been
+            # verified from actual run state -- do not even attempt the judge gate, since
+            # Controller.record_gate would refuse to record a PASS here anyway. run-campaign is
+            # responsible for assembling and submitting the verification report next.
+            return StageRunResult(
+                "RECOVERY_EXECUTION_UNVERIFIED", EXIT_RECOVERY_EXECUTION_UNVERIFIED,
+                f"RECOVERY_EXECUTION_UNVERIFIED: stage {stage_name!r} cannot be re-gated until "
+                "its approved recovery's corrective actions are verified against actual run "
+                "state", action_status=status)
+        if auto_mock_judges:
+            vote_path = _write_three_pass_votes(c, stage_name)
+            decision = "PASS"
+        else:
+            if runtime == "mock" and judge_runtime_factory is None:
+                raise ValueError(
+                    "mock run-stage with a gate requires either --auto-mock-judges or three "
+                    "--mock-judge-response files")
+            gate_ctx = c.gate_context(stage_name)
+            judge_allow = judge_read_allowlist(gate_ctx, evidence_path)
+
+            def judge_ctx_factory(i):
+                return RuntimeContext(exchange_dir=str(exchange), repo_root=repo_root,
+                                      provider=runtime_provider, model_id=runtime_model,
+                                      read_allow_prefixes=list(judge_allow), tools_enabled=False)
+            decision, vote_path = run_three_judge_gate(
+                c, stage_name, specs, judge_runtime_factory, judge_ctx_factory, evidence_path)
+        c = RunController(c.run_dir)
+        if c.stage(stage_name)["gate"] != decision:
+            return StageRunResult("GATE_RECORD_MISMATCH", EXIT_VALIDATION_REJECTED,
+                                  "controller gate did not record the aggregate decision",
+                                  gate_decision=decision, evidence_path=evidence_path,
+                                  action_status=status)
+        if decision != "PASS":
+            return StageRunResult(
+                f"GATE_{decision}", EXIT_VALIDATION_REJECTED,
+                f"GATE_{decision}: recovery path is now controlled by the Controller",
+                gate_decision=decision, evidence_path=evidence_path, action_status=status)
+
+    message = (f"stage: {stage_name}\naction_status: {status}\ngate: {decision}\n"
+              f"bounded_evidence: {evidence_path}")
+    if vote_path is not None:
+        message = f"judge_votes: {vote_path}\n" + message
+    return StageRunResult("SUCCESS", EXIT_SUCCESS, message, gate_decision=decision,
+                          evidence_path=evidence_path, action_status=status)
+
+
+def _cmd_run_stage(args) -> int:
+    from workflow.controller import RunController
 
     c = RunController(args.run_dir)
     try:
-        c.verify_inputs()
-        stage_cfg = _stage_config(c, args.stage)
-        proposal, role = _proposal_from_stage(c, args.stage, stage_cfg)
-        try:
-            proposal = _bind_acquisition_plan_for_stage(c, proposal)
-        except ValueError as exc:
-            message = str(exc)
-            if message.startswith("PLAN_INPUT_REQUIRED"):
-                print(message, file=sys.stderr)
-                return EXIT_VALIDATION_REJECTED
-            raise
-        evidence_path = c.run_dir / "exchange" / "bounded_evidence" / f"{args.stage}.json"
-        upstream = [a["path"] for a in c.state.get("artifacts", [])]
-        build_bounded_evidence(upstream, evidence_path, protocol_refs=[c.state.get("workflow_config")])
-        specs = load_agent_specs(args.agent_specs_dir)
-        task = _producer_task(args.stage, role, evidence_path, c, proposal)
-        exchange = Path(args.exchange_dir) if args.exchange_dir else c.run_dir / "exchange"
-
-        def ctx_factory(_index, provider_name="mock", model_id="mock"):
-            return RuntimeContext(exchange_dir=str(exchange), repo_root=args.repo_root,
-                                  provider=provider_name, model_id=model_id,
-                                  read_allow_prefixes=[], tools_enabled=False)
-
-        if args.runtime == "mock":
-            response_path = Path(args.mock_response) if args.mock_response else _write_mock_response(
-                exchange / "stage_runner" / f"{args.stage}.proposal.json", proposal)
-            raw = response_path.read_text()
-            producer_runtime = MockAgentRuntime(lambda t, s, ts: (raw, (0, 0)))
-            if args.mock_judge_response:
-                if len(args.mock_judge_response) != 3:
-                    raise ValueError("--mock-judge-response must be supplied exactly three times")
-                judge_raw = [Path(path).read_text() for path in args.mock_judge_response]
-
-                def judge_runtime_factory(index):
-                    return MockAgentRuntime(lambda t, s, ts, i=index: (judge_raw[i - 1], (0, 0)))
-            else:
-                judge_runtime_factory = None
-            runtime_provider = "mock"
-            runtime_model = "mock"
-        else:
-            kind = _prov.select_provider_kind()
-            if kind in _prov.LOCAL_KINDS:
-                pf = _prov.preflight_local(probe=False)
-                if pf.status != _prov.LOCAL_READY:
-                    print(f"provider unavailable: {pf.status}: {pf.reason}", file=sys.stderr)
-                    return EXIT_PROVIDER_UNAVAILABLE
-                if os.environ.get("PYDANTIC_AI_SMOKE_CONFIRM") != "yes":
-                    print("APPROVAL_REQUIRED: set PYDANTIC_AI_SMOKE_CONFIRM=yes for one live local inference call")
-                    return EXIT_APPROVAL_REQUIRED
-                from .pydantic_ai_runtime import PydanticAIRuntime
-
-                def live_runtime_factory(_index):
-                    return PydanticAIRuntime(
-                        model=_prov.build_local_model(kind, pf.model_id, pf.base_url),
-                        usage_source="provider")
-                producer_runtime = live_runtime_factory(0)
-                judge_runtime_factory = live_runtime_factory
-                runtime_provider = kind
-                runtime_model = pf.model_id
-            elif kind == "anthropic":
-                pf = _prov.preflight_credentials()
-                if pf.status != "READY":
-                    print(f"provider unavailable: {pf.status}: {pf.reason}", file=sys.stderr)
-                    return EXIT_PROVIDER_UNAVAILABLE
-                if os.environ.get("PYDANTIC_AI_SMOKE_CONFIRM") != "yes":
-                    print("APPROVAL_REQUIRED: set PYDANTIC_AI_SMOKE_CONFIRM=yes for one live provider call")
-                    return EXIT_APPROVAL_REQUIRED
-                from .pydantic_ai_runtime import PydanticAIRuntime
-
-                def live_runtime_factory(_index):
-                    return PydanticAIRuntime(model=_prov.build_provider_model(pf.model_id),
-                                             usage_source="provider")
-                producer_runtime = live_runtime_factory(0)
-                judge_runtime_factory = live_runtime_factory
-                runtime_provider = pf.provider
-                runtime_model = pf.model_id
-            else:
-                print("provider unavailable: set PYDANTIC_AI_PROVIDER to local-openai|ollama|anthropic", file=sys.stderr)
-                return EXIT_PROVIDER_UNAVAILABLE
-
-        ctx = ctx_factory(0, runtime_provider, runtime_model)
-        producer_budget_policy = producer_context_policy(runtime_provider, runtime_model)
-        registry = build_executor_registry()
-        binding_validator = _proposal_binding_validator(proposal, c)
-        for descriptor in registry.values():
-            descriptor.param_validator = binding_validator
-        def producer_task_factory(feedback):
-            return _producer_task(args.stage, role, evidence_path, c, proposal,
-                                  retry_feedback=feedback)
-
-        res = _run_producer_with_binding_retries(
-            producer_runtime, task, specs[role], ctx, controller=c, registry=registry,
-            authoritative_proposal=proposal, task_factory=producer_task_factory,
-            budget_policy=producer_budget_policy)
-        status = getattr(res.detail, "status", "")
-        if status == "APPROVAL_REQUIRED":
-            print(f"APPROVAL_REQUIRED: {getattr(res.detail, 'reason', '') or proposal.get('approval_boundary')}")
-            return EXIT_APPROVAL_REQUIRED
-        if status not in {"EXECUTED", "DUPLICATE"}:
-            print(f"stage dispatch failed: {status}: {getattr(res.detail, 'reason', res.error)}", file=sys.stderr)
-            return EXIT_VALIDATION_REJECTED
-
-        declared = [(c.run_dir / rel).resolve() for rel in c.stage(args.stage).get("outputs", [])]
-        missing = [str(path) for path in declared if not path.exists()]
-        if missing:
-            print("stage missing declared outputs: " + ", ".join(missing), file=sys.stderr)
-            return EXIT_VALIDATION_REJECTED
-        if c.stage(args.stage)["status"] != "completed":
-            c.complete_external_stage(args.stage, declared)
-        c = RunController(args.run_dir)
-        if c.stage(args.stage)["status"] != "completed":
-            print("controller stage did not complete", file=sys.stderr)
-            return EXIT_VALIDATION_REJECTED
-        build_bounded_evidence(declared, evidence_path, protocol_refs=[c.state.get("workflow_config")],
-                               validation_outcomes=_stage_validation_outcomes(c, args.stage))
-
-        decision = "NO_GATE"
-        vote_path = None
-        if c.stage(args.stage).get("gate_criteria"):
-            if args.auto_mock_judges:
-                vote_path = _write_three_pass_votes(c, args.stage)
-                decision = "PASS"
-                print(f"judge_votes: {vote_path}")
-            else:
-                if args.runtime == "mock" and judge_runtime_factory is None:
-                    raise ValueError(
-                        "mock run-stage with a gate requires either --auto-mock-judges or three --mock-judge-response files")
-                gate_ctx = c.gate_context(args.stage)
-                judge_allow = judge_read_allowlist(gate_ctx, evidence_path)
-
-                def judge_ctx_factory(i):
-                    return RuntimeContext(exchange_dir=str(exchange), repo_root=args.repo_root,
-                                          provider=runtime_provider, model_id=runtime_model,
-                                          read_allow_prefixes=list(judge_allow),
-                                          tools_enabled=False)
-                decision, vote_path = run_three_judge_gate(
-                    c, args.stage, specs, judge_runtime_factory, judge_ctx_factory, evidence_path)
-            c = RunController(args.run_dir)
-            if c.stage(args.stage)["gate"] != decision:
-                print("controller gate did not record the aggregate decision", file=sys.stderr)
-                return EXIT_VALIDATION_REJECTED
-            if decision != "PASS":
-                print(f"GATE_{decision}: recovery path is now controlled by the Controller")
-                return EXIT_VALIDATION_REJECTED
-
-        print(f"stage: {args.stage}\naction_status: {status}\ngate: {decision}\nbounded_evidence: {evidence_path}")
-        return EXIT_SUCCESS
+        result = run_production_stage(
+            c, args.stage, runtime=args.runtime, agent_specs_dir=args.agent_specs_dir,
+            exchange_dir=args.exchange_dir, repo_root=args.repo_root,
+            auto_mock_judges=args.auto_mock_judges, mock_response=args.mock_response,
+            mock_judge_response=args.mock_judge_response)
     except Exception as exc:
         print(f"run-stage failed: {type(exc).__name__}: {exc}", file=sys.stderr)
         return EXIT_VALIDATION_REJECTED
+    stream = sys.stdout if result.exit_code == EXIT_SUCCESS else sys.stderr
+    print(result.message, file=stream)
+    return result.exit_code
+
+
+# --- run-campaign: the outer, generic production loop -----------------------------------------
+#
+# COMPLETED, WAITING_FOR_HUMAN_APPROVAL, RECOVERY_REQUIRED, RESOURCE_BLOCKED,
+# RECOVERY_EXECUTION_UNVERIFIED, WAITING_FOR_RECOVERY_EVIDENCE, and FAILED are the seven
+# first-class outcomes a campaign run can stop at. None of them is a busy-loop: every one is
+# derived from durable Controller state, so re-running the identical `run-campaign` command after
+# the blocking condition resolves (an approval is granted, a provider comes back up, a recovery is
+# approved, its corrective action finishes) resumes correctly without replaying already-passed
+# stages or re-executing an already-completed corrective action.
+#
+# An approved recovery's own corrective action -- when its plan names one -- is dispatched by THIS
+# loop automatically (see _dispatch_recovery_corrective_action): a human approves scope/budget via
+# `approve-recovery`, never the scientific action itself out of band. WAITING_FOR_RECOVERY_EVIDENCE
+# is the clean pause for when that corrective action was legitimately dispatched and is still
+# external/pending -- never a way to paper over a corrective action that reported done but left
+# required outputs missing (that remains FAILED).
+CAMPAIGN_COMPLETED = "COMPLETED"
+CAMPAIGN_WAITING_FOR_HUMAN_APPROVAL = "WAITING_FOR_HUMAN_APPROVAL"
+CAMPAIGN_RECOVERY_REQUIRED = "RECOVERY_REQUIRED"
+CAMPAIGN_RESOURCE_BLOCKED = "RESOURCE_BLOCKED"
+CAMPAIGN_RECOVERY_EXECUTION_UNVERIFIED = "RECOVERY_EXECUTION_UNVERIFIED"
+CAMPAIGN_WAITING_FOR_RECOVERY_EVIDENCE = "WAITING_FOR_RECOVERY_EVIDENCE"
+CAMPAIGN_FAILED = "FAILED"
+
+
+@dataclass
+class CampaignRunResult:
+    """Structured outcome of one ``run-campaign`` invocation: which of the five first-class
+    outcomes it stopped at, why, and (if a stage actually ran) that stage's own StageRunResult."""
+    outcome: str
+    exit_code: int
+    message: str
+    stage: Optional[str] = None
+    last_stage_result: Optional[StageRunResult] = None
+
+
+def _next_eligible_stage(controller):
+    """The ONE workflow-invariant "what's next" decision a campaign makes: the first declared
+    stage (in workflow-config order) whose gate has not recorded PASS, or None once every stage
+    has. Contains no stage name, domain concept, or count -- entirely derived from the Controller's
+    own stage list, the same order/gate fields ``_previous_passed`` already enforces."""
+    for stage in controller.state["stages"]:
+        if stage["gate"] != "PASS":
+            return stage
+    return None
+
+
+def _stage_order_index(controller, stage_name):
+    for index, stage in enumerate(controller.state["stages"]):
+        if stage["name"] == stage_name:
+            return index
+    raise ValueError(f"unknown stage: {stage_name}")
+
+
+def _assemble_recovery_execution_report(controller):
+    """Mechanically assemble the ``verify_recovery_execution`` report from CURRENT controller/
+    artifact state -- never from what the approved recovery plan merely says should happen. A
+    change only counts once a registered, completed stage at or downstream of ``return_stage``
+    has produced an artifact whose hash actually differs from (or is absent from) the iteration's
+    frozen pre-recovery baseline. Returns ``(report, [])`` when every requirement the plan
+    declares has real, current evidence, or ``(None, missing)`` naming exactly what real
+    corrective evidence is not yet available -- callers must treat the latter as "not yet done",
+    never as failure.
+    """
+    c = controller
+    iteration = c.state["iterations"][-1]
+    trigger = iteration.get("trigger")
+    if not trigger or iteration.get("recovery_execution", {}).get("status") != "required":
+        return None, ["no recovery execution is currently awaiting verification"]
+    recovery = next(r for r in c.state["recoveries"] if r["id"] == trigger["recovery_id"])
+    plan = recovery["plan"]
+    return_stage = trigger["return_stage"]
+    return_index = _stage_order_index(c, return_stage)
+    baseline_hashes_by_path = {}
+    for item in iteration.get("baseline_artifacts", []):
+        baseline_hashes_by_path.setdefault(item["path"], set()).add(item["sha256"])
+
+    changed_paths_by_stage = {}
+    for stage in c.state["stages"]:
+        if _stage_order_index(c, stage["name"]) < return_index or stage["status"] != "completed":
+            continue
+        for record in c.verify_stage_artifacts(stage["name"]):
+            old_hashes = baseline_hashes_by_path.get(record["path"])
+            if old_hashes is not None and record["sha256"] in old_hashes:
+                continue  # unchanged relative to the frozen pre-recovery baseline
+            changed_paths_by_stage.setdefault(stage["name"], []).append(record["path"])
+
+    changed_paths = [p for paths in changed_paths_by_stage.values() for p in paths]
+    if not changed_paths:
+        return None, [
+            f"no artifact at or downstream of return_stage {return_stage!r} has changed since "
+            "the recovery baseline yet -- perform the approved corrective action(s), then rerun "
+            "run-campaign"]
+
+    missing = []
+
+    def evidence_stage_for(flag_label):
+        if return_stage not in changed_paths_by_stage:
+            missing.append(f"{flag_label} is required by the plan but return_stage "
+                           f"{return_stage!r} has no changed, completed evidence yet")
+            return None
+        return return_stage
+
+    changes = [{"type": item["type"], "status": "APPLIED", "evidence_artifacts": list(changed_paths)}
+              for item in plan["proposed_changes"]]
+
+    labeling_plan = plan["labeling"]
+    labeling_report = {"teacher_relabel": labeling_plan["teacher_relabel"],
+                       "teacher_relabel_stage": None,
+                       "new_dft": labeling_plan["new_dft"], "new_dft_stage": None}
+    if labeling_plan["teacher_relabel"]:
+        labeling_report["teacher_relabel_stage"] = evidence_stage_for("labeling.teacher_relabel")
+    if labeling_plan["new_dft"]:
+        labeling_report["new_dft_stage"] = evidence_stage_for("labeling.new_dft")
+
+    training_plan = plan["student_training"]
+    training_report = {"retrain": training_plan["retrain"], "mode": training_plan["mode"],
+                       "stage": None}
+    if training_plan["retrain"]:
+        training_report["stage"] = evidence_stage_for("student_training.retrain")
+
+    revalidation_plan = plan["revalidation"]
+    revalidation_stages = []
+    for target in revalidation_plan["targets"]:
+        if target in changed_paths_by_stage:
+            revalidation_stages.append(target)
+        else:
+            missing.append(f"revalidation target {target!r} has no changed, completed evidence yet")
+    revalidation_report = {"targets": list(revalidation_plan["targets"]), "stages": revalidation_stages}
+
+    if missing:
+        return None, missing
+
+    report = {
+        "schema_version": 1, "recovery_id": recovery["id"],
+        "previous_iteration": iteration["parent_iteration"], "current_iteration": iteration["id"],
+        "changes": changes, "labeling": labeling_report, "student_training": training_report,
+        "revalidation": revalidation_report,
+    }
+    return report, []
+
+
+class _ProviderBlocked(Exception):
+    """Raised by ``_select_reasoning_provider_runtime`` to unwind to a clean pause outcome instead
+    of letting a provider-selection detail leak into the recovery-dispatch control flow."""
+    def __init__(self, reason, message, approval_boundary=None):
+        super().__init__(message)
+        self.reason = reason
+        self.message = message
+        self.approval_boundary = approval_boundary
+
+
+def _select_reasoning_provider_runtime():
+    """The exact provider selection/preflight/human-confirm gate ``run_production_stage``'s
+    non-mock branch uses, factored out so a reasoning-role dispatch (Analyst/Orchestrator -- still
+    no compute, no training, just typed reasoning output) shares the same operational rules
+    instead of a second copy. Returns ``(runtime, provider, model_id)`` or raises
+    ``_ProviderBlocked``."""
+    from . import provider as _prov
+    kind = _prov.select_provider_kind()
+    if kind in _prov.LOCAL_KINDS:
+        pf = _prov.preflight_local(probe=False)
+        if pf.status != _prov.LOCAL_READY:
+            raise _ProviderBlocked("PROVIDER_UNAVAILABLE",
+                                   f"provider unavailable: {pf.status}: {pf.reason}")
+        if os.environ.get("PYDANTIC_AI_SMOKE_CONFIRM") != "yes":
+            raise _ProviderBlocked(
+                "APPROVAL_REQUIRED", "APPROVAL_REQUIRED: set PYDANTIC_AI_SMOKE_CONFIRM=yes for "
+                "one live local inference call", "PYDANTIC_AI_SMOKE_CONFIRM")
+        from .pydantic_ai_runtime import PydanticAIRuntime
+        return (PydanticAIRuntime(model=_prov.build_local_model(kind, pf.model_id, pf.base_url),
+                                  usage_source="provider"), kind, pf.model_id)
+    if kind == "anthropic":
+        pf = _prov.preflight_credentials()
+        if pf.status != "READY":
+            raise _ProviderBlocked("PROVIDER_UNAVAILABLE",
+                                   f"provider unavailable: {pf.status}: {pf.reason}")
+        if os.environ.get("PYDANTIC_AI_SMOKE_CONFIRM") != "yes":
+            raise _ProviderBlocked(
+                "APPROVAL_REQUIRED", "APPROVAL_REQUIRED: set PYDANTIC_AI_SMOKE_CONFIRM=yes for "
+                "one live provider call", "PYDANTIC_AI_SMOKE_CONFIRM")
+        from .pydantic_ai_runtime import PydanticAIRuntime
+        return (PydanticAIRuntime(model=_prov.build_provider_model(pf.model_id),
+                                  usage_source="provider"), pf.provider, pf.model_id)
+    raise _ProviderBlocked(
+        "PROVIDER_UNAVAILABLE",
+        "provider unavailable: set PYDANTIC_AI_PROVIDER to local-openai|ollama|anthropic")
+
+
+def _propose_recovery_via_reasoning_roles(controller, *, runtime, agent_specs_dir, exchange_dir,
+                                          repo_root, mock_analyst_response,
+                                          mock_orchestrator_response) -> CampaignRunResult:
+    """Turn a `pending_recovery` status=="required" gate into a proposed, human-approvable
+    recovery: dispatch a real Analyst for a RootCauseClassification, then a real Orchestrator for
+    a RecoveryPlanProposal bound to that exact diagnosis, then bind the resulting draft through
+    the unchanged ``propose_recovery``/``dispatch_orchestrator_action`` bridge. This function
+    authors no scientific judgment itself -- every diagnosis and every recovery choice comes from
+    the dispatched agent roles; it only wires the existing, already-validated bridges together and
+    always stops at human approval afterward, never granting it.
+    """
+    from orchestration.specs import load_agent_specs
+    from .production_router import run_role
+    from .models import RuntimeContext
+    from .mock_runtime import MockAgentRuntime
+    from .root_cause import validate_root_cause_classification
+    from .recovery_bridge import (validate_recovery_plan_proposal,
+                                  build_recovery_plan_draft_from_proposal)
+    from .orchestrator_bridge import OrchestratorActionProposal, dispatch_orchestrator_action
+    from workflow.controller import DEFAULT_RECOVERY_CAPABILITY_ROSTER
+
+    c = controller
+    pending = c.state["pending_recovery"]
+    failed_stage = pending["failed_stage"]
+    stage_names = {stage["name"] for stage in c.state["stages"]}
+    available_artifacts = {a["path"] for a in c.state["artifacts"]}
+    roster = c.state.get("recovery_capability_roster") or DEFAULT_RECOVERY_CAPABILITY_ROSTER
+    exchange = Path(exchange_dir) if exchange_dir else c.run_dir / "exchange"
+    specs = load_agent_specs(agent_specs_dir)
+
+    def ctx_factory(provider_name, model_id):
+        return RuntimeContext(exchange_dir=str(exchange), repo_root=repo_root,
+                              provider=provider_name, model_id=model_id,
+                              read_allow_prefixes=[], tools_enabled=False)
+
+    analyst_task = {
+        "schema_version": 1, "task_id": f"{failed_stage}-recovery-diagnosis",
+        "agent": "analyst", "run_id": c.state["run_id"], "created_at": "run-campaign",
+        "instruction": (f"Diagnose the root cause of the REVISE/FAIL gate verdict recorded on "
+                       f"stage {failed_stage!r} using context.recovery_evidence, the complete "
+                       "primary evidence for this gate failure."),
+        "inputs": [], "criteria": ["diagnosis is evidence-bound to registered artifacts",
+                                   "diagnosis names an actionable recovery target"],
+        "constraints": ["Cite only evidence_refs/affected_artifact_refs that are controller-"
+                       "registered artifact paths already listed in context.recovery_evidence."],
+        "context": {"expected_output_model": "RootCauseClassification", "stage": failed_stage,
+                   "recovery_evidence": {
+                       "failed_stage": failed_stage, "verdict": pending["verdict"],
+                       "gate_recorded_at": pending["gate_recorded_at"],
+                       "artifact_sha256": pending["artifact_sha256"],
+                       "available_artifacts": sorted(available_artifacts),
+                       "valid_recovery_targets": sorted(stage_names),
+                   }},
+    }
+    if runtime == "mock":
+        if not mock_analyst_response:
+            raise ValueError(
+                "--mock-analyst-response is required: a recovery diagnosis is pending and "
+                "--runtime mock cannot self-generate a RootCauseClassification")
+        analyst_runtime = MockAgentRuntime(
+            lambda t, s, ts: (Path(mock_analyst_response).read_text(), (0, 0)))
+        analyst_provider, analyst_model = "mock", "mock"
+    else:
+        try:
+            analyst_runtime, analyst_provider, analyst_model = _select_reasoning_provider_runtime()
+        except _ProviderBlocked as exc:
+            if exc.reason == "APPROVAL_REQUIRED":
+                return CampaignRunResult(CAMPAIGN_WAITING_FOR_HUMAN_APPROVAL, EXIT_APPROVAL_REQUIRED,
+                                         exc.message, stage=failed_stage)
+            return CampaignRunResult(CAMPAIGN_RESOURCE_BLOCKED, EXIT_PROVIDER_UNAVAILABLE,
+                                     exc.message, stage=failed_stage)
+
+    def root_cause_validator(classification):
+        return validate_root_cause_classification(
+            classification, available_artifacts=available_artifacts,
+            valid_recovery_targets=stage_names)
+
+    analyst_res = run_role(analyst_runtime, analyst_task, specs["analyst"],
+                           ctx_factory(analyst_provider, analyst_model), mode="primary",
+                           reasoning_validator=root_cause_validator)
+    if not analyst_res.accepted:
+        return CampaignRunResult(CAMPAIGN_FAILED, EXIT_VALIDATION_REJECTED,
+                                 f"recovery diagnosis rejected: {analyst_res.error}",
+                                 stage=failed_stage)
+    classification = analyst_res.detail.instance
+    diagnosis_path = analyst_res.detail.artifact_path
+    diagnosis_sha256 = analyst_res.detail.artifact_sha256
+
+    orchestrator_task = {
+        "schema_version": 1, "task_id": f"{failed_stage}-recovery-plan",
+        "agent": "orchestrator", "run_id": c.state["run_id"], "created_at": "run-campaign",
+        "instruction": (f"Propose HOW to recover stage {failed_stage!r} from the evidence-bound "
+                       "diagnosis in context.diagnosis."),
+        "inputs": [], "criteria": ["proposal is bound to the supplied diagnosis artifact",
+                                   "capability and return_stage are both registered"],
+        "constraints": ["capability must be one of context.valid_capabilities",
+                       "return_stage must be one of context.valid_stage_names",
+                       "diagnosis_artifact_sha256 must equal context.diagnosis_artifact_sha256"],
+        "context": {"expected_output_model": "RecoveryPlanProposal", "stage": failed_stage,
+                   "diagnosis": json.loads(classification.model_dump_json()),
+                   "diagnosis_artifact_sha256": diagnosis_sha256,
+                   "valid_capabilities": sorted(roster), "valid_stage_names": sorted(stage_names)},
+    }
+    if runtime == "mock":
+        if not mock_orchestrator_response:
+            raise ValueError(
+                "--mock-orchestrator-response is required: a recovery diagnosis is pending and "
+                "--runtime mock cannot self-generate a RecoveryPlanProposal")
+        orchestrator_runtime = MockAgentRuntime(
+            lambda t, s, ts: (Path(mock_orchestrator_response).read_text(), (0, 0)))
+        orchestrator_provider, orchestrator_model = "mock", "mock"
+    else:
+        try:
+            (orchestrator_runtime, orchestrator_provider,
+             orchestrator_model) = _select_reasoning_provider_runtime()
+        except _ProviderBlocked as exc:
+            if exc.reason == "APPROVAL_REQUIRED":
+                return CampaignRunResult(CAMPAIGN_WAITING_FOR_HUMAN_APPROVAL, EXIT_APPROVAL_REQUIRED,
+                                         exc.message, stage=failed_stage)
+            return CampaignRunResult(CAMPAIGN_RESOURCE_BLOCKED, EXIT_PROVIDER_UNAVAILABLE,
+                                     exc.message, stage=failed_stage)
+
+    def plan_proposal_validator(proposal):
+        return validate_recovery_plan_proposal(
+            proposal, expected_failed_stage=failed_stage, expected_diagnosis_sha256=diagnosis_sha256,
+            capability_roster=roster, valid_stage_names=stage_names)
+
+    orchestrator_res = run_role(orchestrator_runtime, orchestrator_task, specs["orchestrator"],
+                                ctx_factory(orchestrator_provider, orchestrator_model),
+                                mode="primary", reasoning_validator=plan_proposal_validator)
+    if not orchestrator_res.accepted:
+        return CampaignRunResult(CAMPAIGN_FAILED, EXIT_VALIDATION_REJECTED,
+                                 f"recovery plan proposal rejected: {orchestrator_res.error}",
+                                 stage=failed_stage)
+    proposal = orchestrator_res.detail.instance
+
+    draft = build_recovery_plan_draft_from_proposal(
+        classification, proposal,
+        proposed_by={"actor_kind": "system", "canonical_id": "orchestrator"},
+        diagnosis_artifact_path=str(diagnosis_path), diagnosis_artifact_sha256=diagnosis_sha256)
+    plan_dir = c.run_dir / "recovery" / "drafts"
+    plan_dir.mkdir(parents=True, exist_ok=True)
+    plan_path = plan_dir / f"{failed_stage}.recovery_plan.draft.json"
+    plan_path.write_text(json.dumps(draft.to_plan_json(), indent=2) + "\n")
+
+    action_proposal = OrchestratorActionProposal(
+        run_id=c.state["run_id"], stage=failed_stage, requested_at="run-campaign",
+        rationale=f"propose recovery for stage {failed_stage!r} from a validated diagnosis",
+        idempotency_key=f"{c.state['run_id']}:{failed_stage}:recovery-proposal:001",
+        action_type="propose_recovery",
+        parameters={"run_dir": str(c.run_dir), "plan_path": str(plan_path)})
+    outcome = dispatch_orchestrator_action(action_proposal, controller=c, mode="primary")
+    if outcome.status != "EXECUTED":
+        return CampaignRunResult(CAMPAIGN_FAILED, EXIT_VALIDATION_REJECTED,
+                                 f"propose_recovery dispatch failed: {outcome.status}: "
+                                 f"{outcome.reason}", stage=failed_stage)
+
+    recovery_id = outcome.artifact["recovery_id"]
+    return CampaignRunResult(
+        CAMPAIGN_WAITING_FOR_HUMAN_APPROVAL, EXIT_APPROVAL_REQUIRED,
+        f"WAITING_FOR_HUMAN_APPROVAL: recovery {recovery_id} for stage {failed_stage!r} has been "
+        "proposed and is awaiting human approval (see `approve-recovery`)", stage=failed_stage)
+
+
+def _dispatch_recovery_corrective_action(controller, trigger, recovery, corrective_action,
+                                         *, registry=None) -> Optional["CampaignRunResult"]:
+    """After an approved recovery's ``start_iteration()`` has quarantined ``return_stage`` (and
+    everything after it) back to pending, actually perform the ONE corrective action the approved
+    plan itself named -- through the SAME dispatch/controller-bridge path any other action goes
+    through -- so a human never has to run it out of band after approving scope/budget. Returns
+    ``None`` to mean "corrective work for this iteration is done, keep going", or a terminal/paused
+    ``CampaignRunResult`` to stop at.
+
+    ``registry`` defaults to the real production ``executors.build_executor_registry()`` (the same
+    one ``run_production_stage`` uses for every other action) -- callers may pass a substituted
+    registry only to exercise deterministic/pending/failure fixture executors in tests.
+
+    Generic over ``corrective_action`` (an ``{"action_type", "role"?, "parameters"?}`` dict read
+    straight off the approved plan's ``recovery_context`` -- see ``recovery_bridge.
+    validate_recovery_plan_proposal``): this function contains no stage name, capability, or
+    domain concept of its own.
+
+    Deliberately reuses ``_proposal_from_stage``'s OWN per-iteration idempotency key for
+    ``return_stage`` (not a separately-suffixed one): once this dispatch executes, the campaign's
+    normal forward loop will re-select ``return_stage`` again (its gate is not yet PASS) and call
+    ``run_production_stage`` on it as usual -- that call derives the IDENTICAL key, so it sees an
+    already-seen action and gets DUPLICATE (a no-op) instead of a second, real re-execution of the
+    stage's own route action, and proceeds straight to checking declared outputs and gating.
+    """
+    from .controller_bridge import dispatch_via_controller
+    from .executors import build_executor_registry
+    from workflow.controller import DEFAULT_RECOVERY_CAPABILITY_ROSTER
+
+    c = controller
+    return_stage = trigger["return_stage"]
+    base_proposal, base_role = _proposal_from_stage(c, return_stage, _stage_config(c, return_stage))
+    roster = c.state.get("recovery_capability_roster") or DEFAULT_RECOVERY_CAPABILITY_ROSTER
+    role = (corrective_action.get("role") or
+           roster.get(recovery["plan"]["responsible_capability"]) or base_role)
+    proposal = {
+        "run_id": c.state["run_id"], "stage": return_stage,
+        "requested_by_role": role, "action_type": corrective_action["action_type"],
+        "requested_at": "run-campaign",
+        "rationale": f"execute recovery {recovery['id']}'s approved corrective action",
+        "idempotency_key": base_proposal["idempotency_key"],
+        "parameters": dict(corrective_action.get("parameters") or {}),
+    }
+    registry = registry if registry is not None else build_executor_registry()
+    outcome = dispatch_via_controller(proposal, controller=c, registry=registry, mode="primary")
+    if outcome.status == "PENDING":
+        return CampaignRunResult(
+            CAMPAIGN_WAITING_FOR_RECOVERY_EVIDENCE, EXIT_RECOVERY_ACTION_PENDING,
+            f"WAITING_FOR_RECOVERY_EVIDENCE: recovery {recovery['id']}'s corrective action for "
+            f"stage {return_stage!r} has been dispatched and is still pending: {outcome.reason}",
+            stage=return_stage)
+    if outcome.status not in {"EXECUTED", "DUPLICATE"}:
+        return CampaignRunResult(
+            CAMPAIGN_FAILED, EXIT_VALIDATION_REJECTED,
+            f"recovery corrective action dispatch failed: {outcome.status}: {outcome.reason}",
+            stage=return_stage)
+    declared = [(c.run_dir / rel).resolve() for rel in c.stage(return_stage).get("outputs", [])]
+    missing = [str(path) for path in declared if not path.exists()]
+    if missing:
+        # The corrective action itself reports done (EXECUTED) or was already recorded as done
+        # (DUPLICATE) for this exact recovery iteration -- either way that is a completed dispatch
+        # by definition, so required outputs still being absent is a genuine failure, never a
+        # reason to sit in a pause waiting for evidence that will never arrive.
+        return CampaignRunResult(
+            CAMPAIGN_FAILED, EXIT_VALIDATION_REJECTED,
+            f"recovery corrective action for stage {return_stage!r} reported {outcome.status} but "
+            "declared outputs are still missing: " + ", ".join(missing), stage=return_stage)
+    if c.stage(return_stage)["status"] != "completed":
+        c.complete_external_stage(return_stage, declared)
+    return None
+
+
+def run_campaign(controller, *, runtime, agent_specs_dir="agent_specs", exchange_dir=None,
+                 repo_root=".", auto_mock_judges=False, mock_response=None,
+                 mock_judge_response=None, mock_analyst_response=None,
+                 mock_orchestrator_response=None, max_iterations=None,
+                 recovery_action_registry=None) -> CampaignRunResult:
+    """Drive ``controller``'s run forward through ``run_production_stage`` -- the SAME production
+    dispatch+gate path ``run-stage`` uses -- for as many stages as current state allows, stopping
+    at the first non-forward-progress outcome instead of guessing past it.
+
+    This function owns no scientific judgment: it never authors a diagnosis, a recovery plan, or
+    an approval decision. It only reads the declared stage graph and each stage's recorded gate off
+    the Controller to pick the next eligible stage, and reads the StageRunResult that stage's real
+    production dispatch returns to decide whether to keep going or stop.
+
+    ``max_iterations`` defaults to one more than the declared stage count: a well-formed workflow
+    needs at most one iteration per stage to run it, plus one final iteration to observe that no
+    stage remains and report COMPLETED, so that bound is both safe and tight. A workflow that
+    declares a non-terminal stage with no ``gate.criteria`` can never
+    record that stage's gate as PASS (``complete_external_stage`` always leaves a completed gate-
+    less stage's gate at "pending", and nothing without criteria ever calls ``record_gate``) -- this
+    default bound turns that pre-existing Controller-level authoring mistake into a deterministic
+    FAILED outcome instead of an unbounded loop.
+
+    ``recovery_action_registry``, if given, overrides the executor registry used ONLY for an
+    approved recovery's automatic corrective-action dispatch (see
+    ``_dispatch_recovery_corrective_action``); forward-stage dispatch is unaffected and always uses
+    the real production registry. Defaults to that same real registry when omitted.
+    """
+    from workflow.controller import RunController
+
+    c = controller
+    if max_iterations is None:
+        max_iterations = len(c.state["stages"]) + 1
+    iterations = 0
+    while True:
+        if iterations >= max_iterations:
+            return CampaignRunResult(
+                CAMPAIGN_FAILED, EXIT_INTERNAL,
+                f"run-campaign exceeded max_iterations={max_iterations} without reaching a "
+                "terminal or pause state")
+        iterations += 1
+        pending = c.state.get("pending_recovery")
+        if pending:
+            status = pending.get("status")
+            if status == "required":
+                return _propose_recovery_via_reasoning_roles(
+                    c, runtime=runtime, agent_specs_dir=agent_specs_dir,
+                    exchange_dir=exchange_dir, repo_root=repo_root,
+                    mock_analyst_response=mock_analyst_response,
+                    mock_orchestrator_response=mock_orchestrator_response)
+            if status == "proposed":
+                recovery = next(r for r in c.state["recoveries"]
+                                if r["id"] == pending["recovery_id"])
+                return CampaignRunResult(
+                    CAMPAIGN_WAITING_FOR_HUMAN_APPROVAL, EXIT_APPROVAL_REQUIRED,
+                    f"WAITING_FOR_HUMAN_APPROVAL: recovery {pending['recovery_id']} for stage "
+                    f"{recovery['failed_stage']!r} is awaiting human approval (see "
+                    "`approve-recovery`)", stage=recovery["failed_stage"])
+            if status == "approved":
+                c.start_iteration()
+                c = RunController(c.run_dir)
+                continue
+            return CampaignRunResult(
+                CAMPAIGN_RECOVERY_REQUIRED, EXIT_RECOVERY_REQUIRED,
+                f"RECOVERY_REQUIRED: unrecognized pending_recovery status {status!r}")
+        iteration = c.state["iterations"][-1]
+        trigger = iteration.get("trigger")
+        if trigger and iteration.get("recovery_execution", {}).get("status") == "required":
+            recovery = next(r for r in c.state["recoveries"] if r["id"] == trigger["recovery_id"])
+            corrective_action = (recovery["plan"].get("recovery_context") or {}).get(
+                "corrective_action")
+            return_stage = trigger["return_stage"]
+            if corrective_action and c.stage(return_stage)["status"] != "completed":
+                result = _dispatch_recovery_corrective_action(
+                    c, trigger, recovery, corrective_action, registry=recovery_action_registry)
+                if result is not None:
+                    return result
+                c = RunController(c.run_dir)
+                continue
+        next_stage = _next_eligible_stage(c)
+        if next_stage is None:
+            return CampaignRunResult(CAMPAIGN_COMPLETED, EXIT_SUCCESS,
+                                     "COMPLETED: every declared stage has passed its gate")
+        result = run_production_stage(
+            c, next_stage["name"], runtime=runtime, agent_specs_dir=agent_specs_dir,
+            exchange_dir=exchange_dir, repo_root=repo_root, auto_mock_judges=auto_mock_judges,
+            mock_response=mock_response, mock_judge_response=mock_judge_response)
+        if result.exit_code == EXIT_SUCCESS:
+            c = RunController(c.run_dir)
+            continue
+        if result.reason == "APPROVAL_REQUIRED":
+            return CampaignRunResult(CAMPAIGN_WAITING_FOR_HUMAN_APPROVAL, EXIT_APPROVAL_REQUIRED,
+                                     result.message, stage=next_stage["name"],
+                                     last_stage_result=result)
+        if result.reason == "PROVIDER_UNAVAILABLE":
+            return CampaignRunResult(CAMPAIGN_RESOURCE_BLOCKED, EXIT_PROVIDER_UNAVAILABLE,
+                                     result.message, stage=next_stage["name"],
+                                     last_stage_result=result)
+        if result.reason == "RECOVERY_EXECUTION_UNVERIFIED":
+            c = RunController(c.run_dir)
+            report, missing = _assemble_recovery_execution_report(c)
+            if report is None:
+                return CampaignRunResult(
+                    CAMPAIGN_RECOVERY_EXECUTION_UNVERIFIED, EXIT_RECOVERY_EXECUTION_UNVERIFIED,
+                    "RECOVERY_EXECUTION_UNVERIFIED: " + "; ".join(missing),
+                    stage=next_stage["name"], last_stage_result=result)
+            report_dir = c.run_dir / "recovery"
+            report_dir.mkdir(parents=True, exist_ok=True)
+            report_path = report_dir / f"recovery-{report['recovery_id']:03d}.execution.report.json"
+            report_path.write_text(json.dumps(report, indent=2) + "\n")
+            c.verify_recovery_execution(report_path)
+            c = RunController(c.run_dir)
+            continue
+        if result.reason.startswith("GATE_"):
+            return CampaignRunResult(CAMPAIGN_RECOVERY_REQUIRED, EXIT_RECOVERY_REQUIRED,
+                                     result.message, stage=next_stage["name"],
+                                     last_stage_result=result)
+        return CampaignRunResult(CAMPAIGN_FAILED, result.exit_code, result.message,
+                                 stage=next_stage["name"], last_stage_result=result)
+
+
+def _cmd_run_campaign(args) -> int:
+    from workflow.controller import RunController
+
+    c = RunController(args.run_dir)
+    try:
+        result = run_campaign(
+            c, runtime=args.runtime, agent_specs_dir=args.agent_specs_dir,
+            exchange_dir=args.exchange_dir, repo_root=args.repo_root,
+            auto_mock_judges=args.auto_mock_judges, mock_response=args.mock_response,
+            mock_judge_response=args.mock_judge_response,
+            mock_analyst_response=args.mock_analyst_response,
+            mock_orchestrator_response=args.mock_orchestrator_response)
+    except Exception as exc:
+        print(f"run-campaign failed: {type(exc).__name__}: {exc}", file=sys.stderr)
+        return EXIT_VALIDATION_REJECTED
+    stream = sys.stdout if result.exit_code == EXIT_SUCCESS else sys.stderr
+    print(f"outcome: {result.outcome}\n{result.message}", file=stream)
+    return result.exit_code
+
+
+def _cmd_approve_recovery(args) -> int:
+    from workflow.controller import RunController
+    c = RunController(args.run_dir)
+    recovery = c.approve_recovery(args.approved_by, note=args.note)
+    print(f"recovery approved: id={recovery['id']} failed_stage={recovery['failed_stage']}")
+    return EXIT_SUCCESS
+
 
 def main(argv=None) -> int:
     import os
@@ -957,6 +1642,10 @@ def main(argv=None) -> int:
         return _cmd_approve(args)
     if args.command == "run-stage":
         return _cmd_run_stage(args)
+    if args.command == "run-campaign":
+        return _cmd_run_campaign(args)
+    if args.command == "approve-recovery":
+        return _cmd_approve_recovery(args)
     if args.command != "run-task":  # pragma: no cover
         return EXIT_INTERNAL
     out = sys.stdout

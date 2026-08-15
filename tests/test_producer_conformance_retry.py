@@ -126,7 +126,8 @@ class ProducerConformanceRetryTests(unittest.TestCase):
             code, executions, tasks, c = _run_cli_with_responses(run_dir, [invalid1, invalid2, valid])
             self.assertEqual(code, cli.EXIT_SUCCESS)
             self.assertEqual(executions, 1)
-            self.assertEqual(c.state["idempotency"]["retry-test:training:001"]["status"], "EXECUTED")
+            self.assertEqual(
+                c.state["idempotency"]["retry-test:training:001:iter1"]["status"], "EXECUTED")
             self.assertEqual(len(tasks), 3)
             self.assertIn("producer_retry_feedback", tasks[1]["context"])
             self.assertIn("producer_retry_feedback", tasks[2]["context"])
@@ -143,7 +144,7 @@ class ProducerConformanceRetryTests(unittest.TestCase):
             code, executions, tasks, c = _run_cli_with_responses(run_dir, [invalid, invalid, invalid])
             self.assertEqual(code, cli.EXIT_VALIDATION_REJECTED)
             self.assertEqual(executions, 0)
-            self.assertNotIn("retry-test:training:001", c.state.get("idempotency", {}))
+            self.assertNotIn("retry-test:training:001:iter1", c.state.get("idempotency", {}))
             self.assertEqual(c.stage("training")["status"], "pending")
             self.assertEqual(len(tasks), 3)
 
