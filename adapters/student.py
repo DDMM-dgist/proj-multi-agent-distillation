@@ -169,6 +169,25 @@ def _render_simple_nn_config(cfg, out_dir):
     return output
 
 
+def render_student_inputs(cfg, out_dir):
+    """Render the student training input config for whichever kind ``cfg`` declares.
+
+    Mirrors ``train_student``'s adapter-override / kind-dispatch pattern so a new
+    student family is selectable through config (``adapter.render``) or registration
+    here, without any caller needing to know which family it is.
+    """
+    kind = cfg["kind"]
+    renderer = cfg.get("adapter", {}).get("render")
+    if renderer:
+        return Path(_callable(renderer)(cfg, out_dir))
+    renderers = {"simple-nn": _render_simple_nn_config}
+    if kind not in renderers:
+        raise NotImplementedError(
+            f"student kind={kind!r} requires adapter.render or a registered renderer"
+        )
+    return renderers[kind](cfg, out_dir)
+
+
 def _train_grace_fs(cfg, dataset_path, out_dir, seed):
     """Run gracemaker from a user-reviewed input template and export GRACE/FS."""
     train_cfg = cfg["train"]

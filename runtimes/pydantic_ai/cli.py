@@ -140,12 +140,18 @@ def _input_source(controller, contains=None, suffix=None, exclude_contains=None)
 
 
 def _fill_default_parameters(controller, stage_name, params):
+    """Fill in the one generic default this framework infers on the caller's behalf:
+    a `reference_validation` stage with no bound parameters resolves its Teacher config
+    and report/prediction output paths from the controller's bound inputs/declared
+    outputs. Every other stage (including `teacher_baseline`, which requires an explicit
+    `structures_path` -- there is no safe generic guess for which bound structures file
+    represents "the" deployment-domain baseline) must be given explicit parameters."""
     if not params and stage_name == "reference_validation":
         stage = controller.stage(stage_name)
         outputs = stage.get("outputs") or []
         if len(outputs) != 2:
             raise ValueError("reference_validation requires exactly two declared outputs")
-        teacher = _input_source(controller, "teacher", ".yaml") or _input_source(controller, "teacher.allegro", ".yaml")
+        teacher = _input_source(controller, "teacher", ".yaml")
         if not teacher:
             raise ValueError("reference_validation requires a bound Teacher configuration input")
         return {
@@ -156,39 +162,7 @@ def _fill_default_parameters(controller, stage_name, params):
         }
     if stage_name == "teacher_baseline" and "structures_path" not in params:
         raise ValueError("teacher_baseline requires explicit pydantic_ai.parameters.structures_path")
-    if params or stage_name != "teacher_baseline":
-        return params
-    stage = controller.stage(stage_name)
-    outputs = stage.get("outputs") or []
-    report = str((controller.run_dir / outputs[0]).resolve()) if outputs else str(
-        controller.run_dir / "artifacts" / "teacher_baseline.json")
-    teacher = _input_source(controller, "teacher", ".yaml") or _input_source(controller, "teacher.allegro", ".yaml")
-    scope = _input_source(controller, "distillation_scope", ".yaml")
-    profile = (_input_source(controller, "validation_profile", ".yaml") or
-               _input_source(controller, "validation", ".yaml"))
-    structures = (_input_source(controller, "bulk_cryst", ".xyz") or
-                  _input_source(controller, suffix=".xyz", exclude_contains="protected_reference"))
-    missing = [name for name, value in {
-        "teacher_config": teacher,
-        "distillation_scope": scope,
-        "validation_profile": profile,
-        "structures_path": structures,
-    }.items() if not value]
-    if missing:
-        raise ValueError("teacher_baseline cannot infer required inputs: " + ", ".join(missing))
-    return {
-        "teacher_config": teacher,
-        "distillation_scope": scope,
-        "validation_profile": profile,
-        "structures_path": structures,
-        "report_path": report,
-        "labeled_output": str(controller.run_dir / "artifacts" / "teacher_baseline_operational.extxyz"),
-        "label_manifest_path": str(controller.run_dir / "artifacts" / "teacher_baseline_labels.manifest.json"),
-        "applicability_status": "NOT_ESTABLISHED",
-        "applicability_limitations": ["deployment-domain evidence gap remains NOT_ESTABLISHED"],
-        "deployment_domain": {"stage": "teacher_baseline", "source": "declared operational structures"},
-        "require_lineage": False,
-    }
+    return params
 
 
 def _protected_reference_from_inputs(controller):

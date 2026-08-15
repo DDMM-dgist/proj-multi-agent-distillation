@@ -15,8 +15,6 @@ from validation.protected_reference import validate_reference_config
 from validation.report import validate_evidence
 from workflow.integrity import artifact_digest, sha256_file, verify_artifact
 
-REQUIRED_LOGICAL_FRAMES = 1155
-REQUIRED_PROTECTED_SOURCE_ROWS = 1156
 GLOBAL_METRIC_KEYS = {
     "n_frames", "n_atoms", "energy_mae", "energy_rmse",
     "force_component_mae", "force_component_rmse",
@@ -104,10 +102,6 @@ def validate_reference_validation_report(
     teacher_config = str(Path(teacher_config).expanduser().resolve())
 
     protection = validate_reference_config(reference_yaml)
-    if protection["logical_frames"] != REQUIRED_LOGICAL_FRAMES:
-        raise ValueError("protected reference logical-frame count is not 1155")
-    if protection["protected_source_rows"] != REQUIRED_PROTECTED_SOURCE_ROWS:
-        raise ValueError("protected source-row count is not 1156")
 
     ref = payload.get("reference")
     if not isinstance(ref, dict):
@@ -116,8 +110,8 @@ def validate_reference_validation_report(
         "reference_id": protection["reference_id"],
         "reference_yaml": reference_yaml,
         "structures_path": str(protection["reference_path"]),
-        "logical_frames": REQUIRED_LOGICAL_FRAMES,
-        "protected_source_rows": REQUIRED_PROTECTED_SOURCE_ROWS,
+        "logical_frames": protection["logical_frames"],
+        "protected_source_rows": protection["protected_source_rows"],
     }
     for key, expected in expected_ref.items():
         if ref.get(key) != expected:
@@ -139,8 +133,10 @@ def validate_reference_validation_report(
         raise ValueError("historical Teacher prediction SHA cannot be accepted as fresh output")
 
     frames = read(str(pred_path), index=":")
-    if len(frames) != REQUIRED_LOGICAL_FRAMES:
-        raise ValueError(f"prediction frame count mismatch: {len(frames)} != {REQUIRED_LOGICAL_FRAMES}")
+    if len(frames) != protection["logical_frames"]:
+        raise ValueError(
+            f"prediction frame count mismatch: {len(frames)} != {protection['logical_frames']}"
+        )
     for index, atoms in enumerate(frames):
         for key in ("dft_energy", "teacher_energy"):
             if key not in atoms.info or not _finite(float(atoms.info[key])):

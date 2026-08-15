@@ -105,19 +105,26 @@ def build_directed_coverage_evidence(
     }
 
 
-def protected_reference_pointer(protected_reference_report_path: str) -> dict:
+def protected_reference_pointer(
+    protected_reference_report_path: str, *, report_sha256: str,
+    logical_frames: int, protected_source_rows: int,
+) -> dict:
     """Return a pointer-only reference to the independent DFT validation channel.
 
-    Does not recompute, re-read, or merge validation.reference_validation's
-    evidence -- only cross-checks its required-frame-count constants so this
-    pointer cannot silently drift from that channel's own definition.
+    Does not recompute, re-read, or merge validation.reference_validation's evidence,
+    and never hardcodes a campaign's frame counts -- ``logical_frames``,
+    ``protected_source_rows``, and ``report_sha256`` must be the real, hash-verified
+    values the caller already obtained from that channel's own report (see
+    validation.reference_validation.validate_reference_validation_report), so this
+    pointer can never silently drift from that channel's own hash-bound evidence.
     """
-    from validation.reference_validation import REQUIRED_LOGICAL_FRAMES, REQUIRED_PROTECTED_SOURCE_ROWS
+    from validation.data_coverage import PROTECTED_REFERENCE_POINTER_ROLE
 
     return {
         "channel": "protected_reference_status",
-        "role": "independent DFT validation channel pointer only -- not recomputed here",
+        "role": PROTECTED_REFERENCE_POINTER_ROLE,
         "report_path": protected_reference_report_path,
-        "required_logical_frames": REQUIRED_LOGICAL_FRAMES,
-        "required_protected_source_rows": REQUIRED_PROTECTED_SOURCE_ROWS,
+        "report_sha256": report_sha256,
+        "required_logical_frames": int(logical_frames),
+        "required_protected_source_rows": int(protected_source_rows),
     }

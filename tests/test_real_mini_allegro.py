@@ -80,7 +80,6 @@ class RealMiniAllegroTests(unittest.TestCase):
         except Exception as exc:  # pragma: no cover - base env documents known torchvision issue
             self.skipTest(f"NequIP unavailable in this Python environment: {type(exc).__name__}: {exc}")
         import yaml
-        from validation import reference_validation as rv
         from workflow.integrity import sha256_file
         from runtimes.pydantic_ai.executors import _exec_validate_teacher_reference
 
@@ -127,19 +126,13 @@ class RealMiniAllegroTests(unittest.TestCase):
             "structures": {"path": str(reference_structures), "logical_frames": 2,
                            "sha256": sha256_file(reference_structures)},
         }))
-        old = (rv.REQUIRED_LOGICAL_FRAMES, rv.REQUIRED_PROTECTED_SOURCE_ROWS)
-        rv.REQUIRED_LOGICAL_FRAMES = 2
-        rv.REQUIRED_PROTECTED_SOURCE_ROWS = 2
-        try:
-            result = _exec_validate_teacher_reference({"parameters": {
-                "reference_yaml": str(reference_yaml),
-                "teacher_config": str(teacher_cfg_path),
-                "predictions_path": str(predictions),
-                "report_path": str(report),
-                "domain_fields": ["structural_domain"],
-            }})
-        finally:
-            rv.REQUIRED_LOGICAL_FRAMES, rv.REQUIRED_PROTECTED_SOURCE_ROWS = old
+        result = _exec_validate_teacher_reference({"parameters": {
+            "reference_yaml": str(reference_yaml),
+            "teacher_config": str(teacher_cfg_path),
+            "predictions_path": str(predictions),
+            "report_path": str(report),
+            "domain_fields": ["structural_domain"],
+        }})
         self.assertTrue(Path(result["path"]).is_file())
         self.assertTrue(Path(result["predictions_path"]).is_file())
         payload = json.loads(report.read_text())

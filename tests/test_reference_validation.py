@@ -144,24 +144,11 @@ def _valid_report(root: Path, *, teacher_nan=False, historical=False):
     return path, reference, teacher, pred, report
 
 
-class _SmallReferenceCounts:
-    def __enter__(self):
-        import validation.reference_validation as rv
-        self.rv = rv
-        self.old = (rv.REQUIRED_LOGICAL_FRAMES, rv.REQUIRED_PROTECTED_SOURCE_ROWS)
-        rv.REQUIRED_LOGICAL_FRAMES = 2
-        rv.REQUIRED_PROTECTED_SOURCE_ROWS = 2
-        return rv
-
-    def __exit__(self, exc_type, exc, tb):
-        self.rv.REQUIRED_LOGICAL_FRAMES, self.rv.REQUIRED_PROTECTED_SOURCE_ROWS = self.old
-
-
 class ReferenceValidationActionTests(unittest.TestCase):
     def test_route_and_authoritative_binding_exist(self):
         from runtimes.pydantic_ai.cli import _proposal_from_stage, _protection_consuming_action, _stage_config
         from workflow.controller import RunController
-        with tempfile.TemporaryDirectory() as tmp, _SmallReferenceCounts():
+        with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             reference = _write_reference_package(root, _frames())
             teacher = _teacher_config(root)
@@ -194,7 +181,7 @@ class ReferenceValidationActionTests(unittest.TestCase):
 
     def test_validator_accepts_metrics_and_hash_bound_prediction(self):
         from validation.reference_validation import validate_reference_validation_report
-        with tempfile.TemporaryDirectory() as tmp, _SmallReferenceCounts():
+        with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             report, reference, teacher, pred, _payload = _valid_report(root)
             out = validate_reference_validation_report(report, reference_yaml=reference, teacher_config=teacher,
@@ -205,7 +192,7 @@ class ReferenceValidationActionTests(unittest.TestCase):
 
     def test_wrong_protected_reference_count_rejects(self):
         from validation.reference_validation import validate_reference_validation_report
-        with tempfile.TemporaryDirectory() as tmp, _SmallReferenceCounts():
+        with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             report, reference, teacher, pred, payload = _valid_report(root)
             payload["reference"]["logical_frames"] = 1
@@ -216,7 +203,7 @@ class ReferenceValidationActionTests(unittest.TestCase):
 
     def test_wrong_teacher_sha_rejects(self):
         from validation.reference_validation import validate_reference_validation_report
-        with tempfile.TemporaryDirectory() as tmp, _SmallReferenceCounts():
+        with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             report, reference, teacher, pred, payload = _valid_report(root)
             payload["teacher"]["model_sha256"] = "0" * 64
@@ -227,7 +214,7 @@ class ReferenceValidationActionTests(unittest.TestCase):
 
     def test_historical_prediction_substitution_rejects(self):
         from validation.reference_validation import validate_reference_validation_report
-        with tempfile.TemporaryDirectory() as tmp, _SmallReferenceCounts():
+        with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             report, reference, teacher, pred, _payload = _valid_report(root, historical=True)
             with self.assertRaisesRegex(ValueError, "historical Teacher prediction"):
@@ -236,7 +223,7 @@ class ReferenceValidationActionTests(unittest.TestCase):
 
     def test_missing_prediction_artifact_rejects(self):
         from validation.reference_validation import validate_reference_validation_report
-        with tempfile.TemporaryDirectory() as tmp, _SmallReferenceCounts():
+        with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             report, reference, teacher, pred, _payload = _valid_report(root)
             pred.unlink()
@@ -246,7 +233,7 @@ class ReferenceValidationActionTests(unittest.TestCase):
 
     def test_nan_prediction_rejects(self):
         from validation.reference_validation import validate_reference_validation_report
-        with tempfile.TemporaryDirectory() as tmp, _SmallReferenceCounts():
+        with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             report, reference, teacher, pred, _payload = _valid_report(root, teacher_nan=True)
             with self.assertRaisesRegex(ValueError, "finite teacher_energy"):
@@ -255,7 +242,7 @@ class ReferenceValidationActionTests(unittest.TestCase):
 
     def test_student_semantics_claim_rejects(self):
         from validation.reference_validation import validate_reference_validation_report
-        with tempfile.TemporaryDirectory() as tmp, _SmallReferenceCounts():
+        with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             report, reference, teacher, pred, payload = _valid_report(root)
             payload["student_training"] = {"dataset": str(pred)}
@@ -266,7 +253,7 @@ class ReferenceValidationActionTests(unittest.TestCase):
 
     def test_executor_uses_label_with_teacher_primitive_and_validator(self):
         from runtimes.pydantic_ai.executors import _exec_validate_teacher_reference
-        with tempfile.TemporaryDirectory() as tmp, _SmallReferenceCounts():
+        with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             reference = _write_reference_package(root, _frames())
             teacher = _teacher_config(root)

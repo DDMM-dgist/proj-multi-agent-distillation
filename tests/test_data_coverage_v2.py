@@ -5,7 +5,6 @@ from pathlib import Path
 
 from validation.data_coverage import validate_data_coverage_report
 from validation.report import evidence_record
-from validation.reference_validation import REQUIRED_LOGICAL_FRAMES, REQUIRED_PROTECTED_SOURCE_ROWS
 from workflow.integrity import sha256_file
 
 
@@ -15,7 +14,11 @@ class DataCoverageV2Tests(unittest.TestCase):
         reference_manifest.write_text(json.dumps({"train": list(range(10))}))
 
         protected_report = root / "protected_reference_report.json"
-        protected_report.write_text(json.dumps({"status": "PASS"}))
+        protected_report.write_text(json.dumps({
+            "status": "PASS",
+            "reference": {"logical_frames": 3, "protected_source_rows": 5},
+        }))
+        protected_report_sha256 = sha256_file(protected_report)
 
         policy_path = root / "dataset_policy.yaml"
         policy_path.write_text(policy_content or (
@@ -65,8 +68,9 @@ class DataCoverageV2Tests(unittest.TestCase):
             "protected_reference_status": {
                 "role": "protected_reference_pointer",
                 "report_path": "protected_reference_report.json",
-                "required_logical_frames": REQUIRED_LOGICAL_FRAMES,
-                "required_protected_source_rows": REQUIRED_PROTECTED_SOURCE_ROWS,
+                "report_sha256": protected_report_sha256,
+                "required_logical_frames": 3,
+                "required_protected_source_rows": 5,
             },
             "reference_population_partition_overlap": {
                 "total": 2134,
@@ -239,7 +243,18 @@ class DataCoverageV2Tests(unittest.TestCase):
             manifest_path.write_text(json.dumps(payload, default=str))
             with self.assertRaises(ValueError) as ctx:
                 validate_data_coverage_report(manifest_path)
-            self.assertIn("REQUIRED_LOGICAL_FRAMES", str(ctx.exception))
+            self.assertIn("must match the hash-verified", str(ctx.exception))
+
+    def test_protected_reference_status_rejects_tampered_report_hash(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            manifest_path = self._write_fixture(root)
+            payload = json.loads(manifest_path.read_text())
+            payload["protected_reference_status"]["report_sha256"] = "0" * 64
+            manifest_path.write_text(json.dumps(payload, default=str))
+            with self.assertRaises(ValueError) as ctx:
+                validate_data_coverage_report(manifest_path)
+            self.assertIn("report_sha256", str(ctx.exception))
 
     def test_reference_population_partition_overlap_is_optional(self):
         with tempfile.TemporaryDirectory() as tmp:

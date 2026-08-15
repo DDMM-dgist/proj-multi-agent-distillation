@@ -18,8 +18,8 @@ carry a split_membership_verification block that is not allowed to claim cryptog
 verification while a reconstruction caveat is open (see configs/provenance/PROVENANCE.md)
 -- this is a conditional rule keyed on `reference_role`, not on a specific block name.
 It also requires protected_reference_status (a pointer only, whose required-frame-count
-fields are cross-checked against validation.reference_validation's real constants rather
-than a second, duplicated hardcoded copy), and an OPTIONAL
+fields are cross-checked against the hash-verified reference_validation report file it
+points to -- never a hardcoded literal count in this module), and an OPTIONAL
 reference_population_partition_overlap (an arbitrary, campaign-defined partition
 breakdown of some reference population, checked only for internal count consistency --
 this validator does not hardcode any specific partition names, population, or size,
@@ -414,19 +414,41 @@ def _validate_protected_reference_status(manifest_path, payload):
     report_path = _resolve_relative(manifest_path, report_path_value)
     if not report_path.is_file():
         raise ValueError(f"protected_reference_status.report_path does not exist: {report_path}")
-    from validation.reference_validation import REQUIRED_LOGICAL_FRAMES, REQUIRED_PROTECTED_SOURCE_ROWS
-
-    if block.get("required_logical_frames") != REQUIRED_LOGICAL_FRAMES:
+    recorded_hash = block.get("report_sha256")
+    if not isinstance(recorded_hash, str) or not recorded_hash.strip():
+        raise ValueError("protected_reference_status requires report_sha256")
+    actual_hash = sha256_file(report_path)
+    if actual_hash != recorded_hash:
         raise ValueError(
-            "protected_reference_status.required_logical_frames must match "
-            "validation.reference_validation.REQUIRED_LOGICAL_FRAMES exactly, not a duplicated "
-            "hardcoded copy"
+            "protected_reference_status.report_sha256 does not match the actual report_path file "
+            f"({report_path}); this pointer must be bound to real, unmodified evidence"
         )
-    if block.get("required_protected_source_rows") != REQUIRED_PROTECTED_SOURCE_ROWS:
+    report_payload = json.loads(report_path.read_text())
+    reference_block = report_payload.get("reference")
+    if not isinstance(reference_block, dict):
         raise ValueError(
-            "protected_reference_status.required_protected_source_rows must match "
-            "validation.reference_validation.REQUIRED_PROTECTED_SOURCE_ROWS exactly, not a "
-            "duplicated hardcoded copy"
+            "protected_reference_status.report_path must contain a `reference` block with "
+            "logical_frames/protected_source_rows (see validation.reference_validation)"
+        )
+    expected_logical = reference_block.get("logical_frames")
+    expected_rows = reference_block.get("protected_source_rows")
+    if not _nonnegative_integer(expected_logical) or not _nonnegative_integer(expected_rows):
+        raise ValueError(
+            "protected_reference_status.report_path reference block must declare integer "
+            "logical_frames/protected_source_rows"
+        )
+    # The expected counts come from the hash-verified report file itself -- this campaign's
+    # actual frame counts, whatever they are -- never a hardcoded literal in this module.
+    if block.get("required_logical_frames") != expected_logical:
+        raise ValueError(
+            "protected_reference_status.required_logical_frames must match the hash-verified "
+            "report_path's reference.logical_frames exactly, not an independently supplied value"
+        )
+    if block.get("required_protected_source_rows") != expected_rows:
+        raise ValueError(
+            "protected_reference_status.required_protected_source_rows must match the hash-verified "
+            "report_path's reference.protected_source_rows exactly, not an independently supplied "
+            "value"
         )
 
 

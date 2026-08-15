@@ -226,14 +226,15 @@ def build_dataset_manifest(proposal) -> dict:
 # --- ML Trainer -----------------------------------------------------------------
 
 def prepare_student_inputs(proposal) -> dict:
-    """Render SIMPLE-NN input config via the existing adapters.student._render_simple_nn_config."""
+    """Render the student input config via the existing adapters.student.render_student_inputs
+    (config/adapter-selected by ``cfg["kind"]`` -- this executor never picks a model family)."""
     from adapters import load_config
-    from adapters.student import _render_simple_nn_config
+    from adapters.student import render_student_inputs
     p = _p(proposal)
     cfg = load_config(p["student_config"])
     out_dir = Path(p["out_dir"])
     out_dir.mkdir(parents=True, exist_ok=True)
-    rendered = _render_simple_nn_config(cfg, out_dir)
+    rendered = render_student_inputs(cfg, out_dir)
     return {"path": str(rendered), "rendered_config": str(rendered)}
 
 

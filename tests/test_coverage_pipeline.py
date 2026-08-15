@@ -402,13 +402,23 @@ class CoveragePipelineTests(unittest.TestCase):
         self.assertEqual(evidence["reference_population"], "student_training_dataset")
         self.assertEqual(evidence["excluded_partitions"], [])
 
-    def test_protected_reference_pointer_cross_checks_real_constants(self):
+    def test_protected_reference_pointer_never_invents_counts(self):
+        """protected_reference_pointer must echo exactly the caller-supplied,
+        hash-bound values -- it must never hardcode or default a campaign's frame
+        counts itself (see validation.data_coverage._validate_protected_reference_status,
+        which is the actual authority that cross-checks these against the real,
+        hash-verified report file)."""
+        from validation.data_coverage import PROTECTED_REFERENCE_POINTER_ROLE
         from coverage.report import protected_reference_pointer
-        from validation.reference_validation import REQUIRED_LOGICAL_FRAMES, REQUIRED_PROTECTED_SOURCE_ROWS
 
-        pointer = protected_reference_pointer("configs/runs/example/protected_reference_report.json")
-        self.assertEqual(pointer["required_logical_frames"], REQUIRED_LOGICAL_FRAMES)
-        self.assertEqual(pointer["required_protected_source_rows"], REQUIRED_PROTECTED_SOURCE_ROWS)
+        pointer = protected_reference_pointer(
+            "configs/runs/example/protected_reference_report.json",
+            report_sha256="0" * 64, logical_frames=7, protected_source_rows=9,
+        )
+        self.assertEqual(pointer["role"], PROTECTED_REFERENCE_POINTER_ROLE)
+        self.assertEqual(pointer["report_sha256"], "0" * 64)
+        self.assertEqual(pointer["required_logical_frames"], 7)
+        self.assertEqual(pointer["required_protected_source_rows"], 9)
 
 
 if __name__ == "__main__":

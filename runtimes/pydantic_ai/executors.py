@@ -816,22 +816,12 @@ def _exec_validate_teacher_reference(proposal):
     from adapters.teacher import teacher_model_reference
     from validation.four_channel_audit import channel
     from validation.protected_reference import validate_reference_config
-    from validation.reference_validation import (
-        REQUIRED_LOGICAL_FRAMES,
-        REQUIRED_PROTECTED_SOURCE_ROWS,
-        validate_reference_validation_report,
-    )
+    from validation.reference_validation import validate_reference_validation_report
     from workflow.integrity import artifact_digest, sha256_file
     p = _params(proposal)
     reference_yaml = p["reference_yaml"]
     teacher_config = p["teacher_config"]
     protection = validate_reference_config(reference_yaml)
-    if (protection["logical_frames"] != REQUIRED_LOGICAL_FRAMES or
-            protection["protected_source_rows"] != REQUIRED_PROTECTED_SOURCE_ROWS):
-        raise ValueError(
-            f"protected reference does not match required {REQUIRED_LOGICAL_FRAMES}/"
-            f"{REQUIRED_PROTECTED_SOURCE_ROWS} counts"
-        )
     predictions_path = Path(p["predictions_path"]).resolve()
     report_path = Path(p["report_path"]).resolve()
     predictions_path.parent.mkdir(parents=True, exist_ok=True)
@@ -1027,8 +1017,8 @@ BINDINGS: dict[str, ExecutorBinding] = {b.action_type: b for b in [
            "frames_path[,min_distance_threshold]", "overlapping frame indices",
            de.detect_atomic_overlap),
     # --- ML Trainer ---
-    _ready("prepare_student_inputs", "ml-trainer", "adapters.student._render_simple_nn_config",
-           "student_config,out_dir", "rendered SIMPLE-NN config", de.prepare_student_inputs),
+    _ready("prepare_student_inputs", "ml-trainer", "adapters.student.render_student_inputs",
+           "student_config,out_dir", "rendered student input config", de.prepare_student_inputs),
     _hpc("train_committee", "ml-trainer", "workflow.steps.train_committee",
          "student_config,dataset,output_dir,manifest_path", "committee manifest + checkpoints", ""),
     _ready("collect_checkpoints", "ml-trainer", "committee manifest convention",

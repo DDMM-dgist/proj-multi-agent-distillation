@@ -23,7 +23,7 @@ from adapters.preflight import (check_acquisition_config, check_acquisition_file
                                 check_uncertainty_config, check_validation_profile)
 from adapters.student import (_render_simple_nn_config, _train_grace_fs,
                               _train_mock, lammps_pair_style_block, load_student,
-                              predict_student, train_student)
+                              predict_student, render_student_inputs, train_student)
 from adapters.simple_nn_v2_predict import (
     _materialize_test_list, predict as predict_simple_nn)
 from adapters.simple_nn_v2_wrapper import _dataset_to_extxyz_with_ref_labels
@@ -842,6 +842,55 @@ class AdapterContractTests(unittest.TestCase):
             self.assertIn("epochs: 20", text)
             self.assertIn("precision: true", text)
             self.assertNotRegex(text, r"\{[A-Z_]+\}")
+
+    def test_render_student_inputs_dispatches_simple_nn_by_kind(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            template = root / "template.yaml"
+            params = root / "params_X"
+            template.write_text("params: {X_PARAMS_PATH}\nepochs: {TOTAL_EPOCH}\n")
+            params.write_text("descriptor")
+            cfg = {"kind": "simple-nn", "_project_dir": str(root), "train": {
+                "config_template": str(template), "descriptor_params": {"X": str(params)},
+                "nodes": "10-10", "batch_size": 4, "total_epoch": 5}}
+            rendered = render_student_inputs(cfg, root / "out")
+            self.assertIn("epochs: 5", rendered.read_text())
+
+    def test_render_student_inputs_selects_new_family_via_config_only(self):
+        """A student family unknown to render_student_inputs's built-in registry must be
+        selectable purely through config (adapter.render), proving a new Teacher/Student
+        model family never requires editing deterministic_executors.py or adapters.student."""
+        import sys
+        import types
+        from runtimes.pydantic_ai import deterministic_executors as de
+
+        module_name = "test_adapters_fake_family_adapter"
+        fake_module = types.ModuleType(module_name)
+
+        def _fake_family_render(cfg, out_dir):
+            out_dir = Path(out_dir)
+            out_dir.mkdir(parents=True, exist_ok=True)
+            path = out_dir / "input.yaml"
+            path.write_text(f"family: {cfg['kind']}\n")
+            return path
+
+        fake_module.render = _fake_family_render
+        sys.modules[module_name] = fake_module
+        try:
+            with tempfile.TemporaryDirectory() as tmp:
+                root = Path(tmp)
+                config_path = root / "student.fake-family.yaml"
+                config_path.write_text(json.dumps({
+                    "kind": "fake-family",
+                    "adapter": {"render": f"{module_name}.render"},
+                }))
+                out_dir = root / "out"
+                result = de.prepare_student_inputs(
+                    {"parameters": {"student_config": str(config_path), "out_dir": str(out_dir)}})
+                rendered_text = Path(result["rendered_config"]).read_text()
+                self.assertEqual(rendered_text, "family: fake-family\n")
+        finally:
+            del sys.modules[module_name]
 
     def test_dataset_split_keeps_parent_groups_disjoint(self):
         with tempfile.TemporaryDirectory() as tmp:
