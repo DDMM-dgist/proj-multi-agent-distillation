@@ -298,7 +298,7 @@ class BackingMatrixTests(unittest.TestCase):
         from collections import Counter
         from runtimes.pydantic_ai.executors import BINDINGS
         counts = Counter(b.status for b in BINDINGS.values())
-        self.assertEqual(counts["READY_EXECUTOR"], 28)
+        self.assertEqual(counts["READY_EXECUTOR"], 32)
         self.assertEqual(counts["READY_HPC_APPROVAL_GATED"], 8)
         self.assertEqual(counts["READY_INTERFACE_BACKEND_NOT_CONFIGURED"], 3)
         self.assertEqual(counts["READY_REASONING_OUTPUT"], 1)

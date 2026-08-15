@@ -79,6 +79,80 @@ def _exec_committee_disagreement(proposal):
                      p.get("out_path"))
 
 
+def _exec_build_uncertainty_report(proposal):
+    """Composite ml-trainer driver for the ``uncertainty`` production stage: reuses the existing
+    authoritative ``adapters.uncertainty.committee_force_std`` executor over per-seed forces
+    ALREADY embedded on the declared held-out/deployment population by
+    ``workflow.steps.evaluate_committee`` (``student_forces_seed<NN>``) -- no new inference, no
+    new uncertainty science. Self-validates via ``validation.uncertainty.validate_uncertainty_report``
+    before returning, and never claims calibration without explicit calibration evidence.
+    """
+    import numpy as np
+    from ase.io import read
+    from adapters.uncertainty import committee_force_std
+    from validation.uncertainty import validate_uncertainty_report
+    from workflow.integrity import artifact_digest, sha256_file
+    p = _params(proposal)
+    committee_manifest = Path(p["committee_manifest"]).resolve()
+    committee = json.loads(committee_manifest.read_text())
+    seeds = sorted(int(model["seed"]) for model in committee["models"])
+    if len(seeds) < 2:
+        raise ValueError("uncertainty requires a committee of at least two seeds")
+    population_path = Path(p["population_frames"]).resolve()
+    frames = read(str(population_path), index=":")
+    if not frames:
+        raise ValueError("uncertainty population_frames is empty")
+    aggregate = p.get("aggregate", "max")
+    frame_scores = []
+    u_values = []
+    for index, atoms in enumerate(frames):
+        per_seed = []
+        for seed in seeds:
+            key = f"{seed:02d}"
+            field = f"student_forces_seed{key}"
+            if field not in atoms.arrays:
+                raise ValueError(f"population frame {index} is missing committee forces: {field}")
+            per_seed.append(np.asarray(atoms.arrays[field], dtype=float))
+        _, frame_score = committee_force_std(np.stack(per_seed), aggregate=aggregate)
+        frame_id = str(atoms.info.get("structure_id", index))
+        frame_scores.append({"frame_id": frame_id, "u_frame": float(frame_score)})
+        u_values.append(float(frame_score))
+    calibration_evidence = p.get("calibration_evidence")
+    if calibration_evidence:
+        calibration = {"status": "calibrated", "caveat": p.get(
+            "calibration_caveat", "calibrated against the cited calibration_evidence")}
+    else:
+        calibration = {
+            "status": "uncalibrated",
+            "caveat": ("committee force disagreement (sigma_F) is treated as a committee "
+                      "disagreement / fidelity-ranking signal only; no calibration evidence "
+                      "(e.g. a held-out DFT-error regression) has been supplied for this run"),
+        }
+    evidence = [_evidence("committee_manifest", committee_manifest),
+               _evidence("population", population_path)]
+    if calibration_evidence:
+        evidence.append(_evidence("calibration_evidence", calibration_evidence))
+    report = {
+        "schema_version": 1,
+        "population": {"role": p.get("population_role", "held_out_evaluation_population"),
+                       "path": str(population_path), "n_frames": len(frames)},
+        "committee_manifest_path": str(committee_manifest),
+        "committee_manifest_sha256": sha256_file(committee_manifest),
+        "seeds": seeds, "aggregate": aggregate, "frame_scores": frame_scores,
+        "u_frame_summary": {"mean": sum(u_values) / len(u_values), "max": max(u_values)},
+        "calibration": calibration,
+        "identified_gaps": list(p.get("identified_gaps") or []),
+        "limitations": list(p.get("limitations") or []),
+        "evidence": evidence,
+    }
+    report_path = Path(p["report_path"])
+    report_path.parent.mkdir(parents=True, exist_ok=True)
+    report_path.write_text(json.dumps(report, indent=2) + "\n")
+    validate_uncertainty_report(report_path)
+    return {"path": str(report_path.resolve()), "report": report,
+            "integrity": artifact_digest(report_path)}
+
+
 def _exec_generate_group_split(proposal):
     from workflow.steps import prepare_student_distillation_dataset, split_dataset
     from workflow.integrity import artifact_digest
@@ -184,6 +258,52 @@ def _exec_force_error_channel(proposal):
     return _artifact({"channel": metrics}, p.get("out_path"))
 
 
+def _exec_generate_run_summary(proposal):
+    """Composite analyst driver for the ``analysis`` production stage: reads the state snapshot
+    ``runtimes.pydantic_ai.cli._assemble_run_summary_state`` mechanically assembled from the CURRENT
+    ``RunController`` (never re-derived here), computes ``campaign_outcome`` deterministically from
+    that snapshot's own stage gates, and self-validates via
+    ``validation.run_summary.validate_run_summary_report``. No LLM narrates or invents a stage
+    outcome, gate verdict, or artifact hash here.
+    """
+    from workflow.integrity import artifact_digest
+    p = _params(proposal)
+    state_path = Path(p["run_state_path"]).resolve()
+    state = json.loads(state_path.read_text())
+
+    stages = state["stages"]
+    if all(stage["gate"] == "PASS" for stage in stages):
+        campaign_outcome = "ALL_STAGES_PASSED"
+    elif any(stage["gate"] in ("REVISE", "FAIL") for stage in stages):
+        campaign_outcome = "RECOVERY_IN_PROGRESS_OR_REQUIRED"
+    else:
+        campaign_outcome = "IN_PROGRESS"
+
+    identified_gaps = list(p.get("identified_gaps") or [])
+    limitations = list(p.get("limitations") or
+                       ["Generated mechanically from the recorded Controller state snapshot only; "
+                        "does not independently re-verify scientific conclusions"])
+
+    evidence = [_evidence("run_state_snapshot", state_path)]
+    report = {
+        "schema_version": 1,
+        "run_id": state["run_id"],
+        "stages": stages,
+        "gate_history": state["gate_history"],
+        "recoveries": state["recoveries"],
+        "campaign_outcome": campaign_outcome,
+        "identified_gaps": identified_gaps,
+        "limitations": limitations,
+        "evidence": evidence,
+    }
+    report_path = Path(p["report_path"])
+    report_path.parent.mkdir(parents=True, exist_ok=True)
+    report_path.write_text(json.dumps(report, indent=2) + "\n")
+    from validation.run_summary import validate_run_summary_report
+    validate_run_summary_report(report_path)
+    return {"path": str(report_path.resolve()), "report": report, "integrity": artifact_digest(report_path)}
+
+
 def _exec_compute_coordination(proposal):
     from ase.io import read
     from validation.structure_dynamics import compute_coordination
@@ -193,6 +313,97 @@ def _exec_compute_coordination(proposal):
     return _artifact({"coordination": {k: float(v) for k, v in coord.items()}}, p.get("out_path"))
 
 
+def _exec_build_physical_validation_report(proposal):
+    """Composite simulation driver for the ``physical_validation`` production stage: composes the
+    EXISTING validation.structure_dynamics RDF/coordination/density/MSD/NVE-drift computations into
+    one validate_validation_report-conformant report. Every required observable and its pass/fail
+    criterion comes ONLY from the frozen validation_profile.yaml ``checks[].threshold`` field --
+    this executor never invents or softens a threshold; profile entries with ``threshold: null``
+    (descriptive Teacher-Student comparisons, per validation_profile.yaml's own preregistration)
+    are recorded, never forced into a synthetic PASS/FAIL.
+    """
+    import yaml
+    from ase.io import read
+    from validation.structure_dynamics import (compute_rdf, compute_coordination,
+                                                compute_density, compute_msd, compute_nve_drift)
+    from validation.report import make_check, validate_validation_report
+    from workflow.integrity import artifact_digest
+    p = _params(proposal)
+    profile_path = Path(p["validation_profile"]).resolve()
+    profile = yaml.safe_load(profile_path.read_text())
+    checks_cfg = {c["name"]: c for c in (profile.get("checks") or [])}
+    if not checks_cfg:
+        raise ValueError("validation_profile has no declared checks")
+
+    frames_path = Path(p["frames_path"]).resolve()
+    frames = read(str(frames_path), index=":")
+    if not frames:
+        raise ValueError("physical_validation frames_path is empty")
+    elements = p.get("elements") or sorted({s for atoms in frames for s in atoms.get_chemical_symbols()})
+    r_max = float(p.get("r_max", 6.0))
+    nbins = int(p.get("nbins", 200))
+    cutoffs = p.get("cutoffs") or {}
+
+    checks = []
+
+    def emit(name, domain, value, unit, details=None):
+        cfg = checks_cfg.get(name)
+        if cfg is None or not cfg.get("required", False):
+            return
+        criterion = cfg.get("threshold")
+        checks.append(make_check(domain, name, value=value, unit=unit, criterion=criterion,
+                                 details=details))
+
+    _, partial = compute_rdf(frames, elements, r_max=r_max, nbins=nbins)
+    for pair, values in partial.items():
+        e1, e2 = pair.split("-")
+        candidates = [f"rdf_{e1}_{e2}", f"rdf_{e2}_{e1}"]
+        name = next((c for c in candidates if c in checks_cfg), candidates[0])
+        emit(name, "structure", float(max(values)), "peak_g(r)")
+
+    coordination = compute_coordination(frames, elements, cutoffs)
+    for element, value in coordination.items():
+        emit(f"coordination_{element}", "structure", float(value), "count")
+
+    mean_density, std_density = compute_density(frames)
+    emit("density", "structure", float(mean_density), "g/cm3", details={"standard_deviation": std_density})
+
+    if "msd_selfdiffusion" in checks_cfg:
+        msd_series = compute_msd(frames)
+        syms = frames[0].get_chemical_symbols()
+        counts = {el: syms.count(el) for el in msd_series}
+        total_atoms = sum(counts.values())
+        mean_final_msd = sum(float(series[-1]) * counts[el] for el, series in msd_series.items()) / total_atoms
+        emit("msd_selfdiffusion", "dynamics", mean_final_msd, "Angstrom^2",
+             details={"per_element_final_msd": {el: float(series[-1]) for el, series in msd_series.items()}})
+
+    if "energies" in p:
+        drift, resid = compute_nve_drift([float(x) for x in p["energies"]],
+                                         float(p.get("timestep_fs", 1.0)), int(p["n_atoms"]),
+                                         sample_interval_steps=int(p.get("sample_interval_steps", 1)))
+        emit("nve_drift", "dynamics", float(drift), "meV/atom/ns", details={"residual_std": resid})
+
+    declared_required = {name for name, cfg in checks_cfg.items() if cfg.get("required")}
+    produced = {c["observable"] for c in checks}
+    missing = declared_required - produced
+    if missing:
+        raise ValueError("physical_validation did not produce required observables: " +
+                         ", ".join(sorted(missing)))
+
+    evidence = [_evidence("validation_profile", profile_path), _evidence("frames", frames_path)]
+    report = {
+        "schema_version": 1,
+        "profile": profile.get("kind", "physical_validation"),
+        "checks": checks,
+        "evidence": evidence,
+    }
+    report_path = Path(p["report_path"])
+    report_path.parent.mkdir(parents=True, exist_ok=True)
+    report_path.write_text(json.dumps(report, indent=2) + "\n")
+    validate_validation_report(report_path)
+    return {"path": str(report_path.resolve()), "report": report, "integrity": artifact_digest(report_path)}
+
+
 def _exec_compare_coverage(proposal):
     from validation.data_coverage import validate_data_coverage_report
     p = _params(proposal)
@@ -200,6 +411,106 @@ def _exec_compare_coverage(proposal):
         p["manifest_path"], required_source_categories=p.get("required_source_categories"))
     return {"path": p["manifest_path"], "report": report,
             "sha256": (report.get("integrity", {}) or {}).get("sha256", "")}
+
+
+def _exec_build_data_coverage_report(proposal):
+    """Composite data-curator driver for the ``data_coverage`` production stage: enforces
+    protected-reference exclusion (``_protect_dataset``) and acquisition-lineage consistency
+    against the registered ``acquisition_manifest`` BEFORE computing real, per-config_type frame
+    counts, then self-validates via
+    ``validation.data_coverage.validate_data_coverage_report``. No LLM invents a coverage metric,
+    threshold, or acquisition count here; unassessable access is reported NOT_ASSESSABLE, never
+    filled in.
+    """
+    from ase.io import read
+    from validation.data_coverage import validate_data_coverage_report
+    from workflow.integrity import artifact_digest
+    p = _params(proposal)
+    candidate_dataset = Path(p["candidate_dataset"]).resolve()
+    _protect_dataset(candidate_dataset, p.get("reference_yaml"), p.get("selected_source_indices"),
+                     require_lineage=bool(p.get("require_lineage", False)))
+    frames = read(str(candidate_dataset), index=":")
+    if not frames:
+        raise ValueError("data_coverage candidate_dataset is empty")
+    grouping_key = p.get("grouping_key", "parent_structure_id")
+    parents = set()
+    for index, atoms in enumerate(frames):
+        if grouping_key not in atoms.info:
+            raise ValueError(f"candidate_dataset frame {index} is missing grouping key {grouping_key!r}")
+        parents.add(str(atoms.info[grouping_key]))
+
+    acquisition_manifest = Path(p["acquisition_manifest"]).resolve()
+    acquisition = json.loads(acquisition_manifest.read_text())
+    if not isinstance(acquisition.get("n_frames"), int) or not isinstance(acquisition.get("elements"), list):
+        raise ValueError("acquisition_manifest is missing n_frames/elements")
+    if len(frames) > acquisition["n_frames"]:
+        raise ValueError(
+            "data_coverage candidate_dataset has more frames than the acquisition manifest "
+            "declares -- lineage does not match acquisition.manifest.json"
+        )
+    candidate_elements = {s for atoms in frames for s in atoms.get_chemical_symbols()}
+    if not candidate_elements.issubset(set(acquisition["elements"])):
+        raise ValueError(
+            "data_coverage candidate_dataset contains elements outside the acquisition "
+            "manifest's declared elements -- lineage does not match acquisition.manifest.json"
+        )
+
+    label_source_field = p.get("label_source_field", "label_source")
+    label_sources = sorted({str(atoms.info.get(label_source_field, "unlabeled")) for atoms in frames})
+    category = p.get("category", "proposed_acquisition")
+    evidence_role = p.get("evidence_role", "proposed_distillation_structures")
+    source = {
+        "category": category, "n_parents": len(parents), "n_frames": len(frames),
+        "fraction": 1.0, "label_sources": label_sources, "evidence_role": evidence_role,
+        "statistics": {"kind": "ase", "grouping_key": grouping_key,
+                      "label_source_field": label_source_field},
+    }
+
+    config_types = sorted({str(atoms.info.get("config_type", "unlabeled")) for atoms in frames})
+    counts = {ct: sum(1 for atoms in frames if str(atoms.info.get("config_type", "unlabeled")) == ct)
+             for ct in config_types}
+    dimensions = {"config_type_coverage": {"method": "frame_count_by_config_type",
+                                           "config_types": config_types, "counts": counts}}
+
+    dataset_policy = p.get("dataset_policy")
+    if not dataset_policy:
+        import yaml
+        dataset_policy = str(Path(p["report_path"]).with_name("dataset_policy.yaml"))
+        Path(dataset_policy).parent.mkdir(parents=True, exist_ok=True)
+        Path(dataset_policy).write_text(yaml.safe_dump(
+            {"provenance": {"note": "auto-generated default dataset policy"}}))
+    dataset_policy = str(Path(dataset_policy).resolve())
+
+    teacher_training_data_access = p.get("teacher_training_data_access", "representative")
+    coverage_status = p.get("coverage_status") or (
+        "NOT_ASSESSABLE" if teacher_training_data_access == "unavailable" else "PARTIAL")
+    identified_gaps = list(p.get("identified_gaps") or (
+        [] if teacher_training_data_access == "full" else
+        ["Teacher training distribution is not independently re-verified in this run"]))
+    limitations = list(p.get("limitations") or
+                       ["Coverage computed per config_type frame counts only; no density-manifold "
+                        "coverage metric is computed"])
+
+    evidence = [_evidence("dataset_policy", dataset_policy),
+               _evidence(evidence_role, candidate_dataset),
+               _evidence("acquisition_manifest", acquisition_manifest)]
+    report = {
+        "schema_version": 1,
+        "teacher_training_data_access": teacher_training_data_access,
+        "coverage_status": coverage_status,
+        "deployment_domain": p.get("deployment_domain") or {"structure_classes": ["default"]},
+        "dataset_sources": [source],
+        "coverage_dimensions": dimensions,
+        "replay_policy": p.get("replay_policy") or {"enabled": False},
+        "identified_gaps": identified_gaps, "limitations": limitations,
+        "dataset_policy": dataset_policy, "evidence": evidence,
+    }
+    report_path = Path(p["report_path"])
+    report_path.parent.mkdir(parents=True, exist_ok=True)
+    report_path.write_text(json.dumps(report, indent=2) + "\n")
+    validate_data_coverage_report(report_path)
+    return {"path": str(report_path.resolve()), "report": report,
+            "integrity": artifact_digest(report_path)}
 
 
 # --- binding helpers ------------------------------------------------------------
@@ -1016,6 +1327,12 @@ BINDINGS: dict[str, ExecutorBinding] = {b.action_type: b for b in [
     _ready("detect_atomic_overlap", "data-curator", "ASE get_all_distances(mic=True)",
            "frames_path[,min_distance_threshold]", "overlapping frame indices",
            de.detect_atomic_overlap),
+    _ready("build_data_coverage_report", "data-curator",
+           "protected-reference guard + acquisition-lineage check + "
+           "validation.data_coverage.validate_data_coverage_report",
+           "candidate_dataset,acquisition_manifest[,reference_yaml,dataset_policy,...]",
+           "data coverage report (schema_version=1, hash-bound)", _exec_build_data_coverage_report,
+           validator="validation.data_coverage.validate_data_coverage_report"),
     # --- ML Trainer ---
     _ready("prepare_student_inputs", "ml-trainer", "adapters.student.render_student_inputs",
            "student_config,out_dir", "rendered student input config", de.prepare_student_inputs),
@@ -1034,6 +1351,11 @@ BINDINGS: dict[str, ExecutorBinding] = {b.action_type: b for b in [
     _ready("validate_training_completion", "ml-trainer", "workflow.integrity.artifact_digest",
            "committee_manifest[,expected_seeds]", "training-completeness report",
            de.validate_training_completion, validator="artifact completeness"),
+    _ready("build_uncertainty_report", "ml-trainer",
+           "adapters.uncertainty.committee_force_std over registered per-seed committee forces",
+           "committee_manifest,population_frames[,aggregate,population_role,calibration_evidence]",
+           "uncertainty report (hash-bound to committee manifest)", _exec_build_uncertainty_report,
+           validator="validation.uncertainty.validate_uncertainty_report"),
     # --- Simulation ---
     _hpc("build_teacher_baseline", "simulation",
          "adapters.acquisition.label_with_teacher + validation.teacher_baseline",
@@ -1063,6 +1385,13 @@ BINDINGS: dict[str, ExecutorBinding] = {b.action_type: b for b in [
            "artifact existence + finiteness", "md_manifest[,trajectory_path,energies]",
            "simulation-completeness report", de.validate_simulation_completion,
            validator="artifact completeness"),
+    _ready("build_physical_validation_report", "simulation",
+           "validation.structure_dynamics.{compute_rdf,compute_coordination,compute_density,"
+           "compute_msd,compute_nve_drift} against the frozen validation_profile.yaml",
+           "validation_profile,frames_path[,elements,cutoffs,energies,n_atoms,timestep_fs]",
+           "physical validation report (schema_version=1, threshold-bound)",
+           _exec_build_physical_validation_report,
+           validator="validation.report.validate_validation_report"),
     _interface("submit_scheduler_job", "simulation", "SchedulerSubmissionProposal (protocol+config hash, idempotency)"),
     _interface("query_scheduler_job", "simulation", "job identity"),
     _interface("collect_scheduler_artifact", "simulation", "job identity -> artifact reference"),
@@ -1086,6 +1415,11 @@ BINDINGS: dict[str, ExecutorBinding] = {b.action_type: b for b in [
            "compose NVE drift + min distance (validation.structure_dynamics)",
            "energies|frames_path", "MD-stability summary", de.summarize_md_stability),
     _reasoning("classify_root_cause", "analyst", "RootCauseClassification (typed)"),
+    _ready("generate_run_summary", "analyst",
+           "runtimes.pydantic_ai.cli._assemble_run_summary_state Controller-state snapshot",
+           "run_state_path[,identified_gaps,limitations]",
+           "run summary report (schema_version=1, hash-bound to Controller state)",
+           _exec_generate_run_summary, validator="validation.run_summary.validate_run_summary_report"),
 ]}
 
 

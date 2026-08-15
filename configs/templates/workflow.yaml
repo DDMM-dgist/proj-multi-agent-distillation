@@ -30,6 +30,15 @@ stages:
       validator: validation.data_coverage.validate_data_coverage_report
       options:
         validation_contract_path: "{run_dir}/validation_contract.json"
+    # role/action are canonical (registered in runtimes/pydantic_ai/actions.py +
+    # executors.py::BINDINGS); parameters are run-specific and must be filled before
+    # initialization -- see _exec_build_data_coverage_report for the required keys
+    # (candidate_dataset, acquisition_manifest, report_path, ...).
+    pydantic_ai:
+      role: data-curator
+      action: build_data_coverage_report
+      approval_boundary: null
+      parameters: {}
     gate:
       criteria: []
   - name: teacher_labeling
@@ -55,7 +64,20 @@ stages:
       criteria: []
   - name: uncertainty
     command: null
-    outputs: []
+    outputs: [artifacts/uncertainty.json]
+    contract:
+      kind: validation_manifest
+      manifest: artifacts/uncertainty.json
+      validator: validation.uncertainty.validate_uncertainty_report
+    # role/action are canonical (runtimes/pydantic_ai/actions.py + executors.py::BINDINGS);
+    # parameters are run-specific and must be filled before initialization -- see
+    # _exec_build_uncertainty_report for the required keys (committee_manifest,
+    # population_frames, report_path, ...).
+    pydantic_ai:
+      role: ml-trainer
+      action: build_uncertainty_report
+      approval_boundary: null
+      parameters: {}
     gate:
       criteria: []  # committee ranking/coverage; remove only when the run has no uncertainty branch
   - name: deployment_md
@@ -72,11 +94,45 @@ stages:
       criteria: []
   - name: physical_validation
     command: null
-    outputs: []
+    outputs: [artifacts/physical_validation.json]
+    contract:
+      kind: validation_manifest
+      manifest: artifacts/physical_validation.json
+      validator: validation.report.validate_validation_report
+      # options.required_observables / required_pass_observables are optional and
+      # campaign-specific (e.g. rdf_Si_Si, coordination_Si, nve_drift); the executor
+      # itself already enforces every check the run's own validation_profile.yaml
+      # marks required, so no observable names are hardcoded here.
+    # role/action are canonical (runtimes/pydantic_ai/actions.py + executors.py::BINDINGS);
+    # parameters are run-specific and must be filled before initialization -- see
+    # _exec_build_physical_validation_report for the required keys (validation_profile,
+    # frames_path, report_path, ...).
+    pydantic_ai:
+      role: simulation
+      action: build_physical_validation_report
+      approval_boundary: null
+      parameters: {}
     gate:
       criteria: []
   - name: analysis
     command: null
-    outputs: []
+    # artifacts/analysis/run_state.snapshot.json is NOT report_path -- it is the state snapshot
+    # cli.py::_proposal_from_stage always writes to this exact fixed location and cites as the
+    # report's run_state_snapshot evidence; it must be declared here too (alongside the report
+    # path itself) or the contract's evidence-allowlist check rejects it as unbound.
+    outputs: [artifacts/analysis.json, artifacts/analysis/run_state.snapshot.json]
+    contract:
+      kind: validation_manifest
+      manifest: artifacts/analysis.json
+      validator: validation.run_summary.validate_run_summary_report
+    # role/action are canonical (runtimes/pydantic_ai/actions.py + executors.py::BINDINGS).
+    # run_state_path is injected automatically at dispatch from the live Controller state
+    # (see cli.py::_proposal_from_stage's generate_run_summary special case) and must never
+    # be supplied here; only report_path is required.
+    pydantic_ai:
+      role: analyst
+      action: generate_run_summary
+      approval_boundary: null
+      parameters: {}
     gate:
       criteria: []

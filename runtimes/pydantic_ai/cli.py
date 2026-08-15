@@ -274,6 +274,15 @@ def _proposal_from_stage(controller, stage_name, stage_cfg):
         if existing is not None and str(Path(existing).resolve()) != protected_reference:
             raise ValueError("stage proposal reference_yaml does not match the controller-bound protected reference")
         params["reference_yaml"] = protected_reference
+    if action == "generate_run_summary":
+        # The state snapshot is ALWAYS freshly assembled from the current Controller state right
+        # before dispatch -- never taken from a config-supplied path -- so the Analyst can never
+        # be handed a stale or hand-authored substitute for what actually happened in this run.
+        snapshot_dir = controller.run_dir / "artifacts" / "analysis"
+        snapshot_dir.mkdir(parents=True, exist_ok=True)
+        snapshot_path = snapshot_dir / "run_state.snapshot.json"
+        snapshot_path.write_text(json.dumps(_assemble_run_summary_state(controller), indent=2) + "\n")
+        params["run_state_path"] = str(snapshot_path.resolve())
     # Idempotency is scoped to the CURRENT recovery iteration, not just the stage: quarantining a
     # stage's outputs at start_iteration() is meaningless if the very next dispatch of that same
     # stage/action is silently treated as a DUPLICATE of the pre-recovery attempt and never
@@ -1311,6 +1320,32 @@ def _assemble_recovery_execution_report(controller):
         "revalidation": revalidation_report,
     }
     return report, []
+
+
+def _assemble_run_summary_state(controller):
+    """Mechanically assemble a bounded snapshot of CURRENT ``RunController`` state for the
+    ``generate_run_summary`` executor -- an Analyst is never handed the raw run_dir; only this
+    fixed, hash-bound projection of stages/gates/artifacts/recoveries, so nothing in the resulting
+    report can be a narrative substitute for what the Controller actually recorded.
+    """
+    c = controller
+    stages = [
+        {"name": stage["name"], "status": stage["status"], "gate": stage["gate"],
+         "artifacts": [{"path": record["path"], "sha256": record["sha256"]}
+                      for record in c.stage_artifacts(stage["name"])]}
+        for stage in c.state["stages"]
+    ]
+    gate_history = [
+        {"stage": event["stage"], "verdict": event["verdict"], "at": event["at"]}
+        for event in c.state.get("events", []) if event.get("type") == "gate"
+    ]
+    recoveries = [
+        {"id": recovery["id"], "status": recovery["status"],
+         "failed_stage": recovery["failed_stage"]}
+        for recovery in c.state.get("recoveries", [])
+    ]
+    return {"run_id": c.state["run_id"], "stages": stages, "gate_history": gate_history,
+            "recoveries": recoveries}
 
 
 class _ProviderBlocked(Exception):

@@ -99,22 +99,25 @@ DATA_CURATOR_ACTIONS = (
     "reconstruct_lineage", "generate_group_split", "acquire_structures", "label_with_teacher",
     "validate_label_preservation", "build_dataset_manifest",
     "compare_deployment_coverage", "detect_duplicates", "detect_atomic_overlap",
+    "build_data_coverage_report",
 )
 ML_TRAINER_ACTIONS = (
     "prepare_student_inputs", "train_committee", "collect_checkpoints",
     "evaluate_heldout_fidelity", "summarize_seed_variation",
     "compute_committee_disagreement", "validate_training_completion",
+    "build_uncertainty_report",
 )
 SIMULATION_ACTIONS = (
     "build_teacher_baseline", "validate_teacher_reference", "run_teacher_md", "run_student_md", "compute_rdf", "compute_coordination",
     "compute_minimum_distance", "detect_force_spike", "compute_nve_drift",
     "validate_simulation_completion",
     "submit_scheduler_job", "query_scheduler_job", "collect_scheduler_artifact",
+    "build_physical_validation_report",
 )
 ANALYST_ACTIONS = (
     "compare_force_errors", "compare_energy_errors", "summarize_committee_disagreement",
     "compare_rdf", "compare_coordination", "fit_nve_drift", "summarize_md_stability",
-    "classify_root_cause",
+    "classify_root_cause", "generate_run_summary",
 )
 
 # Actions that always require explicit human approval before execution (costly/side-effecting).

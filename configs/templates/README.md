@@ -13,3 +13,9 @@ deployment MD, optional reference validation, physical validation, and final
 analysis. Remove an optional stage only after the run scope records why it is
 not applicable; otherwise replace its `null` command/contract with the selected
 adapter and evidence contract.
+
+`data_coverage`, `uncertainty`, `physical_validation`, and `analysis` already
+carry their canonical `pydantic_ai` role/action pair and output contract
+(registered in `runtimes/pydantic_ai/actions.py` / `executors.py::BINDINGS`) --
+do not rename or invent a different action for these. Only their
+`parameters: {}` are run-specific and must be filled in before initialization.

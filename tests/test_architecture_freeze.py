@@ -385,7 +385,26 @@ FREEZE_REVISION = (
     "no existing production behavior changes; only the field's on-paper type now honestly reflects "
     "what was already enforced. No stage, gate, recovery-taxonomy, capability-routing, protected-"
     "reference, schema_version, role/action-set, or Judge change; every other frozen file is "
-    "untouched."
+    "untouched. "
+    "v19 (data_coverage/uncertainty/physical_validation/analysis executor closure) re-freezes "
+    "actions.py: it deliberately grows the role/action-set, ADDING four new backed action_type "
+    "entries -- build_data_coverage_report (data-curator), build_uncertainty_report (ml-trainer), "
+    "build_physical_validation_report (simulation), and generate_run_summary (analyst) -- to "
+    "DATA_CURATOR_ACTIONS/ML_TRAINER_ACTIONS/SIMULATION_ACTIONS/ANALYST_ACTIONS respectively. Each "
+    "is now backed by a real, deterministic, self-validating executor in executors.py (itself NOT "
+    "a frozen file) plus a new structural-contract validator (validation/uncertainty.py, "
+    "validation/data_coverage.py's existing validator, validation/run_summary.py -- none frozen), "
+    "closing the previously-undispatchable gap for the data_coverage/uncertainty/"
+    "physical_validation/analysis stages: a workflow config MAY now opt one of these stages into "
+    "run-campaign automation via an explicit pydantic_ai block, exactly like any other stage. This "
+    "is strictly additive to the existing action tuples/CAPABILITY_REGISTRY entries -- no existing "
+    "action_type, role, or Literal membership is removed or renamed. cli.py (not frozen) gained the "
+    "matching _assemble_run_summary_state snapshot assembler and a generate_run_summary pre-dispatch "
+    "hook; no default_stage_route entry was added for any of the four stage names, so a workflow "
+    "config with no explicit pydantic_ai block for one of them (e.g. a frozen production config "
+    "like R17's) is completely unaffected and continues to fail closed exactly as before. No stage, "
+    "gate, recovery-taxonomy, capability-routing, protected-reference, schema_version, or Judge "
+    "change; every other frozen file, and every other field of actions.py, is untouched."
 )
 FROZEN_MODEL = "qwen2.5-7b-instruct"
 
@@ -409,7 +428,7 @@ FROZEN = {
     "runtimes/pydantic_ai/driver.py":
         "571636918a2827ceded12e9ee3b0cad7f23ab73887d61ed0cc2b6d5727986719",
     "runtimes/pydantic_ai/actions.py":
-        "c63f8d42bf208f87c2b7d220264e27556fd3ce79ac5d48c13becb0557c66c141",
+        "72e2877c9ae73fb9914c6c6f991afbd7ddb2bd61d796f35c920a8072106a8088",
     "runtimes/pydantic_ai/controller_bridge.py":
         "b046922cd32620cd5dbe1c2dc7b4390a2eb67b4201e473d9b6062c68f8bd869d",
     "orchestration/specs.py":
