@@ -165,6 +165,68 @@ class RecoveryPlanValidationError(ValueError):
     pass
 
 
+class CorrectiveAction(BaseModel):
+    """Schema-visible shape of an optional, already-registered corrective action a
+    ``RecoveryPlanProposal`` may request. ``action_type`` cannot be a fixed ``Literal`` here (unlike
+    ``actions.DataCuratorActionProposal`` etc.) because which role -- and therefore which action
+    set -- applies depends on the ``capability`` the SAME proposal chooses; there is no role known
+    at class-definition time to build a per-role enum from. Structural presence of `action_type`/
+    `parameters` is enforced here (so the model schema, not just prose, says a corrective action is
+    a typed dispatch request, not free-form commentary); registry MEMBERSHIP of `action_type` for
+    the chosen capability's role is still resolved contextually, in
+    ``validate_recovery_plan_proposal``, against the single authoritative ``actions.
+    ROLE_ALLOWED_ACTIONS`` -- never a second, duplicated action list."""
+    model_config = {"extra": "forbid"}
+    action_type: NonEmptyStr
+    parameters: dict[str, Any] = Field(default_factory=dict)
+
+
+class ProposedChange(BaseModel):
+    """Schema-visible shape of one ``proposed_changes`` entry. ``propose_recovery``
+    (``workflow.controller.py``) requires every item be a dict with a non-empty string ``type`` --
+    previously invisible in the Pydantic schema (bare ``dict[str, Any]``), the same defect class as
+    ``corrective_action``. Deliberately ``extra: allow``: unlike ``corrective_action`` (a precise
+    dispatch request), a proposed change is a free-form scientific description the controller never
+    assumes a fixed shape for beyond ``type`` (see ``RunController._validate_protected_reference_
+    roles``'s own docstring); rejecting the model's other descriptive keys (``id``,
+    ``responsible_agent``, ``action``, ``acceptance_criteria``, ``artifact_roles``, ...) would only
+    discard legitimate content the controller happily stores and a human reviews."""
+    model_config = {"extra": "allow"}
+    type: NonEmptyStr
+
+
+class LabelingPlan(BaseModel):
+    """``propose_recovery`` requires exactly these two boolean keys (previously a bare
+    ``dict[str, bool]`` with no required-key guarantee)."""
+    model_config = {"extra": "allow"}
+    teacher_relabel: bool
+    new_dft: bool
+
+
+class StudentTrainingPlan(BaseModel):
+    """``propose_recovery`` requires ``retrain``/``mode`` plus the cross-field rule ``retrain ==
+    (mode != "none")`` (previously a bare ``dict[str, Any]`` exposing neither)."""
+    model_config = {"extra": "allow"}
+    retrain: bool
+    mode: NonEmptyStr
+
+    @model_validator(mode="after")
+    def _check_retrain_mode_consistency(self):
+        if self.retrain == (self.mode == "none"):
+            raise ValueError(
+                f"student_training.retrain ({self.retrain!r}) is inconsistent with mode "
+                f"{self.mode!r} -- retrain must be true iff mode != 'none'")
+        return self
+
+
+class RevalidationPlan(BaseModel):
+    """``propose_recovery`` requires ``reuse_profile`` plus a non-empty ``targets`` list of
+    non-empty strings (previously a bare ``dict[str, Any]`` exposing neither)."""
+    model_config = {"extra": "allow"}
+    reuse_profile: bool
+    targets: list[NonEmptyStr] = Field(min_length=1)
+
+
 class RecoveryPlanProposal(BaseModel):
     """The Orchestrator's typed reasoning output proposing HOW to recover from a diagnosed
     failure -- distinct from ``RootCauseClassification`` (WHY it failed) and from the approved
@@ -178,10 +240,10 @@ class RecoveryPlanProposal(BaseModel):
     diagnosis_artifact_sha256: NonEmptyStr
     capability: NonEmptyStr
     return_stage: NonEmptyStr
-    proposed_changes: list[dict[str, Any]] = Field(min_length=1)
-    labeling: dict[str, bool]
-    student_training: dict[str, Any]
-    revalidation: dict[str, Any]
+    proposed_changes: list[ProposedChange] = Field(min_length=1)
+    labeling: LabelingPlan
+    student_training: StudentTrainingPlan
+    revalidation: RevalidationPlan
     rationale: NonEmptyStr
     # Optional: the ONE concrete, already-registered action (role-appropriate for `capability`)
     # that a generic driver (run-campaign) may dispatch automatically, without any human/Claude
@@ -189,7 +251,21 @@ class RecoveryPlanProposal(BaseModel):
     # proposal that leaves this unset relies entirely on the workflow's own declared stage graph
     # naturally re-running return_stage (and everything after it) once the recovery iteration
     # quarantines their prior outputs -- still valid, just with no NEW parameters to apply.
-    corrective_action: Optional[dict[str, Any]] = None
+    corrective_action: Optional[CorrectiveAction] = None
+
+
+def valid_corrective_actions_by_capability(capability_roster: dict) -> dict[str, list[str]]:
+    """The exact ``corrective_action.action_type`` vocabulary available under each registered
+    recovery capability, derived single-source from ``actions.ROLE_ALLOWED_ACTIONS`` (the same
+    registry ``validate_recovery_plan_proposal`` enforces membership against below) -- never a
+    second, hand-maintained action list. Callers (``cli._propose_recovery_via_reasoning_roles``)
+    place this directly in the Orchestrator's task context, analogous to how ``valid_capabilities``
+    and ``valid_stage_names`` are already surfaced, so the model sees the real, current registry
+    slice for every capability it might choose rather than guessing at a structure or vocabulary
+    the schema alone cannot express (capability is chosen by the same proposal, so no single
+    role -- and thus no single allowed-action ``Literal`` -- can be fixed at class-definition time)."""
+    return {capability: sorted(ROLE_ALLOWED_ACTIONS[role])
+            for capability, role in capability_roster.items() if role in ROLE_ALLOWED_ACTIONS}
 
 
 def validate_recovery_plan_proposal(proposal: RecoveryPlanProposal, *, expected_failed_stage: str,
@@ -218,19 +294,13 @@ def validate_recovery_plan_proposal(proposal: RecoveryPlanProposal, *, expected_
     if proposal.return_stage not in set(valid_stage_names):
         raise RecoveryPlanValidationError(f"invalid return stage: {proposal.return_stage!r}")
     if proposal.corrective_action is not None:
-        action = proposal.corrective_action
-        if not isinstance(action, dict) or not isinstance(action.get("action_type"), str) or \
-                not action.get("action_type"):
-            raise RecoveryPlanValidationError(
-                "corrective_action must be a dict with a non-empty string 'action_type'")
-        if not isinstance(action.get("parameters", {}), dict):
-            raise RecoveryPlanValidationError("corrective_action.parameters must be a dict")
         role = capability_roster[proposal.capability]
-        if action["action_type"] not in ROLE_ALLOWED_ACTIONS.get(role, set()):
+        allowed = ROLE_ALLOWED_ACTIONS.get(role, set())
+        if proposal.corrective_action.action_type not in allowed:
             raise RecoveryPlanValidationError(
-                f"corrective_action.action_type {action['action_type']!r} is not an action "
-                f"{role!r} (the role responsible for capability {proposal.capability!r}) may "
-                "dispatch")
+                f"corrective_action.action_type {proposal.corrective_action.action_type!r} is not "
+                f"an action {role!r} (the role responsible for capability {proposal.capability!r}) "
+                f"may dispatch -- allowed: {sorted(allowed)}")
     return proposal
 
 
@@ -242,6 +312,7 @@ def build_recovery_plan_draft_from_proposal(
     expected_role: Optional[str] = None,
     estimated_cost: Optional[dict] = None,
     triggering_evidence: Optional[list] = None,
+    artifact_sha256_lookup: Optional[dict] = None,
     required_input_artifact_roles: Optional[list] = None,
     expected_output_artifact_roles: Optional[list] = None,
     resource_request: Optional[dict] = None,
@@ -254,15 +325,18 @@ def build_recovery_plan_draft_from_proposal(
     return build_recovery_plan_draft(
         classification, proposed_by=proposed_by, failed_stage=proposal.failed_stage,
         capability=proposal.capability, return_stage=proposal.return_stage,
-        proposed_changes=proposal.proposed_changes, labeling=proposal.labeling,
-        student_training=proposal.student_training, revalidation=proposal.revalidation,
+        proposed_changes=[change.model_dump() for change in proposal.proposed_changes],
+        labeling=proposal.labeling.model_dump(),
+        student_training=proposal.student_training.model_dump(),
+        revalidation=proposal.revalidation.model_dump(),
         estimated_cost=estimated_cost, diagnosis_artifact_path=diagnosis_artifact_path,
         diagnosis_artifact_sha256=diagnosis_artifact_sha256, triggering_evidence=triggering_evidence,
+        artifact_sha256_lookup=artifact_sha256_lookup,
         expected_role=expected_role, required_input_artifact_roles=required_input_artifact_roles,
         expected_output_artifact_roles=expected_output_artifact_roles,
         resource_request=resource_request, policy_budget_request=policy_budget_request,
         extra_recovery_context=(
-            {"corrective_action": proposal.corrective_action}
+            {"corrective_action": proposal.corrective_action.model_dump()}
             if proposal.corrective_action is not None else None))
 
 
@@ -280,6 +354,7 @@ def build_recovery_plan_draft(
     diagnosis_artifact_path: Optional[str] = None,
     diagnosis_artifact_sha256: Optional[str] = None,
     triggering_evidence: Optional[list] = None,
+    artifact_sha256_lookup: Optional[dict] = None,
     expected_role: Optional[str] = None,
     required_input_artifact_roles: Optional[list] = None,
     expected_output_artifact_roles: Optional[list] = None,
@@ -296,14 +371,31 @@ def build_recovery_plan_draft(
     ``classification.recommended_recovery_target``) rather than inferred, so this bridge never
     silently overrides the controller's own pending-gate/stage-ordering checks -- those still run,
     authoritatively, inside propose_recovery.
+
+    ``artifact_sha256_lookup`` (path -> sha256), when given, is the CONTROLLER's own
+    already-registered hash for each artifact (``RunController.state["artifacts"]``) -- the same
+    pattern as ``actions.ActionProposalBase.advisory_claimed_config_hashes`` (a model-claimed digest
+    is prose audit only, never an authoritative integrity assertion). It is used in preference to
+    whatever ``EvidenceReference.integrity`` the reasoning-output model self-reported, because
+    ``RunController._validate_diagnosis_binding`` hash-verifies ``triggering_evidence`` against the
+    real file: trusting a model's self-reported hash for that binding would let a wrong/omitted
+    hash slip through the Orchestrator's own contextual acceptance only to fail later at
+    ``propose_recovery``, or -- if a model ever guessed correctly by chance -- meant the binding
+    was never actually anchored in controller-trusted state. Callers with no controller-registered
+    artifacts to look up from (e.g. tests constructing a diagnosis by hand) may omit this and fall
+    back to the model-reported ``integrity``, which the controller still fail-closed hash-verifies.
     """
     diagnosis_binding = None
     if diagnosis_artifact_path is not None or diagnosis_artifact_sha256 is not None:
+        def _sha256_for(ref):
+            if artifact_sha256_lookup is not None:
+                return artifact_sha256_lookup.get(ref.path, "")
+            return (ref.integrity or {}).get("sha256", "")
         diagnosis_binding = DiagnosisBinding(
             diagnosis_artifact_path=diagnosis_artifact_path,
             diagnosis_artifact_sha256=diagnosis_artifact_sha256,
             triggering_evidence=[
-                EvidenceHashRef(path=ref.path, sha256=(ref.integrity or {}).get("sha256", ""))
+                EvidenceHashRef(path=ref.path, sha256=_sha256_for(ref))
                 for ref in classification.evidence_refs
             ] if triggering_evidence is None else [
                 EvidenceHashRef(**item) for item in triggering_evidence

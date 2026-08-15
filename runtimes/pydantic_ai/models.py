@@ -14,8 +14,17 @@ from typing import Annotated, Any, Literal, Optional
 
 from pydantic import BaseModel, Field
 
+from orchestration.specs import RESULT_STATUSES
+
 # A non-empty string, mirroring the JSON Schema ``{"type": "string", "minLength": 1}``.
 NonEmptyStr = Annotated[str, Field(min_length=1)]
+
+# Single-sourced from orchestration.specs.RESULT_STATUSES (the same set
+# orchestration.exchange.validate_agent_response enforces membership against) so the value set is
+# schema-visible to the model instead of only being discovered as an opaque "unknown agent result
+# status" ValueError after the fact -- the same hidden-constraint defect class as the
+# RecoveryPlanProposal.corrective_action fix, just for AgentResultModel.status.
+AgentResultStatus = Literal[tuple(sorted(RESULT_STATUSES))]  # type: ignore[valid-type]
 
 
 # --- Contract mirrors (typed output for the LLM) --------------------------------
@@ -83,7 +92,7 @@ class AgentResultModel(BaseModel):
     schema_version: int = 1
     task_id: str
     agent: str
-    status: str
+    status: AgentResultStatus
     summary: str = Field(min_length=1)
     artifacts: list[EvidenceReference] = Field(default_factory=list)
     evidence: list[EvidenceReference] = Field(default_factory=list)

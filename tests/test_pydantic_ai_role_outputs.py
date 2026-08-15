@@ -143,5 +143,39 @@ class SelectorAndTypedOutputTests(unittest.TestCase):
         self.assertEqual(plan.proposed_tasks[0].agent, "data-curator")
 
 
+# --- R17 contract-parity audit regression: AgentResultModel.status was exposed as a bare `str`
+# while orchestration.exchange.validate_agent_response secretly required membership in
+# orchestration.specs.RESULT_STATUSES -- the same hidden-constraint defect class as the R17
+# RecoveryPlanProposal.corrective_action bug, found during the repository-wide audit it prompted.
+@unittest.skipUnless(_HAS_PYDANTIC, "pydantic not installed")
+class AgentResultStatusContractTests(unittest.TestCase):
+    def _result(self, **over):
+        from runtimes.pydantic_ai.models import AgentResultModel
+        base = dict(task_id="t1", agent="data-curator", status="completed",
+                    summary="did the thing")
+        base.update(over)
+        return AgentResultModel(**base)
+
+    def test_registered_status_values_accepted(self):
+        from orchestration.specs import RESULT_STATUSES
+        for status in RESULT_STATUSES:
+            self.assertEqual(self._result(status=status).status, status)
+
+    def test_unregistered_status_rejected_by_schema_with_precise_reason(self):
+        import pydantic
+        with self.assertRaises(pydantic.ValidationError) as ctx:
+            self._result(status="not_a_real_status")
+        message = str(ctx.exception)
+        self.assertIn("status", message)
+
+    def test_schema_exposes_full_status_enum_single_sourced_from_result_statuses(self):
+        """The allowed value set must be MACHINE-VISIBLE in the generated JSON Schema, not only
+        enforced after the fact by orchestration.exchange.validate_agent_response."""
+        from orchestration.specs import RESULT_STATUSES
+        from runtimes.pydantic_ai.models import AgentResultModel
+        schema = AgentResultModel.model_json_schema()
+        self.assertEqual(set(schema["properties"]["status"]["enum"]), set(RESULT_STATUSES))
+
+
 if __name__ == "__main__":  # pragma: no cover
     unittest.main()

@@ -52,6 +52,15 @@ but only this Orchestrator session records completion and gates in the manifest.
    and estimated cost. Obtain human approval before activating the iteration.
    A scheduler or command failure with no scientific change is an execution
    retry, not a scientific recovery cycle.
+   If (and only if) one concrete, already-registered action should be
+   dispatched automatically once approved, set `corrective_action` to exactly
+   `{"action_type": ..., "parameters": {...}}`, with `action_type` drawn from
+   the run-supplied `context.valid_actions_by_capability` entry for the
+   capability you chose. Never invent an `action_type`, and never put prose,
+   cost notes, or approval caveats there — those belong in `rationale` or
+   `estimated_cost`. Leave `corrective_action` unset when no single registered
+   action captures the recovery; the workflow's own stage graph re-running
+   `return_stage` remains valid on its own.
    Before the formerly failed gate can PASS, prepare a
    `RecoveryExecutionReport` mapping every approved change to completed
    evidence stages and run `workflow.controller verify-recovery`. Do not mark

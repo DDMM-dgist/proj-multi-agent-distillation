@@ -39,6 +39,7 @@ EXIT_INTERNAL = 8
 EXIT_RECOVERY_REQUIRED = 9
 EXIT_RECOVERY_EXECUTION_UNVERIFIED = 10
 EXIT_RECOVERY_ACTION_PENDING = 11
+EXIT_EXTERNAL_ACTION_PENDING = 12
 
 _PROVIDER_UNAVAILABLE_FAILURES = {"authentication_failure"}
 MAX_PRODUCER_GENERATION_ATTEMPTS = 3
@@ -1052,6 +1053,16 @@ def run_production_stage(controller, stage_name, *, runtime, agent_specs_dir="ag
         return StageRunResult("APPROVAL_REQUIRED", EXIT_APPROVAL_REQUIRED,
                               f"APPROVAL_REQUIRED: {boundary}", approval_boundary=boundary,
                               action_status=status)
+    if status == "PENDING":
+        # Same dispatch.py contract the recovery corrective-action path already relies on
+        # (ExternalActionPending: "not a failure... the SAME idempotency key can be dispatched
+        # again later to re-check") -- a forward stage's own primary action can hit this too (e.g.
+        # a scheduler-bridge action still queued), and deserves the identical resumable-pause
+        # treatment, not the terminal DISPATCH_REJECTED/FAILED outcome below.
+        reason = getattr(res.detail, "reason", res.error)
+        emitter.emit("resource_pause", stage=stage_name, detail={"status": status})
+        return StageRunResult("EXTERNAL_ACTION_PENDING", EXIT_EXTERNAL_ACTION_PENDING,
+                              f"EXTERNAL_ACTION_PENDING: {reason}", action_status=status)
     if status not in {"EXECUTED", "DUPLICATE"}:
         reason = getattr(res.detail, "reason", res.error)
         emitter.emit("executor_failed", stage=stage_name, role=role, detail={"status": status})
@@ -1157,25 +1168,31 @@ def _cmd_run_stage(args) -> int:
 # --- run-campaign: the outer, generic production loop -----------------------------------------
 #
 # COMPLETED, WAITING_FOR_HUMAN_APPROVAL, RECOVERY_REQUIRED, RESOURCE_BLOCKED,
-# RECOVERY_EXECUTION_UNVERIFIED, WAITING_FOR_RECOVERY_EVIDENCE, and FAILED are the seven
-# first-class outcomes a campaign run can stop at. None of them is a busy-loop: every one is
-# derived from durable Controller state, so re-running the identical `run-campaign` command after
-# the blocking condition resolves (an approval is granted, a provider comes back up, a recovery is
-# approved, its corrective action finishes) resumes correctly without replaying already-passed
-# stages or re-executing an already-completed corrective action.
+# RECOVERY_EXECUTION_UNVERIFIED, WAITING_FOR_RECOVERY_EVIDENCE, WAITING_FOR_EXTERNAL_ACTION, and
+# FAILED are the eight first-class outcomes a campaign run can stop at. None of them is a
+# busy-loop: every one is derived from durable Controller state, so re-running the identical
+# `run-campaign` command after the blocking condition resolves (an approval is granted, a provider
+# comes back up, a recovery is approved, its corrective action finishes, a pending external/
+# forward-stage action completes) resumes correctly without replaying already-passed stages or
+# re-executing an already-completed action.
 #
 # An approved recovery's own corrective action -- when its plan names one -- is dispatched by THIS
 # loop automatically (see _dispatch_recovery_corrective_action): a human approves scope/budget via
 # `approve-recovery`, never the scientific action itself out of band. WAITING_FOR_RECOVERY_EVIDENCE
 # is the clean pause for when that corrective action was legitimately dispatched and is still
 # external/pending -- never a way to paper over a corrective action that reported done but left
-# required outputs missing (that remains FAILED).
+# required outputs missing (that remains FAILED). WAITING_FOR_EXTERNAL_ACTION is the same pause,
+# for a FORWARD stage's own primary action (e.g. a scheduler-bridge action still queued) rather
+# than an approved recovery's corrective action -- see run_production_stage's `status == "PENDING"`
+# handling, which mirrors dispatch.py's ExternalActionPending contract instead of collapsing it
+# into the terminal DISPATCH_REJECTED/FAILED outcome.
 CAMPAIGN_COMPLETED = "COMPLETED"
 CAMPAIGN_WAITING_FOR_HUMAN_APPROVAL = "WAITING_FOR_HUMAN_APPROVAL"
 CAMPAIGN_RECOVERY_REQUIRED = "RECOVERY_REQUIRED"
 CAMPAIGN_RESOURCE_BLOCKED = "RESOURCE_BLOCKED"
 CAMPAIGN_RECOVERY_EXECUTION_UNVERIFIED = "RECOVERY_EXECUTION_UNVERIFIED"
 CAMPAIGN_WAITING_FOR_RECOVERY_EVIDENCE = "WAITING_FOR_RECOVERY_EVIDENCE"
+CAMPAIGN_WAITING_FOR_EXTERNAL_ACTION = "WAITING_FOR_EXTERNAL_ACTION"
 CAMPAIGN_FAILED = "FAILED"
 
 
@@ -1361,7 +1378,8 @@ def _propose_recovery_via_reasoning_roles(controller, *, runtime, agent_specs_di
     from .mock_runtime import MockAgentRuntime
     from .root_cause import validate_root_cause_classification
     from .recovery_bridge import (validate_recovery_plan_proposal,
-                                  build_recovery_plan_draft_from_proposal)
+                                  build_recovery_plan_draft_from_proposal,
+                                  valid_corrective_actions_by_capability)
     from .orchestrator_bridge import OrchestratorActionProposal, dispatch_orchestrator_action
     from workflow.controller import DEFAULT_RECOVERY_CAPABILITY_ROSTER
 
@@ -1447,11 +1465,16 @@ def _propose_recovery_via_reasoning_roles(controller, *, runtime, agent_specs_di
                                    "capability and return_stage are both registered"],
         "constraints": ["capability must be one of context.valid_capabilities",
                        "return_stage must be one of context.valid_stage_names",
-                       "diagnosis_artifact_sha256 must equal context.diagnosis_artifact_sha256"],
+                       "diagnosis_artifact_sha256 must equal context.diagnosis_artifact_sha256",
+                       "corrective_action, if set, must be {\"action_type\": ..., \"parameters\": "
+                       "{...}} with action_type one of "
+                       "context.valid_actions_by_capability[capability]; omit corrective_action "
+                       "entirely if no registered action applies"],
         "context": {"expected_output_model": "RecoveryPlanProposal", "stage": failed_stage,
                    "diagnosis": json.loads(classification.model_dump_json()),
                    "diagnosis_artifact_sha256": diagnosis_sha256,
-                   "valid_capabilities": sorted(roster), "valid_stage_names": sorted(stage_names)},
+                   "valid_capabilities": sorted(roster), "valid_stage_names": sorted(stage_names),
+                   "valid_actions_by_capability": valid_corrective_actions_by_capability(roster)},
     }
     if runtime == "mock":
         if not mock_orchestrator_response:
@@ -1493,7 +1516,8 @@ def _propose_recovery_via_reasoning_roles(controller, *, runtime, agent_specs_di
     draft = build_recovery_plan_draft_from_proposal(
         classification, proposal,
         proposed_by={"actor_kind": "system", "canonical_id": "orchestrator"},
-        diagnosis_artifact_path=str(diagnosis_path), diagnosis_artifact_sha256=diagnosis_sha256)
+        diagnosis_artifact_path=str(diagnosis_path), diagnosis_artifact_sha256=diagnosis_sha256,
+        artifact_sha256_lookup={a["path"]: a["sha256"] for a in c.state["artifacts"]})
     plan_dir = c.run_dir / "recovery" / "drafts"
     plan_dir.mkdir(parents=True, exist_ok=True)
     plan_path = plan_dir / f"{failed_stage}.recovery_plan.draft.json"
@@ -1710,6 +1734,10 @@ def _run_campaign_loop(controller, *, runtime, agent_specs_dir="agent_specs", ex
             return CampaignRunResult(CAMPAIGN_RESOURCE_BLOCKED, EXIT_PROVIDER_UNAVAILABLE,
                                      result.message, stage=next_stage["name"],
                                      last_stage_result=result)
+        if result.reason == "EXTERNAL_ACTION_PENDING":
+            return CampaignRunResult(CAMPAIGN_WAITING_FOR_EXTERNAL_ACTION,
+                                     EXIT_EXTERNAL_ACTION_PENDING, result.message,
+                                     stage=next_stage["name"], last_stage_result=result)
         if result.reason == "RECOVERY_EXECUTION_UNVERIFIED":
             c = RunController(c.run_dir)
             report, missing = _assemble_recovery_execution_report(c)
@@ -1977,6 +2005,7 @@ def main(argv=None) -> int:
             "DENIED": EXIT_BLOCKED_POLICY, "BLOCKED_CAPABILITY": EXIT_BLOCKED_POLICY,
             "APPROVAL_REQUIRED": EXIT_APPROVAL_REQUIRED, "DUPLICATE": EXIT_DUPLICATE,
             "INVALID": EXIT_VALIDATION_REJECTED, "EXECUTOR_ERROR": EXIT_VALIDATION_REJECTED,
+            "PENDING": EXIT_EXTERNAL_ACTION_PENDING,
         }.get(outcome_status, EXIT_INTERNAL)
     if res.error and res.strategy in ("judge_gate", "agent_result"):
         return EXIT_VALIDATION_REJECTED

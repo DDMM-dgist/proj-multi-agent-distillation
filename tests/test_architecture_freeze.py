@@ -43,6 +43,19 @@ what changed and what deliberately did not.
 v17 (R16 forensic-defect corrections) deliberately re-froze models.py and pydantic_ai_runtime.py
 again for the same reason as v10-v16 — see FREEZE_REVISION below for exactly what changed and what
 deliberately did not.
+
+v18 (R17 forensic-defect corrections: hidden-contract closure) deliberately re-froze models.py
+again: ``AgentResultModel.status`` changed from a bare ``str`` -- while
+``orchestration.exchange.validate_agent_response`` secretly required membership in
+``orchestration.specs.RESULT_STATUSES`` -- to a schema-visible ``Literal`` single-sourced from that
+same ``RESULT_STATUSES`` set (added as ``AgentResultStatus``), so the value set is now machine
+-visible in the generated JSON Schema instead of only surfacing as an opaque "unknown agent result
+status" ValueError after the fact. This is the same hidden-constraint defect class as, and was
+found during the repository-wide audit prompted by, the R17 ``RecoveryPlanProposal.
+corrective_action`` fix (in ``runtimes/pydantic_ai/recovery_bridge.py`` and
+``runtimes/pydantic_ai/cli.py``, neither of which is a frozen file). No stage, gate,
+recovery-taxonomy, capability-routing, protected-reference, schema_version, role/action-set, or
+Judge change; every other field of every frozen file is untouched.
 """
 from __future__ import annotations
 
@@ -359,7 +372,20 @@ FREEZE_REVISION = (
     "invocation handoff plus campaign_started/campaign_resumed lifecycle-event semantics (cli.py, "
     "events.py) are all in non-frozen files. No stage, gate, recovery-taxonomy, capability-routing, "
     "protected-reference, schema_version, role/action-set, or Judge change; every other frozen file "
-    "is untouched."
+    "is untouched. "
+    "v18 (R17 forensic-defect corrections: hidden-contract closure) re-freezes models.py for one "
+    "narrow, additive fix found by a repository-wide contract-parity audit prompted by the R17 "
+    "corrective_action forensic (that fix itself lives entirely in recovery_bridge.py and cli.py, "
+    "neither a frozen file, so it required no re-freeze). AgentResultModel.status changed from a "
+    "bare str -- while orchestration.exchange.validate_agent_response secretly required membership "
+    "in orchestration.specs.RESULT_STATUSES ({'completed','needs_input','blocked','failed'}) -- to "
+    "a schema-visible Literal (AgentResultStatus) built directly from that same RESULT_STATUSES "
+    "set, so the value set now appears in the generated JSON Schema instead of only surfacing as an "
+    "opaque ValueError after the fact. No caller passes a status outside RESULT_STATUSES today, so "
+    "no existing production behavior changes; only the field's on-paper type now honestly reflects "
+    "what was already enforced. No stage, gate, recovery-taxonomy, capability-routing, protected-"
+    "reference, schema_version, role/action-set, or Judge change; every other frozen file is "
+    "untouched."
 )
 FROZEN_MODEL = "qwen2.5-7b-instruct"
 
@@ -373,7 +399,7 @@ FROZEN = {
     "runtimes/pydantic_ai/tool_registry.py":
         "3d398a718da1c9e89d03585acdc9fafcfeb2d4767569ffac6027edcd13c1e467",
     "runtimes/pydantic_ai/models.py":
-        "0854b16133dc7b42cf1618a076ec4b30793f499cc212d1f897f282e4bb74b8dc",
+        "88e5780e54401a1f71579a6b38ce4ea2f602e397a2cdb1bc58bdb9b997957125",
     "runtimes/pydantic_ai/pydantic_ai_runtime.py":
         "81679cccd610f56cb07fb1f70b388286bd456cf96da2c1a2cdb48d4eed25aa62",
     "runtimes/pydantic_ai/role_outputs.py":
