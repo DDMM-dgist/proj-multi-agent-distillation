@@ -29,9 +29,12 @@ BASE_URL_ENV = "PYDANTIC_AI_BASE_URL"
 
 # Provider kinds the runtime distinguishes. "test" = TestModel/FunctionModel (network-free, used
 # only by tests). "local-openai" = any OpenAI-compatible local server (vLLM first). "ollama" =
-# a local Ollama server. "anthropic" = the optional hosted backend (kept, not required).
-PROVIDER_KINDS = ("test", "local-openai", "ollama", "anthropic")
+# a local Ollama server. "anthropic"/"openai" = optional hosted backends (kept, not required).
+PROVIDER_KINDS = ("test", "local-openai", "ollama", "anthropic", "openai")
 LOCAL_KINDS = ("local-openai", "ollama")
+# Hosted (billable, credential-gated) backends: routed through preflight_credentials + the
+# generic pydantic_ai "provider:model" string, never a direct provider SDK call from our code.
+HOSTED_KINDS = ("anthropic", "openai")
 
 # provider name -> (credential env var, optional SDK import name for the [anthropic]-style extra)
 _PROVIDER_KEY_ENV = {
@@ -68,37 +71,49 @@ def provider_config_from_env(env: Optional[dict] = None) -> Optional[ProviderCon
     return ProviderConfiguration(provider=_provider_of(model_id), model_id=model_id)
 
 
-def preflight_credentials(env: Optional[dict] = None) -> PreflightResult:
-    """Inspect env only (no network). READY only when a model AND its credential are present."""
+def preflight_credentials(env: Optional[dict] = None, *,
+                          provider: Optional[str] = None) -> PreflightResult:
+    """Inspect env only (no network). READY only when a model AND its credential are present.
+
+    ``provider`` should be the already-resolved kind (e.g. from ``select_provider_kind()``,
+    which honors the explicit ``PYDANTIC_AI_PROVIDER``) so a bare model id like ``gpt-4o-mini``
+    (no ``provider:`` prefix) is never misattributed by guessing from the model string. When
+    omitted, falls back to parsing the ``provider:model`` prefix out of ``PYDANTIC_AI_MODEL``
+    (legacy back-compat, defaults to "anthropic" for an unprefixed name).
+    """
     env = os.environ if env is None else env
     model_id = env.get(MODEL_ENV)
     if not model_id:
         return PreflightResult("NOT_CONFIGURED",
                                f"{MODEL_ENV} is not set; no provider/model chosen")
-    provider = _provider_of(model_id)
-    entry = _PROVIDER_KEY_ENV.get(provider)
+    resolved_provider = provider or _provider_of(model_id)
+    entry = _PROVIDER_KEY_ENV.get(resolved_provider)
     if entry is None:
         return PreflightResult("BLOCKED",
-                               f"unknown provider '{provider}'; no known credential env var",
-                               provider=provider, model_id=model_id)
+                               f"unknown provider '{resolved_provider}'; no known credential env var",
+                               provider=resolved_provider, model_id=model_id)
+    # Qualify the model id with its provider prefix so build_provider_model() always hands
+    # pydantic_ai an explicit "provider:model" string rather than relying on its own
+    # name-prefix guessing (e.g. "gpt-..." -> openai) for models that don't match that heuristic.
+    qualified_model_id = model_id if ":" in model_id else f"{resolved_provider}:{model_id}"
     key_env, sdk_name = entry
     key_present = bool(env.get(key_env))
     sdk_present = _sdk_available(sdk_name)
     if not key_present:
         return PreflightResult("SKIPPED",
                                f"{key_env} is not set; no provider will be called",
-                               provider=provider, model_id=model_id, key_present=False,
-                               sdk_present=sdk_present)
+                               provider=resolved_provider, model_id=qualified_model_id,
+                               key_present=False, sdk_present=sdk_present)
     if sdk_name and not sdk_present:
         return PreflightResult("BLOCKED",
                                f"credential present but the '{sdk_name}' SDK is not installed "
                                f"(pip install -e '.[pydantic-ai,{sdk_name}]')",
-                               provider=provider, model_id=model_id, key_present=True,
-                               sdk_present=False)
+                               provider=resolved_provider, model_id=qualified_model_id,
+                               key_present=True, sdk_present=False)
     return PreflightResult("READY",
                            "credential + SDK present; a live call is permitted AFTER approval",
-                           provider=provider, model_id=model_id, key_present=True,
-                           sdk_present=True)
+                           provider=resolved_provider, model_id=qualified_model_id,
+                           key_present=True, sdk_present=True)
 
 
 def _sdk_available(sdk_name: Optional[str]) -> bool:

@@ -45,6 +45,7 @@ DEFAULT_CONTEXT_WINDOW_TOKENS = 8192
 DEFAULT_OUTPUT_TOKEN_RESERVE = 1024
 DEFAULT_PROMPT_SAFETY_MARGIN_TOKENS = 512
 PRODUCER_CONTEXT_BUDGET_EXCEEDED = "PRODUCER_CONTEXT_BUDGET_EXCEEDED"
+PRODUCER_CONTEXT_WINDOW_UNDECLARED = "PRODUCER_CONTEXT_WINDOW_UNDECLARED"
 _AUTH_BINDING_MISMATCH = "authoritative action binding mismatch"
 
 
@@ -112,7 +113,8 @@ def _build_parser() -> argparse.ArgumentParser:
     r.add_argument("--read-allow", action="append", default=[],
                    help="read-only allow-list prefix (repeatable)")
     r.add_argument("--provider", default=None,
-                   help="provider kind: local-openai | ollama | anthropic; else $PYDANTIC_AI_PROVIDER")
+                   help="provider kind: local-openai | ollama | anthropic | openai; "
+                        "else $PYDANTIC_AI_PROVIDER")
     r.add_argument("--model", default=None, help="provider model id, else $PYDANTIC_AI_MODEL")
     r.add_argument("--base-url", default=None,
                    help="[local] OpenAI-compatible base URL, else $PYDANTIC_AI_BASE_URL")
@@ -430,16 +432,33 @@ def _env_int(name, default):
 
 
 def producer_context_policy(provider_name, model_id):
+    # mock/local-openai/ollama/anthropic keep their existing behavior unchanged (a known model
+    # or the DEFAULT_CONTEXT_WINDOW_TOKENS fallback). The "openai" hosted kind is new: an
+    # unrecognized hosted-OpenAI model has no verified window here, and reusing another model's
+    # number (e.g. the Qwen-validated default) for it would be a silent guess, so it requires an
+    # explicit PYDANTIC_AI_CONTEXT_WINDOW_TOKENS declaration instead of assuming one.
     model = (model_id or "").lower()
     known_context = {
         "qwen2.5-7b-instruct": 8192,
     }
-    default_window = known_context.get(model, DEFAULT_CONTEXT_WINDOW_TOKENS)
+    env_override = os.environ.get("PYDANTIC_AI_CONTEXT_WINDOW_TOKENS")
+    if model in known_context:
+        default_window = known_context[model]
+        source = "env" if env_override else "model-default"
+    elif env_override:
+        default_window = DEFAULT_CONTEXT_WINDOW_TOKENS
+        source = "env"
+    elif provider_name == "openai":
+        default_window = DEFAULT_CONTEXT_WINDOW_TOKENS
+        source = "undeclared"
+    else:
+        default_window = DEFAULT_CONTEXT_WINDOW_TOKENS
+        source = "model-default"
     return {
         "context_window_tokens": _env_int("PYDANTIC_AI_CONTEXT_WINDOW_TOKENS", default_window),
         "output_token_reserve": _env_int("PYDANTIC_AI_OUTPUT_TOKEN_RESERVE", DEFAULT_OUTPUT_TOKEN_RESERVE),
         "prompt_safety_margin_tokens": _env_int("PYDANTIC_AI_PROMPT_SAFETY_MARGIN_TOKENS", DEFAULT_PROMPT_SAFETY_MARGIN_TOKENS),
-        "source": "env" if os.environ.get("PYDANTIC_AI_CONTEXT_WINDOW_TOKENS") else "model-default",
+        "source": source,
     }
 
 
@@ -924,8 +943,8 @@ def run_production_stage(controller, stage_name, *, runtime, agent_specs_dir="ag
             judge_runtime_factory = live_runtime_factory
             runtime_provider = kind
             runtime_model = pf.model_id
-        elif kind == "anthropic":
-            pf = _prov.preflight_credentials()
+        elif kind in _prov.HOSTED_KINDS:
+            pf = _prov.preflight_credentials(provider=kind)
             if pf.status != "READY":
                 return StageRunResult("PROVIDER_UNAVAILABLE", EXIT_PROVIDER_UNAVAILABLE,
                                       f"provider unavailable: {pf.status}: {pf.reason}")
@@ -946,10 +965,17 @@ def run_production_stage(controller, stage_name, *, runtime, agent_specs_dir="ag
         else:
             return StageRunResult(
                 "PROVIDER_UNAVAILABLE", EXIT_PROVIDER_UNAVAILABLE,
-                "provider unavailable: set PYDANTIC_AI_PROVIDER to local-openai|ollama|anthropic")
+                "provider unavailable: set PYDANTIC_AI_PROVIDER to "
+                "local-openai|ollama|anthropic|openai")
 
     ctx = ctx_factory(0, runtime_provider, runtime_model)
     producer_budget_policy = producer_context_policy(runtime_provider, runtime_model)
+    if producer_budget_policy["source"] == "undeclared":
+        return StageRunResult(
+            PRODUCER_CONTEXT_WINDOW_UNDECLARED, EXIT_VALIDATION_REJECTED,
+            f"{PRODUCER_CONTEXT_WINDOW_UNDECLARED}: no known/declared context window for model "
+            f"'{runtime_model}'; set PYDANTIC_AI_CONTEXT_WINDOW_TOKENS explicitly before running "
+            "this model in production")
     registry = build_executor_registry()
     binding_validator = _proposal_binding_validator(proposal, c)
     for descriptor in registry.values():
@@ -1231,8 +1257,8 @@ def _select_reasoning_provider_runtime():
         from .pydantic_ai_runtime import PydanticAIRuntime
         return (PydanticAIRuntime(model=_prov.build_local_model(kind, pf.model_id, pf.base_url),
                                   usage_source="provider"), kind, pf.model_id)
-    if kind == "anthropic":
-        pf = _prov.preflight_credentials()
+    if kind in _prov.HOSTED_KINDS:
+        pf = _prov.preflight_credentials(provider=kind)
         if pf.status != "READY":
             raise _ProviderBlocked("PROVIDER_UNAVAILABLE",
                                    f"provider unavailable: {pf.status}: {pf.reason}")
@@ -1245,7 +1271,7 @@ def _select_reasoning_provider_runtime():
                                   usage_source="provider"), pf.provider, pf.model_id)
     raise _ProviderBlocked(
         "PROVIDER_UNAVAILABLE",
-        "provider unavailable: set PYDANTIC_AI_PROVIDER to local-openai|ollama|anthropic")
+        "provider unavailable: set PYDANTIC_AI_PROVIDER to local-openai|ollama|anthropic|openai")
 
 
 def _propose_recovery_via_reasoning_roles(controller, *, runtime, agent_specs_dir, exchange_dir,
@@ -1721,8 +1747,8 @@ def main(argv=None) -> int:
             runtime = PydanticAIRuntime(
                 model=_prov.build_local_model(kind, pf.model_id, pf.base_url),
                 usage_source="provider")
-        elif kind == "anthropic":
-            pf = _prov.preflight_credentials()
+        elif kind in _prov.HOSTED_KINDS:
+            pf = _prov.preflight_credentials(provider=kind)
             if pf.status != "READY":
                 _print_kv(out, runtime="pydantic-ai", preflight=pf.status, reason=pf.reason,
                           provider=pf.provider, model=pf.model_id)
@@ -1739,8 +1765,8 @@ def main(argv=None) -> int:
                                         usage_source="provider")
         else:
             _print_kv(out, runtime="pydantic-ai", preflight="NOT_CONFIGURED",
-                      reason=("set PYDANTIC_AI_PROVIDER to local-openai|ollama|anthropic "
-                              "(local needs PYDANTIC_AI_BASE_URL; no Anthropic key required)"))
+                      reason=("set PYDANTIC_AI_PROVIDER to local-openai|ollama|anthropic|openai "
+                              "(local needs PYDANTIC_AI_BASE_URL; hosted needs its API key)"))
             return EXIT_PROVIDER_UNAVAILABLE
 
     ctx = RuntimeContext(
