@@ -213,7 +213,31 @@ FREEZE_REVISION = (
     "request_human_approval and read_human_decision, remain unwired and fail closed as "
     "BLOCKED_CAPABILITY, exactly as before this revision. No stage, gate, recovery-taxonomy, "
     "capability-routing, protected-reference, or schema_version change; no role/action-set/Judge "
-    "change.)"
+    "change.) "
+    "v13 (post-init lifecycle completion) closes a real gap a production run (R12) hit directly: "
+    "initialize() is create-only (FileExistsError if run_dir exists) and rebind_inputs() only "
+    "re-verifies input records ALREADY present in state[\"inputs\"] at their already-declared "
+    "source paths -- it cannot append a new one, and there was no sanctioned way to set/unset "
+    "recovery_policy after initialization either, so a run that skipped declaring these at init "
+    "time (e.g. because a human policy or an additional provenance input was only decided/"
+    "discovered afterward) had no path back to a compliant state short of abandoning the run. Two "
+    "new methods close this without introducing any new record shape or loosening any existing "
+    "check: (1) set_recovery_policy(policy) applies the IDENTICAL validation initialize() already "
+    "applies to cfg.get(\"recovery_policy\") (must be None or a mapping, never invented) to the "
+    "live state[\"recovery_policy\"] key post-init, recording a recovery_policy_updated event; "
+    "recovery_policy None continues to mean _enforce_recovery_policy enforces zero loop-safety "
+    "limits, exactly as before this revision -- calling this method cannot make propose_recovery "
+    "either stricter or more permissive than a human explicitly requests. (2) bind_new_input"
+    "(source, *, copy=True) applies the IDENTICAL existence-check / artifact_digest / sequential-"
+    "index snapshot-copy logic initialize() already applies to each declared workflow input, and "
+    "appends one new record of the EXACT SAME shape (source, snapshot, copy, source_integrity, "
+    "size, sha256, source_sha256) to state[\"inputs\"] -- no new field, no new record kind. Neither "
+    "method touches validation_contract, stages, gates, artifacts, or recovery state, and neither "
+    "is reachable from any stage-execution path (run_stage/complete_external_stage/rebind_inputs "
+    "still call verify_inputs(), whose project-code-revision/source-input-hash checks are "
+    "entirely unchanged); a run that never calls either new method behaves byte-for-byte as before "
+    "this revision. No stage, gate, contract, recovery-taxonomy, capability-routing, protected-"
+    "reference, or schema_version change; no role/action-set/Judge change."
 )
 FROZEN_MODEL = "qwen2.5-7b-instruct"
 
@@ -243,7 +267,7 @@ FROZEN = {
     "orchestration/specs.py":
         "4b6dc829fe2b6b594cc87e8a62bd944ea9df181cd7f420ae3732c861ce8e43cb",
     "workflow/controller.py":
-        "e26af4c19c4a0b1668c80880130eaf28d1ba03861389d5bc0f520ce94b71af85",
+        "ecfa32fcf1743a65dc3c35f77fff9aa7f3880da183d843efa9cfd90b211e194c",
     "orchestration/schema/agent_result.schema.json":
         "a38afea9c06c21e647376efd835dec32a16b2f247583a090560cb1843e0eda31",
     "orchestration/schema/agent_spec.schema.json":

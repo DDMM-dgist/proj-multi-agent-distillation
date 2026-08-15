@@ -433,6 +433,51 @@ class RunController:
         tmp.write_text(json.dumps(self.state, indent=2) + "\n")
         tmp.replace(self.state_path)
 
+    def set_recovery_policy(self, policy):
+        """Explicitly set (or unset, with policy=None) this run's recovery_policy after
+        initialization. Uses the identical validation initialize() applies to
+        cfg.get("recovery_policy"): must be None or a dict. Never invents a value -- the
+        caller supplies exactly what a human has decided, including None to represent
+        "no campaign policy has been established yet" (propose_recovery() then enforces
+        zero loop-safety limits, per _enforce_recovery_policy)."""
+        if policy is not None and not isinstance(policy, dict):
+            raise ValueError("recovery_policy must be a mapping or None")
+        previous = self.state.get("recovery_policy")
+        self.state["recovery_policy"] = policy
+        self.state["events"].append({"at": now(), "type": "recovery_policy_updated",
+                                     "previous": previous, "policy": policy})
+        self.save()
+        return policy
+
+    def bind_new_input(self, source, *, copy=True):
+        """Add a brand-new run-bound input after initialization. Mirrors, field-for-field,
+        the validation and snapshot logic initialize() applies to each declared workflow
+        input (existence check, artifact_digest, sequential-index snapshot copy) -- this is
+        not a new binding policy, just the same mechanism made available post-init, since
+        rebind_inputs() only re-verifies inputs already present in state["inputs"] and
+        cannot append new ones."""
+        source = Path(source).resolve()
+        if not source.exists():
+            raise FileNotFoundError(f"input to bind is missing: {source}")
+        if copy and not source.is_file():
+            raise ValueError("directory inputs must use copy=False and are hash-bound in place")
+        source_integrity = artifact_digest(source)
+        index = len(self.state["inputs"])
+        destination = None
+        if copy:
+            temporary_destination = self.run_dir / "inputs" / f"{index:03d}-{source.name}"
+            shutil.copy2(source, temporary_destination)
+            destination = temporary_destination
+        record = {"source": str(source), "snapshot": str(destination) if destination else None,
+                  "copy": copy, "source_integrity": source_integrity,
+                  "size": source_integrity["size"], "sha256": source_integrity["sha256"],
+                  "source_sha256": source_integrity["sha256"]}
+        self.state["inputs"].append(record)
+        self.state["events"].append({"at": now(), "type": "input_bound", "source": str(source),
+                                     "sha256": source_integrity["sha256"], "index": index})
+        self.save()
+        return record
+
     # --- v7 additive operational metadata (NO change to gate/retry/recovery semantics) --------
     def record_runtime_attempt(self, *, task_id, attempt_id, provenance_path, role="",
                                stage="", correlation_id="", failure_category=""):

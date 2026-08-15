@@ -174,6 +174,63 @@ class RunControllerTests(unittest.TestCase):
             self.assertEqual(len(controller.state["inputs"]), 1)
             self.assertTrue(Path(controller.state["inputs"][0]["snapshot"]).is_file())
 
+    def test_bind_new_input_appends_hashed_snapshot_without_touching_existing_inputs(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            source = root / "student.yaml"
+            source.write_text("kind: mock\n")
+            cfg = root / "workflow.yaml"
+            cfg.write_text(yaml.safe_dump({"run_id": "x", "inputs": [str(source)],
+                                           "stages": [{"name": "x", "command": None}]}))
+            controller = RunController.initialize(cfg, root / "run")
+            before_contract = controller.state["validation_contract"]
+            before_stages = [dict(s) for s in controller.state["stages"]]
+
+            new_source = root / "extra.json"
+            new_source.write_text('{"a": 1}\n')
+            record = controller.bind_new_input(new_source)
+
+            self.assertEqual(len(controller.state["inputs"]), 2)
+            self.assertEqual(controller.state["inputs"][0]["source"], str(source))
+            self.assertEqual(record["source"], str(new_source.resolve()))
+            self.assertTrue(Path(record["snapshot"]).is_file())
+            self.assertEqual(Path(record["snapshot"]).name, "001-extra.json")
+            self.assertEqual(record["sha256"], artifact_digest(new_source)["sha256"])
+            self.assertEqual(controller.state["validation_contract"], before_contract)
+            self.assertEqual([s["status"] for s in controller.state["stages"]],
+                             [s["status"] for s in before_stages])
+            self.assertEqual(controller.state["events"][-1]["type"], "input_bound")
+
+    def test_bind_new_input_rejects_missing_source(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            cfg = root / "workflow.yaml"
+            cfg.write_text(yaml.safe_dump({"run_id": "x",
+                                           "stages": [{"name": "x", "command": None}]}))
+            controller = RunController.initialize(cfg, root / "run")
+            with self.assertRaises(FileNotFoundError):
+                controller.bind_new_input(root / "missing.json")
+            self.assertEqual(len(controller.state["inputs"]), 0)
+
+    def test_set_recovery_policy_accepts_mapping_and_none_only(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            cfg = root / "workflow.yaml"
+            cfg.write_text(yaml.safe_dump({"run_id": "x",
+                                           "stages": [{"name": "x", "command": None}]}))
+            controller = RunController.initialize(cfg, root / "run")
+            self.assertIsNone(controller.state.get("recovery_policy"))
+
+            controller.set_recovery_policy({"max_recovery_attempts": 3})
+            self.assertEqual(controller.state["recovery_policy"], {"max_recovery_attempts": 3})
+            self.assertEqual(controller.state["events"][-1]["type"], "recovery_policy_updated")
+
+            controller.set_recovery_policy(None)
+            self.assertIsNone(controller.state["recovery_policy"])
+
+            with self.assertRaisesRegex(ValueError, "mapping or None"):
+                controller.set_recovery_policy(["not", "a", "mapping"])
+
     def test_failed_initialization_leaves_no_partial_run_directory(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
