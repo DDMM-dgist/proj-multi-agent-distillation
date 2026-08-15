@@ -39,7 +39,13 @@ class PydanticAIRuntime:
         from pydantic_ai import Agent  # lazy: absence must not break import/tests
 
         system_prompt = (getattr(spec, "prompt", "") + "\n\n" + toolset.context_note())
-        kwargs = {"output_type": output_model, "system_prompt": system_prompt}
+        # Wires RuntimeContext.structured_output_retries into pydantic_ai's own output_retries
+        # (the parameter that actually bounds "Exceeded maximum retries (N) for output
+        # validation" -- see UnexpectedModelBehavior); default 1 (see models.RuntimeContext)
+        # matches pydantic-ai's own implicit Agent default, so a caller that never sets this
+        # field observes no behavior change from before this was wired.
+        kwargs = {"output_type": output_model, "system_prompt": system_prompt,
+                 "output_retries": getattr(context, "structured_output_retries", 1)}
         timeout = getattr(context, "timeout_s", None)
         if timeout:
             # Best-effort timeout; harmless for TestModel, applied for real providers.

@@ -102,6 +102,24 @@ class FailureClassificationTests(unittest.TestCase):
             self.assertEqual(gc, cat, exc)
             self.assertEqual(gr, retry, exc)
 
+    def test_structured_output_retry_exhaustion_is_not_classified_unknown(self):
+        # R16 forensic finding: pydantic_ai.exceptions.UnexpectedModelBehavior("Exceeded maximum
+        # retries (1) for output validation") previously fell through every heuristic branch to
+        # this module's own "unknown" -- the same spelling as the scientific Analyst's registered
+        # failure_code "unknown" (workflow.recovery_taxonomy), an unrelated vocabulary. It must be
+        # classified as an explicit, non-retryable structured-output failure instead.
+        from runtimes.pydantic_ai.failures import classify_failure
+        try:
+            from pydantic_ai.exceptions import UnexpectedModelBehavior as _RealExc
+        except ImportError:
+            class _RealExc(Exception):
+                pass
+        exc = _RealExc("Exceeded maximum retries (1) for output validation")
+        category, retryable = classify_failure(exc)
+        self.assertEqual(category, "structured_output_failure")
+        self.assertNotEqual(category, "unknown")
+        self.assertFalse(retryable)
+
 
 @unittest.skipUnless(_HAS_PYDANTIC, "pydantic not installed")
 class RetryAndProvenanceTests(unittest.TestCase):

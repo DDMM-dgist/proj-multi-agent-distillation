@@ -39,6 +39,10 @@ did not.
 v16 (campaign observability progress_cb threading) deliberately re-froze production_router.py and
 controller_bridge.py again for the same reason as v10-v15 — see FREEZE_REVISION below for exactly
 what changed and what deliberately did not.
+
+v17 (R16 forensic-defect corrections) deliberately re-froze models.py and pydantic_ai_runtime.py
+again for the same reason as v10-v16 — see FREEZE_REVISION below for exactly what changed and what
+deliberately did not.
 """
 from __future__ import annotations
 
@@ -334,7 +338,28 @@ FREEZE_REVISION = (
     "progress to the new runtimes/pydantic_ai/events.py CampaignEventEmitter (itself NOT a frozen "
     "file). No change to acceptance strategy selection, typed-output validation, approval/"
     "idempotency/recovery-authorization enforcement order, ActionOutcome fields, or any gate/"
-    "recovery semantic; every other frozen file is untouched."
+    "recovery semantic; every other frozen file is untouched. "
+    "v17 (R16 forensic-defect corrections) re-freezes models.py and pydantic_ai_runtime.py for two "
+    "narrow, additive fixes found by forensic analysis of a real production run (R16) that hit a "
+    "PydanticAI internal structured-output retry exhaustion during Analyst dispatch. (1) "
+    "RuntimeContext.structured_output_retries' default changed 0 -> 1 to match pydantic-ai's own "
+    "implicit Agent default (retries=1 used as output_retries when output_retries is not given) -- "
+    "no caller in this repository passes this field explicitly, so every existing production run's "
+    "actual retry behavior is unchanged; only the field's on-paper default now honestly reflects "
+    "what already ran. (2) pydantic_ai_runtime.PydanticAIRuntime._build_agent now actually passes "
+    "output_retries=getattr(context, \"structured_output_retries\", 1) into the constructed "
+    "Agent(...) -- before this revision the field was threaded onto RuntimeContext but never wired "
+    "into Agent construction at all, so it was silently inert; wiring it is the only behavior "
+    "change, and it is strictly additive (a context that never set the field still gets the same "
+    "default of 1 as before). The separate, root-cause taxonomy machine-visibility fix (Root"
+    "CauseClassification.failure_category now typed directly as recovery_taxonomy.failure_category_"
+    "enum() instead of a plain str plus a hidden field_validator) lives entirely in root_cause.py, "
+    "which is NOT a frozen file, so it required no re-freeze; likewise the classify_failure "
+    "structured-output-exhaustion branch (failures.py) and the run-campaign REVISE/FAIL single-"
+    "invocation handoff plus campaign_started/campaign_resumed lifecycle-event semantics (cli.py, "
+    "events.py) are all in non-frozen files. No stage, gate, recovery-taxonomy, capability-routing, "
+    "protected-reference, schema_version, role/action-set, or Judge change; every other frozen file "
+    "is untouched."
 )
 FROZEN_MODEL = "qwen2.5-7b-instruct"
 
@@ -348,9 +373,9 @@ FROZEN = {
     "runtimes/pydantic_ai/tool_registry.py":
         "3d398a718da1c9e89d03585acdc9fafcfeb2d4767569ffac6027edcd13c1e467",
     "runtimes/pydantic_ai/models.py":
-        "b6e5efbb6ccc89c9be17d39e8b0255b8b97178292a6dc0619ada506e71fbfd1a",
+        "0854b16133dc7b42cf1618a076ec4b30793f499cc212d1f897f282e4bb74b8dc",
     "runtimes/pydantic_ai/pydantic_ai_runtime.py":
-        "2eaf42e35b722f421f6bae0c29a9c03ba903145c8acc774067546ec449f46b82",
+        "81679cccd610f56cb07fb1f70b388286bd456cf96da2c1a2cdb48d4eed25aa62",
     "runtimes/pydantic_ai/role_outputs.py":
         "2ca372aea8a105504fa8ed08c9e2fe47b04733564046b788b92d586139e4708a",
     "runtimes/pydantic_ai/production_router.py":

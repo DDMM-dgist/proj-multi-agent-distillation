@@ -56,6 +56,33 @@ def _write_safely(stream, text: str) -> None:
         stream.flush()
 
 
+_CAMPAIGN_LIFECYCLE_START_EVENTS = ("campaign_started", "campaign_resumed")
+
+
+def campaign_previously_executed(run_dir) -> bool:
+    """True iff a PRIOR ``run-campaign`` invocation actually executed against this ``run_dir`` --
+    i.e. the durable event log already contains a campaign_started/campaign_resumed lifecycle
+    event of its own. Deliberately NOT ``events_path.exists()``: other commands (``approve``,
+    ``approve-recovery``) write their OWN events (e.g. ``approval_granted``) to this same durable
+    log via their own ``CampaignEventEmitter``, so the file can exist before ``run-campaign`` has
+    ever executed once -- file existence alone is not evidence of a prior campaign execution."""
+    path = Path(run_dir) / EVENTS_FILENAME
+    if not path.exists():
+        return False
+    with open(path, "r", encoding="utf-8") as f:
+        for line in f:
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                record = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            if record.get("event") in _CAMPAIGN_LIFECYCLE_START_EVENTS:
+                return True
+    return False
+
+
 def terminal_class(outcome: str) -> str:
     """Bucket any campaign outcome string into the tri-state COMPLETED/FAILED/PAUSED vocabulary --
     every non-COMPLETED, non-FAILED outcome (waiting for human approval, waiting for recovery

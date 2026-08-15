@@ -320,6 +320,30 @@ class ToolSecurityTests(unittest.TestCase):
         self.assertEqual(EXPOSED_READ_TOOLS,
                          ("read_text", "read_json", "read_csv_summary", "read_artifact_manifest"))
 
+    def test_structured_output_retries_is_wired_into_agent_output_retries(self):
+        # RuntimeContext.structured_output_retries must actually reach pydantic_ai's Agent
+        # (its output_retries param owns "Exceeded maximum retries (N) for output validation");
+        # before this was wired the field was accepted but silently ignored.
+        from runtimes.pydantic_ai.models import RuntimeContext
+        from runtimes.pydantic_ai.pydantic_ai_runtime import PydanticAIRuntime
+        from runtimes.pydantic_ai.tool_registry import ReadOnlyToolset
+        from orchestration.specs import load_agent_specs
+        specs = load_agent_specs(str(ROOT / "agent_specs"))
+        toolset = ReadOnlyToolset([])
+
+        default_ctx = RuntimeContext(exchange_dir="/tmp/ex", repo_root=str(ROOT))
+        default_agent = PydanticAIRuntime(model=None)._build_agent(
+            specs["judge"], toolset, None, default_ctx)
+        # Default (1) matches pydantic-ai's own implicit Agent default (retries=1,
+        # output_retries=None -> retries), so wiring it changes nothing for an unconfigured caller.
+        self.assertEqual(default_agent._max_result_retries, 1)
+
+        custom_ctx = RuntimeContext(exchange_dir="/tmp/ex", repo_root=str(ROOT),
+                                    structured_output_retries=4)
+        custom_agent = PydanticAIRuntime(model=None)._build_agent(
+            specs["judge"], toolset, None, custom_ctx)
+        self.assertEqual(custom_agent._max_result_retries, 4)
+
 
 @unittest.skipUnless(_HAS_PYDANTIC_AI, "pydantic_ai not installed (optional [pydantic-ai] extra)")
 class RealPydanticAiAgentTests(unittest.TestCase):

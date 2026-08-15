@@ -17,6 +17,17 @@ locally-declared ``Literal``. This is what lets diagnosis (this module) and reco
 maintained category sets: an unregistered string fails closed here exactly as it does in the
 controller. ``failure_domain`` is never supplied by a caller; it is always derived from
 ``failure_category`` via ``workflow.recovery_taxonomy.domain_of`` so the two can never disagree.
+
+``RootCauseClassification.failure_category`` is the Analyst's real LLM ``output_type`` field (see
+``role_outputs.register_reasoning_output_model``), so it is typed as
+``recovery_taxonomy.failure_category_enum()`` — a real Enum built FROM the registry — rather than
+a plain ``str`` plus a hidden validator: the generated Pydantic JSON Schema exposes the literal
+registered codes as an ``"enum": [...]``, so a provider enforcing strict structured output can
+itself constrain the model to a registered code, not just have it rejected after the fact once the
+model has already spent its structured-output retries guessing at an unpublished vocabulary.
+``RecoveryRecommendation.failure_category`` stays a plain, validator-checked ``str``: it is never
+an LLM output_type (always Python-constructed via ``to_recovery_recommendation`` below from an
+already-validated classification), so it has no schema-visibility gap to close.
 """
 from __future__ import annotations
 
@@ -28,9 +39,8 @@ from workflow import recovery_taxonomy
 
 from .models import EvidenceReference, NonEmptyStr
 
-# A registered failure_code (see workflow.recovery_taxonomy) — validated dynamically against the
-# shared registry rather than pinned to a fixed Literal, so new campaigns can register additional
-# codes without editing this module.
+# RecoveryRecommendation.failure_category only (never an LLM output_type; see module docstring).
+# RootCauseClassification.failure_category is typed directly as recovery_taxonomy's Enum below.
 FailureCategory = str
 
 
@@ -46,7 +56,10 @@ class RootCauseClassification(BaseModel):
     model_config = {"extra": "forbid"}
     run_id: NonEmptyStr
     stage: NonEmptyStr
-    failure_category: FailureCategory
+    # Schema-visible registered vocabulary (see module docstring) -- Pydantic itself rejects any
+    # value outside the registry, so no separate field_validator is needed here (contrast
+    # RecoveryRecommendation.failure_category below, which is not an LLM output_type).
+    failure_category: recovery_taxonomy.failure_category_enum()
     failure_domain: str = ""
     affected_channel: str = ""
     affected_artifact_refs: list[EvidenceReference] = Field(default_factory=list)
@@ -58,11 +71,6 @@ class RootCauseClassification(BaseModel):
     recommended_recovery_target: NonEmptyStr
     recommended_next_action: NonEmptyStr
     requires_human_approval: bool = True
-
-    @field_validator("failure_category")
-    @classmethod
-    def _check_failure_category(cls, value):
-        return _resolve_or_raise(value)
 
     @model_validator(mode="after")
     def _bind_failure_domain(self):

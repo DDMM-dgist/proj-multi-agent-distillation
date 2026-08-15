@@ -24,7 +24,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional
 
-from .events import CampaignEventEmitter, stage_progress_fields, terminal_class
+from .events import (CampaignEventEmitter, campaign_previously_executed, stage_progress_fields,
+                     terminal_class)
 
 # Meaningful, distinct exit codes.
 EXIT_SUCCESS = 0
@@ -1726,7 +1727,21 @@ def _run_campaign_loop(controller, *, runtime, agent_specs_dir="agent_specs", ex
                          detail={"recovery_id": report["recovery_id"]})
             c = RunController(c.run_dir)
             continue
+        if result.reason in ("GATE_REVISE", "GATE_FAIL"):
+            # workflow.controller.record_gate has ALREADY durably recorded
+            # pending_recovery={"status": "required", ...} for any non-PASS verdict (this ran
+            # synchronously inside run_production_stage, before it returned this result) -- so
+            # refreshing and looping back to the top-of-loop pending_recovery check above drives
+            # this SAME run-campaign invocation straight through Analyst diagnosis and Orchestrator
+            # recovery-plan proposal, stopping only at WAITING_FOR_HUMAN_APPROVAL (or a genuine
+            # diagnosis/proposal failure) -- never returning RECOVERY_REQUIRED to the shell merely
+            # because a gate recorded non-PASS, when the Controller can continue deterministically.
+            c = RunController(c.run_dir)
+            continue
         if result.reason.startswith("GATE_"):
+            # A genuine internal invariant violation (e.g. GATE_RECORD_MISMATCH) rather than a
+            # legitimate non-PASS verdict -- pending_recovery is NOT guaranteed set here, so this
+            # stays a hard stop rather than looping.
             return CampaignRunResult(CAMPAIGN_RECOVERY_REQUIRED, EXIT_RECOVERY_REQUIRED,
                                      result.message, stage=next_stage["name"],
                                      last_stage_result=result)
@@ -1746,11 +1761,13 @@ def run_campaign(controller, *, runtime, agent_specs_dir="agent_specs", exchange
     of the loop's internal return statements."""
     c = controller
     emitter = emitter or CampaignEventEmitter(c.run_dir, quiet=True)
-    # The durable event log itself is the observable record of whether a PRIOR run-campaign
-    # invocation ever ran against this run_dir -- unlike Controller state (whose "iterations"
-    # list is seeded at initialize() and so is non-empty even before the first invocation), this
-    # file is written only by this event layer, so its absence means genuinely first-ever.
-    emitter.emit("campaign_resumed" if emitter.events_path.exists() else "campaign_started")
+    # A prior CAMPAIGN EXECUTION lifecycle event (campaign_started/campaign_resumed) in the
+    # durable log -- NOT mere file existence -- is what actually evidences a prior run-campaign
+    # invocation: approve/approve-recovery write their own events (e.g. approval_granted) to the
+    # same log via their own CampaignEventEmitter, so the file can already exist before
+    # run-campaign has ever executed once. See events.campaign_previously_executed.
+    emitter.emit("campaign_resumed" if campaign_previously_executed(c.run_dir)
+                else "campaign_started")
     result = _run_campaign_loop(
         c, runtime=runtime, agent_specs_dir=agent_specs_dir, exchange_dir=exchange_dir,
         repo_root=repo_root, auto_mock_judges=auto_mock_judges, mock_response=mock_response,

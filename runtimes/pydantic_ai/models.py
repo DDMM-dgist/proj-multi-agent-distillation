@@ -124,7 +124,11 @@ class RuntimeContext(BaseModel):
     # RETRYABLE failure; max_total_calls caps total provider calls (cost guard); backoff is
     # exponential with jitter between attempts.
     provider_retries: int = 0
-    structured_output_retries: int = 0
+    # Threaded into pydantic_ai.Agent's own output_retries (see PydanticAIRuntime._build_agent);
+    # default 1 matches pydantic-ai's own implicit Agent default (retries=1, output_retries=None
+    # falls back to retries) so wiring this in changes no run's effective behavior unless a caller
+    # explicitly overrides it.
+    structured_output_retries: int = 1
     backoff_base_s: float = 0.5
     backoff_max_s: float = 8.0
     max_total_calls: int = 1

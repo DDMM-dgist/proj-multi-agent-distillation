@@ -54,6 +54,16 @@ def classify_failure(exc: BaseException) -> Tuple[str, bool]:
         return "provider_internal_failure", True
     if "connection" in name or "connect" in msg or "network" in name or "socket" in msg:
         return "provider_network_failure", True
+    # pydantic_ai's own output-validation retry exhaustion (Agent(output_retries=...) / the
+    # implicit default): UnexpectedModelBehavior("Exceeded maximum retries (N) for output
+    # validation"). This is a RUNTIME/structured-output failure, never the scientific Analyst's
+    # own RootCauseClassification.failure_category vocabulary (workflow.recovery_taxonomy) --
+    # the two are unrelated fields on unrelated models, but sharing the spelling "unknown" would
+    # be needlessly confusing across an audit trail, so this is classified explicitly rather than
+    # falling through to this module's own "unknown" below.
+    if "unexpectedmodelbehavior" in name and "exceeded maximum retries" in msg \
+            and "output validation" in msg:
+        return "structured_output_failure", False
     if "structured" in msg or "output type" in msg or "tool call" in msg and "output" in msg:
         return "structured_output_failure", False
     if "json" in name or "jsondecode" in name:

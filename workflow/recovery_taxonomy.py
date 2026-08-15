@@ -25,6 +25,7 @@ routing (via ``domain_of``) is now shared and explicit.
 """
 from __future__ import annotations
 
+import enum
 from dataclasses import dataclass
 from typing import Literal, Optional
 
@@ -93,6 +94,33 @@ def registered_codes(domain: Optional[str] = None) -> tuple[str, ...]:
     return tuple(sorted(
         c for c, entry in _REGISTRY.items() if domain is None or entry.domain == domain
     ))
+
+
+_failure_category_enum_cache: Optional[type] = None
+
+
+def failure_category_enum() -> type:
+    """Build (once, cached) a ``str``-mixin ``Enum`` whose members are exactly the currently
+    registered failure codes -- the single schema-visible source of truth for a Pydantic
+    ``failure_category`` field.
+
+    This replaces a hidden-constraint pattern (a plain ``str`` field plus a custom validator that
+    secretly requires a registered code, invisible to a provider's structured-output/JSON-schema
+    enforcement) with a representation the generated Pydantic JSON Schema exposes literally as
+    ``"enum": [...]`` -- so a provider enforcing strict structured output can itself constrain the
+    model to a registered code, not just have it rejected after the fact.
+
+    Cached at first call: a member is added only for codes registered by then. A campaign that
+    calls ``register_failure_code`` must do so before any module builds this enum (i.e. before
+    importing ``runtimes.pydantic_ai.root_cause``), exactly as new legacy codes are registered at
+    THIS module's own import time, above.
+    """
+    global _failure_category_enum_cache
+    if _failure_category_enum_cache is None:
+        codes = registered_codes()
+        _failure_category_enum_cache = enum.Enum(
+            "FailureCategory", {code: code for code in codes}, type=str)
+    return _failure_category_enum_cache
 
 
 # --- Legacy reconciliation ------------------------------------------------------------------
