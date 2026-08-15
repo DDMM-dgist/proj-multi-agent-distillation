@@ -72,7 +72,8 @@ def _get(candidate, key, default=None):
 
 
 def run_role(runtime, task, spec, context, *, controller=None, registry=None, mode="shadow",
-            reasoning_validator: Optional[Callable[[Any], Any]] = None) -> RouteResult:
+            reasoning_validator: Optional[Callable[[Any], Any]] = None,
+            progress_cb: Optional[Callable[[dict], None]] = None) -> RouteResult:
     """Invoke one role and accept its result via the role-appropriate strategy. ``mode`` in
     {"primary","shadow","dry_run","validate_only"} — only primary mutates state.
 
@@ -80,7 +81,11 @@ def run_role(runtime, task, spec, context, *, controller=None, registry=None, mo
     ``instance -> instance`` callable performing CONTEXTUAL fail-closed validation beyond Pydantic
     shape (e.g. root_cause.validate_root_cause_classification bound to this run's available
     artifacts/valid recovery targets). It raises to reject; this router stays ignorant of what it
-    checks."""
+    checks.
+
+    ``progress_cb``, used only by the ``producer_dispatch`` strategy, is an optional long-running-
+    executor progress hook passed straight through to ``dispatch_via_controller``; every other
+    strategy ignores it."""
     invocation = runtime.run(task, spec, context)
     rec = invocation.provenance
     rec.mode = mode
@@ -104,7 +109,8 @@ def run_role(runtime, task, spec, context, *, controller=None, registry=None, mo
         return RouteResult(strategy, False, False, err, path)
 
     if strategy == "producer_dispatch":
-        return _accept_via_dispatch(invocation, spec, context, controller, registry, mode)
+        return _accept_via_dispatch(invocation, spec, context, controller, registry, mode,
+                                    progress_cb)
     if strategy == "typed_reasoning_output":
         return _accept_typed_reasoning_output(invocation, spec, context, mode, instance,
                                               reasoning_validator)
@@ -158,7 +164,8 @@ def _accept_via_exchange(invocation, spec, task, context, mode, strategy) -> Rou
     return RouteResult(strategy, accepted, rec.controller_mutated, error, path, validated)
 
 
-def _accept_via_dispatch(invocation, spec, context, controller, registry, mode) -> RouteResult:
+def _accept_via_dispatch(invocation, spec, context, controller, registry, mode,
+                         progress_cb=None) -> RouteResult:
     rec = invocation.provenance
     # Fail-closed: the producer's typed output must claim the invoking role.
     claimed = _get(invocation.candidate, "requested_by_role")
@@ -174,7 +181,7 @@ def _accept_via_dispatch(invocation, spec, context, controller, registry, mode) 
     from .controller_bridge import dispatch_via_controller
     dmode = "primary" if mode == "primary" else "dry_run"  # shadow/dry_run never mutate
     outcome = dispatch_via_controller(invocation.candidate, controller=controller,
-                                      registry=registry, mode=dmode)
+                                      registry=registry, mode=dmode, progress_cb=progress_cb)
     accepted = outcome.status in ("EXECUTED", "DRY_RUN")
     mutated = outcome.status == "EXECUTED"
     rec.accepted = accepted

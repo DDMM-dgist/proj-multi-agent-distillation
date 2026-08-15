@@ -61,7 +61,8 @@ class ControllerRecoveryAuthorizationStore:
             artifact_roles=artifact_roles, resource_usage=resource_usage)
 
 
-def dispatch_via_controller(proposal, *, controller, registry=None, mode="dry_run"):
+def dispatch_via_controller(proposal, *, controller, registry=None, mode="dry_run",
+                            progress_cb=None):
     """Authorize + (optionally) execute a proposed action with controller-backed approval and
     idempotency. Returns the ActionOutcome. Heavy compute runs only inside a registered trusted
     executor, only in mode='primary', and only after every enforcement check passes.
@@ -70,11 +71,16 @@ def dispatch_via_controller(proposal, *, controller, registry=None, mode="dry_ru
     chance to be authorized via the current activated recovery iteration's
     RecoveryAuthorizationEnvelope (if any) -- never a substitute for approval on a run with no
     active recovery, and never a way to widen what an envelope itself was scoped to permit.
+
+    ``progress_cb``, if given, is passed straight through to ``authorize_and_execute`` -- an
+    optional, additive long-running-executor progress hook; no existing caller or executor is
+    affected when it is omitted.
     """
     registry = registry if registry is not None else default_registry()
     outcome = authorize_and_execute(
         proposal, registry=registry,
         approvals=ControllerApprovalStore(controller),
         idempotency=ControllerIdempotencyStore(controller),
-        recovery_authorization=ControllerRecoveryAuthorizationStore(controller), mode=mode)
+        recovery_authorization=ControllerRecoveryAuthorizationStore(controller), mode=mode,
+        progress_cb=progress_cb)
     return outcome

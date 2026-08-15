@@ -16,6 +16,7 @@ all checks pass.
 """
 from __future__ import annotations
 
+import inspect
 from dataclasses import dataclass, field
 from typing import Any, Callable, Optional
 
@@ -142,7 +143,8 @@ def default_registry() -> dict:
 
 def authorize_and_execute(proposal, *, registry: dict, approvals, idempotency,
                           mode: str = "dry_run", manifest_lookup=manifest_for,
-                          recovery_authorization=None) -> ActionOutcome:
+                          recovery_authorization=None,
+                          progress_cb: Optional[Callable[[dict], None]] = None) -> ActionOutcome:
     """Run the full enforcement pipeline for one proposed action. ``mode`` in
     {"dry_run","validate_only","primary"}; only "primary" runs a real executor.
 
@@ -227,7 +229,10 @@ def authorize_and_execute(proposal, *, registry: dict, approvals, idempotency,
                    executor=(desc.executor.__name__ if desc.executor else "none"),
                    recovery_authorization_envelope_sha256=envelope_sha256)
     try:
-        artifact = desc.executor(proposal)
+        if progress_cb is not None and "progress_cb" in inspect.signature(desc.executor).parameters:
+            artifact = desc.executor(proposal, progress_cb=progress_cb)
+        else:
+            artifact = desc.executor(proposal)
     except ExternalActionPending as exc:
         # Legitimately still in flight -- not a failure, and not consumed as a completed
         # execution, so the SAME idempotency key can be dispatched again later to re-check.

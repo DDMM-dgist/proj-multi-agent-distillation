@@ -35,6 +35,10 @@ v15 (recovery-plan reasoning output) deliberately re-froze pydantic_ai_runtime.p
 production_router.py (v14), role_outputs.py again (v15), and workflow/controller.py (v13) for the
 same reason as v10-v12 — see FREEZE_REVISION below for exactly what changed and what deliberately
 did not.
+
+v16 (campaign observability progress_cb threading) deliberately re-froze production_router.py and
+controller_bridge.py again for the same reason as v10-v15 — see FREEZE_REVISION below for exactly
+what changed and what deliberately did not.
 """
 from __future__ import annotations
 
@@ -316,7 +320,21 @@ FREEZE_REVISION = (
     "RecoveryPlanDraft; this revision only adds a second, agent-driven source for its scientific "
     "fields. No stage, gate, recovery-taxonomy, capability-routing, protected-reference, schema_"
     "version, role/action-set, or Judge change; propose_recovery and every other frozen file are "
-    "untouched."
+    "untouched. "
+    "v16 (campaign observability progress_cb threading) re-freezes production_router.py and "
+    "controller_bridge.py for a single additive change: an optional progress_cb: Optional[Callable"
+    "[[dict], None]] = None parameter, threaded run_role -> _accept_via_dispatch -> "
+    "dispatch_via_controller -> dispatch.authorize_and_execute (dispatch.py itself is, as before, "
+    "not a frozen file). When given AND the resolved ActionDescriptor.executor's signature "
+    "declares a progress_cb parameter (checked via inspect.signature; no existing or hypothetical "
+    "executor is required to accept it), authorize_and_execute passes it straight through to that "
+    "executor call; otherwise the executor is invoked exactly as before. No executor in this "
+    "revision declares progress_cb, so no behavior changes for any existing dispatch path -- this "
+    "is a dormant hook for a future long-running executor to report genuine, non-fabricated "
+    "progress to the new runtimes/pydantic_ai/events.py CampaignEventEmitter (itself NOT a frozen "
+    "file). No change to acceptance strategy selection, typed-output validation, approval/"
+    "idempotency/recovery-authorization enforcement order, ActionOutcome fields, or any gate/"
+    "recovery semantic; every other frozen file is untouched."
 )
 FROZEN_MODEL = "qwen2.5-7b-instruct"
 
@@ -336,13 +354,13 @@ FROZEN = {
     "runtimes/pydantic_ai/role_outputs.py":
         "2ca372aea8a105504fa8ed08c9e2fe47b04733564046b788b92d586139e4708a",
     "runtimes/pydantic_ai/production_router.py":
-        "ad93a43d4cfe963e79e5c6503b4126b718e23c520edf7ad8949b2679b680bdc0",
+        "85cd6e73eabeb3f03ea29cc809f5d00e0f494b3bf6e37f5b205bc9875b91e65a",
     "runtimes/pydantic_ai/driver.py":
         "571636918a2827ceded12e9ee3b0cad7f23ab73887d61ed0cc2b6d5727986719",
     "runtimes/pydantic_ai/actions.py":
         "c63f8d42bf208f87c2b7d220264e27556fd3ce79ac5d48c13becb0557c66c141",
     "runtimes/pydantic_ai/controller_bridge.py":
-        "e423a05981463b21b766b7b77d71f790aa3aedb60a3a85833e324089568bd46c",
+        "b046922cd32620cd5dbe1c2dc7b4390a2eb67b4201e473d9b6062c68f8bd869d",
     "orchestration/specs.py":
         "4b6dc829fe2b6b594cc87e8a62bd944ea9df181cd7f420ae3732c861ce8e43cb",
     "workflow/controller.py":

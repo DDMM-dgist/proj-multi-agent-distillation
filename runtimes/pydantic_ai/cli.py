@@ -24,6 +24,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional
 
+from .events import CampaignEventEmitter, stage_progress_fields, terminal_class
+
 # Meaningful, distinct exit codes.
 EXIT_SUCCESS = 0
 EXIT_VALIDATION_REJECTED = 2
@@ -73,6 +75,10 @@ def _build_parser() -> argparse.ArgumentParser:
                        help="test-only: create three PASS judge votes from frozen evidence")
     stage.add_argument("--mock-judge-response", action="append", default=[],
                        help="test-only: one canned JudgeVote JSON per judge context")
+    stage.add_argument("--quiet", action="store_true",
+                       help="suppress console progress output (durable event log is unaffected)")
+    stage.add_argument("--json-events", action="store_true",
+                       help="stream progress events as JSON lines instead of human-readable text")
     campaign = sub.add_parser(
         "run-campaign",
         help="drive a run forward across every eligible stage until completion or a pause state")
@@ -96,6 +102,10 @@ def _build_parser() -> argparse.ArgumentParser:
     campaign.add_argument("--mock-orchestrator-response", default=None,
                           help="test-only: canned RecoveryPlanProposal JSON for a pending "
                                "recovery plan (required with --runtime mock if one is pending)")
+    campaign.add_argument("--quiet", action="store_true",
+                          help="suppress console progress output (durable event log is unaffected)")
+    campaign.add_argument("--json-events", action="store_true",
+                          help="stream progress events as JSON lines instead of human-readable text")
     approve_recovery = sub.add_parser(
         "approve-recovery", help="record explicit human approval for a proposed recovery")
     approve_recovery.add_argument("--run-dir", required=True)
@@ -613,9 +623,12 @@ def _is_authoritative_binding_rejection(result):
 
 
 def _run_producer_with_binding_retries(runtime, task, spec, context, *, controller, registry,
-                                       authoritative_proposal, task_factory, budget_policy=None):
+                                       authoritative_proposal, task_factory, budget_policy=None,
+                                       emitter=None, stage_name=None):
     from types import SimpleNamespace
     from .production_router import RouteResult, run_role
+    role = authoritative_proposal.get("requested_by_role")
+    action = authoritative_proposal.get("action_type")
     result = None
     feedback = None
     for attempt in range(1, MAX_PRODUCER_GENERATION_ATTEMPTS + 1):
@@ -632,8 +645,22 @@ def _run_producer_with_binding_retries(runtime, task, spec, context, *, controll
             return RouteResult(
                 "producer_dispatch", False, False, reason, Path(""),
                 SimpleNamespace(status="INVALID", reason=reason, diagnostics=diagnostics))
+        if emitter is not None:
+            emitter.emit("role_invocation_started", stage=stage_name, role=role, action=action,
+                        detail={"attempt": attempt})
+
+        def _progress_cb(progress: dict, _emitter=emitter, _stage=stage_name, _role=role,
+                         _action=action) -> None:
+            _emitter.emit("executor_progress", stage=_stage, role=_role, action=_action,
+                         detail=progress)
+
         result = run_role(runtime, current_task, spec, context, controller=controller,
-                          registry=registry, mode="primary")
+                          registry=registry, mode="primary",
+                          progress_cb=_progress_cb if emitter is not None else None)
+        if emitter is not None:
+            emitter.emit("role_invocation_completed", stage=stage_name, role=role, action=action,
+                        detail={"attempt": attempt, "accepted": result.accepted,
+                                "status": getattr(result.detail, "status", "")})
         retryable, reason = _is_authoritative_binding_rejection(result)
         if not retryable or attempt == MAX_PRODUCER_GENERATION_ATTEMPTS:
             return result
@@ -799,7 +826,7 @@ def judge_read_allowlist(gate_context, evidence_path):
 
 
 def run_three_judge_gate(controller, stage_name, specs, runtime_factory, runtime_context_factory,
-                         evidence_path, *, mode="primary"):
+                         evidence_path, *, mode="primary", emitter=None):
     from orchestration.exchange import FileExchangeRuntime
     from .production_router import run_role
     gate_context = controller.gate_context(stage_name)
@@ -809,12 +836,22 @@ def run_three_judge_gate(controller, stage_name, specs, runtime_factory, runtime
         task = _judge_task(stage_name, index, lens, gate_context, evidence_path, controller)
         exchange.dispatch(specs["judge"], task)
         ctx = runtime_context_factory(index)
+        if emitter is not None:
+            emitter.emit("role_invocation_started", stage=stage_name, role="judge",
+                        action="judge_gate", detail={"judge_id": f"judge-{index}"})
         res = run_role(runtime_factory(index), task, specs["judge"], ctx, mode=mode)
+        if emitter is not None:
+            emitter.emit("role_invocation_completed", stage=stage_name, role="judge",
+                        action="judge_gate", detail={"judge_id": f"judge-{index}"})
         if res.error or res.detail is None:
             raise RuntimeError(f"Judge {index} failed validation: {res.error}")
         vote = dict(res.detail)
         vote["judge_id"] = f"judge-{index}"
         votes.append(vote)
+        if emitter is not None:
+            emitter.emit("judge_result", stage=stage_name, role="judge",
+                        detail={"judge_id": f"judge-{index}", "review_lens": lens.get("id"),
+                                "verdict": vote.get("verdict")})
     decision = "FAIL" if any(v["verdict"] == "FAIL" for v in votes) else (
         "PASS" if all(v["verdict"] == "PASS" for v in votes) else "REVISE")
     bundle = {**gate_context, "decision": decision, "votes": votes}
@@ -843,6 +880,8 @@ def _cmd_approve(args) -> int:
     c.grant_action_approval(args.boundary, note=args.note, plan_sha256=args.plan_sha256)
     suffix = f" plan_sha256={args.plan_sha256}" if args.plan_sha256 else ""
     print(f"approval: {args.boundary}{suffix}")
+    emitter = CampaignEventEmitter(c.run_dir, run_id=c.state.get("run_id"), quiet=True)
+    emitter.emit("approval_granted", detail={"approval_boundary": args.boundary})
     return EXIT_SUCCESS
 
 
@@ -863,7 +902,8 @@ class StageRunResult:
 
 def run_production_stage(controller, stage_name, *, runtime, agent_specs_dir="agent_specs",
                          exchange_dir=None, repo_root=".", auto_mock_judges=False,
-                         mock_response=None, mock_judge_response=None) -> StageRunResult:
+                         mock_response=None, mock_judge_response=None,
+                         emitter: Optional[CampaignEventEmitter] = None) -> StageRunResult:
     """Run ONE stage through the real production dispatch + gate path. The single production
     entry point for a stage: ``_cmd_run_stage`` (the ``run-stage`` CLI command) and
     ``run-campaign``'s forward-progression loop both call this and only this -- there is no
@@ -883,7 +923,9 @@ def run_production_stage(controller, stage_name, *, runtime, agent_specs_dir="ag
     from . import provider as _prov
 
     c = controller
+    emitter = emitter or CampaignEventEmitter(c.run_dir, quiet=True)
     c.verify_inputs()
+    emitter.emit("stage_selected", **stage_progress_fields(c, stage_name))
     stage_cfg = _stage_config(c, stage_name)
     proposal, role = _proposal_from_stage(c, stage_name, stage_cfg)
     try:
@@ -926,9 +968,14 @@ def run_production_stage(controller, stage_name, *, runtime, agent_specs_dir="ag
         if kind in _prov.LOCAL_KINDS:
             pf = _prov.preflight_local(probe=False)
             if pf.status != _prov.LOCAL_READY:
+                emitter.emit("resource_pause", stage=stage_name,
+                            detail={"status": pf.status, "reason": pf.reason})
                 return StageRunResult("PROVIDER_UNAVAILABLE", EXIT_PROVIDER_UNAVAILABLE,
                                       f"provider unavailable: {pf.status}: {pf.reason}")
             if os.environ.get("PYDANTIC_AI_SMOKE_CONFIRM") != "yes":
+                emitter.emit("approval_required", stage=stage_name,
+                            detail={"status": "APPROVAL_REQUIRED",
+                                    "approval_boundary": "PYDANTIC_AI_SMOKE_CONFIRM"})
                 return StageRunResult(
                     "APPROVAL_REQUIRED", EXIT_APPROVAL_REQUIRED,
                     "APPROVAL_REQUIRED: set PYDANTIC_AI_SMOKE_CONFIRM=yes for one live local "
@@ -946,9 +993,14 @@ def run_production_stage(controller, stage_name, *, runtime, agent_specs_dir="ag
         elif kind in _prov.HOSTED_KINDS:
             pf = _prov.preflight_credentials(provider=kind)
             if pf.status != "READY":
+                emitter.emit("resource_pause", stage=stage_name,
+                            detail={"status": pf.status, "reason": pf.reason})
                 return StageRunResult("PROVIDER_UNAVAILABLE", EXIT_PROVIDER_UNAVAILABLE,
                                       f"provider unavailable: {pf.status}: {pf.reason}")
             if os.environ.get("PYDANTIC_AI_SMOKE_CONFIRM") != "yes":
+                emitter.emit("approval_required", stage=stage_name,
+                            detail={"status": "APPROVAL_REQUIRED",
+                                    "approval_boundary": "PYDANTIC_AI_SMOKE_CONFIRM"})
                 return StageRunResult(
                     "APPROVAL_REQUIRED", EXIT_APPROVAL_REQUIRED,
                     "APPROVAL_REQUIRED: set PYDANTIC_AI_SMOKE_CONFIRM=yes for one live provider "
@@ -963,6 +1015,9 @@ def run_production_stage(controller, stage_name, *, runtime, agent_specs_dir="ag
             runtime_provider = pf.provider
             runtime_model = pf.model_id
         else:
+            emitter.emit("resource_pause", stage=stage_name,
+                        detail={"status": "PROVIDER_UNAVAILABLE",
+                                "reason": "PYDANTIC_AI_PROVIDER not set to a known provider"})
             return StageRunResult(
                 "PROVIDER_UNAVAILABLE", EXIT_PROVIDER_UNAVAILABLE,
                 "provider unavailable: set PYDANTIC_AI_PROVIDER to "
@@ -983,20 +1038,25 @@ def run_production_stage(controller, stage_name, *, runtime, agent_specs_dir="ag
     def producer_task_factory(feedback):
         return _producer_task(stage_name, role, evidence_path, c, proposal, retry_feedback=feedback)
 
+    emitter.emit("executor_started", stage=stage_name, role=role, action=proposal.get("action_type"))
     res = _run_producer_with_binding_retries(
         producer_runtime, task, specs[role], ctx, controller=c, registry=registry,
         authoritative_proposal=proposal, task_factory=producer_task_factory,
-        budget_policy=producer_budget_policy)
+        budget_policy=producer_budget_policy, emitter=emitter, stage_name=stage_name)
     status = getattr(res.detail, "status", "")
     if status == "APPROVAL_REQUIRED":
         boundary = getattr(res.detail, "reason", "") or proposal.get("approval_boundary")
+        emitter.emit("approval_required", stage=stage_name,
+                    detail={"status": status, "approval_boundary": boundary})
         return StageRunResult("APPROVAL_REQUIRED", EXIT_APPROVAL_REQUIRED,
                               f"APPROVAL_REQUIRED: {boundary}", approval_boundary=boundary,
                               action_status=status)
     if status not in {"EXECUTED", "DUPLICATE"}:
         reason = getattr(res.detail, "reason", res.error)
+        emitter.emit("executor_failed", stage=stage_name, role=role, detail={"status": status})
         return StageRunResult("DISPATCH_REJECTED", EXIT_VALIDATION_REJECTED,
                               f"stage dispatch failed: {status}: {reason}", action_status=status)
+    emitter.emit("executor_completed", stage=stage_name, role=role, detail={"status": status})
 
     declared = [(c.run_dir / rel).resolve() for rel in c.stage(stage_name).get("outputs", [])]
     missing = [str(path) for path in declared if not path.exists()]
@@ -1010,6 +1070,8 @@ def run_production_stage(controller, stage_name, *, runtime, agent_specs_dir="ag
     if c.stage(stage_name)["status"] != "completed":
         return StageRunResult("STAGE_NOT_COMPLETED", EXIT_VALIDATION_REJECTED,
                               "controller stage did not complete", action_status=status)
+    emitter.emit("artifact_registered", stage=stage_name,
+                detail={"artifacts": [str(p) for p in declared]})
     build_bounded_evidence(declared, evidence_path, protocol_refs=[c.state.get("workflow_config")],
                            validation_outcomes=_stage_validation_outcomes(c, stage_name))
 
@@ -1030,6 +1092,7 @@ def run_production_stage(controller, stage_name, *, runtime, agent_specs_dir="ag
                 f"RECOVERY_EXECUTION_UNVERIFIED: stage {stage_name!r} cannot be re-gated until "
                 "its approved recovery's corrective actions are verified against actual run "
                 "state", action_status=status)
+        emitter.emit("judging_started", stage=stage_name)
         if auto_mock_judges:
             vote_path = _write_three_pass_votes(c, stage_name)
             decision = "PASS"
@@ -1046,13 +1109,15 @@ def run_production_stage(controller, stage_name, *, runtime, agent_specs_dir="ag
                                       provider=runtime_provider, model_id=runtime_model,
                                       read_allow_prefixes=list(judge_allow), tools_enabled=False)
             decision, vote_path = run_three_judge_gate(
-                c, stage_name, specs, judge_runtime_factory, judge_ctx_factory, evidence_path)
+                c, stage_name, specs, judge_runtime_factory, judge_ctx_factory, evidence_path,
+                emitter=emitter)
         c = RunController(c.run_dir)
         if c.stage(stage_name)["gate"] != decision:
             return StageRunResult("GATE_RECORD_MISMATCH", EXIT_VALIDATION_REJECTED,
                                   "controller gate did not record the aggregate decision",
                                   gate_decision=decision, evidence_path=evidence_path,
                                   action_status=status)
+        emitter.emit("gate_recorded", stage=stage_name, detail={"decision": decision})
         if decision != "PASS":
             return StageRunResult(
                 f"GATE_{decision}", EXIT_VALIDATION_REJECTED,
@@ -1071,12 +1136,15 @@ def _cmd_run_stage(args) -> int:
     from workflow.controller import RunController
 
     c = RunController(args.run_dir)
+    emitter = CampaignEventEmitter(c.run_dir, run_id=c.state.get("run_id"),
+                                   quiet=getattr(args, "quiet", False),
+                                   json_events=getattr(args, "json_events", False))
     try:
         result = run_production_stage(
             c, args.stage, runtime=args.runtime, agent_specs_dir=args.agent_specs_dir,
             exchange_dir=args.exchange_dir, repo_root=args.repo_root,
             auto_mock_judges=args.auto_mock_judges, mock_response=args.mock_response,
-            mock_judge_response=args.mock_judge_response)
+            mock_judge_response=args.mock_judge_response, emitter=emitter)
     except Exception as exc:
         print(f"run-stage failed: {type(exc).__name__}: {exc}", file=sys.stderr)
         return EXIT_VALIDATION_REJECTED
@@ -1276,7 +1344,8 @@ def _select_reasoning_provider_runtime():
 
 def _propose_recovery_via_reasoning_roles(controller, *, runtime, agent_specs_dir, exchange_dir,
                                           repo_root, mock_analyst_response,
-                                          mock_orchestrator_response) -> CampaignRunResult:
+                                          mock_orchestrator_response,
+                                          emitter=None) -> CampaignRunResult:
     """Turn a `pending_recovery` status=="required" gate into a proposed, human-approvable
     recovery: dispatch a real Analyst for a RootCauseClassification, then a real Orchestrator for
     a RecoveryPlanProposal bound to that exact diagnosis, then bind the resulting draft through
@@ -1296,8 +1365,10 @@ def _propose_recovery_via_reasoning_roles(controller, *, runtime, agent_specs_di
     from workflow.controller import DEFAULT_RECOVERY_CAPABILITY_ROSTER
 
     c = controller
+    emitter = emitter or CampaignEventEmitter(c.run_dir, quiet=True)
     pending = c.state["pending_recovery"]
     failed_stage = pending["failed_stage"]
+    emitter.emit("recovery_started", stage=failed_stage)
     stage_names = {stage["name"] for stage in c.state["stages"]}
     available_artifacts = {a["path"] for a in c.state["artifacts"]}
     roster = c.state.get("recovery_capability_roster") or DEFAULT_RECOVERY_CAPABILITY_ROSTER
@@ -1351,9 +1422,13 @@ def _propose_recovery_via_reasoning_roles(controller, *, runtime, agent_specs_di
             classification, available_artifacts=available_artifacts,
             valid_recovery_targets=stage_names)
 
+    emitter.emit("role_invocation_started", stage=failed_stage, role="analyst",
+                action="recovery_diagnosis")
     analyst_res = run_role(analyst_runtime, analyst_task, specs["analyst"],
                            ctx_factory(analyst_provider, analyst_model), mode="primary",
                            reasoning_validator=root_cause_validator)
+    emitter.emit("role_invocation_completed", stage=failed_stage, role="analyst",
+                action="recovery_diagnosis", detail={"accepted": analyst_res.accepted})
     if not analyst_res.accepted:
         return CampaignRunResult(CAMPAIGN_FAILED, EXIT_VALIDATION_REJECTED,
                                  f"recovery diagnosis rejected: {analyst_res.error}",
@@ -1401,9 +1476,13 @@ def _propose_recovery_via_reasoning_roles(controller, *, runtime, agent_specs_di
             proposal, expected_failed_stage=failed_stage, expected_diagnosis_sha256=diagnosis_sha256,
             capability_roster=roster, valid_stage_names=stage_names)
 
+    emitter.emit("role_invocation_started", stage=failed_stage, role="orchestrator",
+                action="recovery_plan_proposal")
     orchestrator_res = run_role(orchestrator_runtime, orchestrator_task, specs["orchestrator"],
                                 ctx_factory(orchestrator_provider, orchestrator_model),
                                 mode="primary", reasoning_validator=plan_proposal_validator)
+    emitter.emit("role_invocation_completed", stage=failed_stage, role="orchestrator",
+                action="recovery_plan_proposal", detail={"accepted": orchestrator_res.accepted})
     if not orchestrator_res.accepted:
         return CampaignRunResult(CAMPAIGN_FAILED, EXIT_VALIDATION_REJECTED,
                                  f"recovery plan proposal rejected: {orchestrator_res.error}",
@@ -1432,6 +1511,7 @@ def _propose_recovery_via_reasoning_roles(controller, *, runtime, agent_specs_di
                                  f"{outcome.reason}", stage=failed_stage)
 
     recovery_id = outcome.artifact["recovery_id"]
+    emitter.emit("recovery_proposed", stage=failed_stage, detail={"recovery_id": recovery_id})
     return CampaignRunResult(
         CAMPAIGN_WAITING_FOR_HUMAN_APPROVAL, EXIT_APPROVAL_REQUIRED,
         f"WAITING_FOR_HUMAN_APPROVAL: recovery {recovery_id} for stage {failed_stage!r} has been "
@@ -1439,7 +1519,8 @@ def _propose_recovery_via_reasoning_roles(controller, *, runtime, agent_specs_di
 
 
 def _dispatch_recovery_corrective_action(controller, trigger, recovery, corrective_action,
-                                         *, registry=None) -> Optional["CampaignRunResult"]:
+                                         *, registry=None,
+                                         emitter=None) -> Optional["CampaignRunResult"]:
     """After an approved recovery's ``start_iteration()`` has quarantined ``return_stage`` (and
     everything after it) back to pending, actually perform the ONE corrective action the approved
     plan itself named -- through the SAME dispatch/controller-bridge path any other action goes
@@ -1468,6 +1549,7 @@ def _dispatch_recovery_corrective_action(controller, trigger, recovery, correcti
     from workflow.controller import DEFAULT_RECOVERY_CAPABILITY_ROSTER
 
     c = controller
+    emitter = emitter or CampaignEventEmitter(c.run_dir, quiet=True)
     return_stage = trigger["return_stage"]
     base_proposal, base_role = _proposal_from_stage(c, return_stage, _stage_config(c, return_stage))
     roster = c.state.get("recovery_capability_roster") or DEFAULT_RECOVERY_CAPABILITY_ROSTER
@@ -1482,18 +1564,33 @@ def _dispatch_recovery_corrective_action(controller, trigger, recovery, correcti
         "parameters": dict(corrective_action.get("parameters") or {}),
     }
     registry = registry if registry is not None else build_executor_registry()
-    outcome = dispatch_via_controller(proposal, controller=c, registry=registry, mode="primary")
+    emitter.emit("executor_started", stage=return_stage, role=role,
+                action=corrective_action["action_type"])
+
+    def _progress_cb(progress: dict, _emitter=emitter, _stage=return_stage, _role=role,
+                     _action=corrective_action["action_type"]) -> None:
+        _emitter.emit("executor_progress", stage=_stage, role=_role, action=_action,
+                     detail=progress)
+
+    outcome = dispatch_via_controller(proposal, controller=c, registry=registry, mode="primary",
+                                      progress_cb=_progress_cb)
     if outcome.status == "PENDING":
+        emitter.emit("executor_pending", stage=return_stage, role=role,
+                    detail={"status": outcome.status})
         return CampaignRunResult(
             CAMPAIGN_WAITING_FOR_RECOVERY_EVIDENCE, EXIT_RECOVERY_ACTION_PENDING,
             f"WAITING_FOR_RECOVERY_EVIDENCE: recovery {recovery['id']}'s corrective action for "
             f"stage {return_stage!r} has been dispatched and is still pending: {outcome.reason}",
             stage=return_stage)
     if outcome.status not in {"EXECUTED", "DUPLICATE"}:
+        emitter.emit("executor_failed", stage=return_stage, role=role,
+                    detail={"status": outcome.status})
         return CampaignRunResult(
             CAMPAIGN_FAILED, EXIT_VALIDATION_REJECTED,
             f"recovery corrective action dispatch failed: {outcome.status}: {outcome.reason}",
             stage=return_stage)
+    emitter.emit("executor_completed", stage=return_stage, role=role,
+                detail={"status": outcome.status})
     declared = [(c.run_dir / rel).resolve() for rel in c.stage(return_stage).get("outputs", [])]
     missing = [str(path) for path in declared if not path.exists()]
     if missing:
@@ -1507,14 +1604,16 @@ def _dispatch_recovery_corrective_action(controller, trigger, recovery, correcti
             "declared outputs are still missing: " + ", ".join(missing), stage=return_stage)
     if c.stage(return_stage)["status"] != "completed":
         c.complete_external_stage(return_stage, declared)
+    emitter.emit("artifact_registered", stage=return_stage,
+                detail={"artifacts": [str(p) for p in declared]})
     return None
 
 
-def run_campaign(controller, *, runtime, agent_specs_dir="agent_specs", exchange_dir=None,
+def _run_campaign_loop(controller, *, runtime, agent_specs_dir="agent_specs", exchange_dir=None,
                  repo_root=".", auto_mock_judges=False, mock_response=None,
                  mock_judge_response=None, mock_analyst_response=None,
                  mock_orchestrator_response=None, max_iterations=None,
-                 recovery_action_registry=None) -> CampaignRunResult:
+                 recovery_action_registry=None, emitter=None) -> CampaignRunResult:
     """Drive ``controller``'s run forward through ``run_production_stage`` -- the SAME production
     dispatch+gate path ``run-stage`` uses -- for as many stages as current state allows, stopping
     at the first non-forward-progress outcome instead of guessing past it.
@@ -1541,6 +1640,7 @@ def run_campaign(controller, *, runtime, agent_specs_dir="agent_specs", exchange
     from workflow.controller import RunController
 
     c = controller
+    emitter = emitter or CampaignEventEmitter(c.run_dir, quiet=True)
     if max_iterations is None:
         max_iterations = len(c.state["stages"]) + 1
     iterations = 0
@@ -1559,7 +1659,7 @@ def run_campaign(controller, *, runtime, agent_specs_dir="agent_specs", exchange
                     c, runtime=runtime, agent_specs_dir=agent_specs_dir,
                     exchange_dir=exchange_dir, repo_root=repo_root,
                     mock_analyst_response=mock_analyst_response,
-                    mock_orchestrator_response=mock_orchestrator_response)
+                    mock_orchestrator_response=mock_orchestrator_response, emitter=emitter)
             if status == "proposed":
                 recovery = next(r for r in c.state["recoveries"]
                                 if r["id"] == pending["recovery_id"])
@@ -1584,7 +1684,8 @@ def run_campaign(controller, *, runtime, agent_specs_dir="agent_specs", exchange
             return_stage = trigger["return_stage"]
             if corrective_action and c.stage(return_stage)["status"] != "completed":
                 result = _dispatch_recovery_corrective_action(
-                    c, trigger, recovery, corrective_action, registry=recovery_action_registry)
+                    c, trigger, recovery, corrective_action, registry=recovery_action_registry,
+                    emitter=emitter)
                 if result is not None:
                     return result
                 c = RunController(c.run_dir)
@@ -1596,7 +1697,7 @@ def run_campaign(controller, *, runtime, agent_specs_dir="agent_specs", exchange
         result = run_production_stage(
             c, next_stage["name"], runtime=runtime, agent_specs_dir=agent_specs_dir,
             exchange_dir=exchange_dir, repo_root=repo_root, auto_mock_judges=auto_mock_judges,
-            mock_response=mock_response, mock_judge_response=mock_judge_response)
+            mock_response=mock_response, mock_judge_response=mock_judge_response, emitter=emitter)
         if result.exit_code == EXIT_SUCCESS:
             c = RunController(c.run_dir)
             continue
@@ -1621,6 +1722,8 @@ def run_campaign(controller, *, runtime, agent_specs_dir="agent_specs", exchange
             report_path = report_dir / f"recovery-{report['recovery_id']:03d}.execution.report.json"
             report_path.write_text(json.dumps(report, indent=2) + "\n")
             c.verify_recovery_execution(report_path)
+            emitter.emit("recovery_verified", stage=next_stage["name"],
+                         detail={"recovery_id": report["recovery_id"]})
             c = RunController(c.run_dir)
             continue
         if result.reason.startswith("GATE_"):
@@ -1631,10 +1734,41 @@ def run_campaign(controller, *, runtime, agent_specs_dir="agent_specs", exchange
                                  stage=next_stage["name"], last_stage_result=result)
 
 
+def run_campaign(controller, *, runtime, agent_specs_dir="agent_specs", exchange_dir=None,
+                 repo_root=".", auto_mock_judges=False, mock_response=None,
+                 mock_judge_response=None, mock_analyst_response=None,
+                 mock_orchestrator_response=None, max_iterations=None,
+                 recovery_action_registry=None, emitter=None) -> CampaignRunResult:
+    """Thin wrapper around ``_run_campaign_loop`` that owns the campaign-level start/resume and
+    terminal outcome events -- the loop itself only ever returns once per invocation, so these are
+    the single point in the whole call graph where "campaign started/resumed" and "campaign
+    paused/completed/failed" can be emitted exactly once without threading them through every one
+    of the loop's internal return statements."""
+    c = controller
+    emitter = emitter or CampaignEventEmitter(c.run_dir, quiet=True)
+    # The durable event log itself is the observable record of whether a PRIOR run-campaign
+    # invocation ever ran against this run_dir -- unlike Controller state (whose "iterations"
+    # list is seeded at initialize() and so is non-empty even before the first invocation), this
+    # file is written only by this event layer, so its absence means genuinely first-ever.
+    emitter.emit("campaign_resumed" if emitter.events_path.exists() else "campaign_started")
+    result = _run_campaign_loop(
+        c, runtime=runtime, agent_specs_dir=agent_specs_dir, exchange_dir=exchange_dir,
+        repo_root=repo_root, auto_mock_judges=auto_mock_judges, mock_response=mock_response,
+        mock_judge_response=mock_judge_response, mock_analyst_response=mock_analyst_response,
+        mock_orchestrator_response=mock_orchestrator_response, max_iterations=max_iterations,
+        recovery_action_registry=recovery_action_registry, emitter=emitter)
+    emitter.emit(f"campaign_{terminal_class(result.outcome).lower()}", stage=result.stage,
+                detail={"outcome": result.outcome, "exit_code": result.exit_code})
+    return result
+
+
 def _cmd_run_campaign(args) -> int:
     from workflow.controller import RunController
 
     c = RunController(args.run_dir)
+    emitter = CampaignEventEmitter(c.run_dir, run_id=c.state.get("run_id"),
+                                   quiet=getattr(args, "quiet", False),
+                                   json_events=getattr(args, "json_events", False))
     try:
         result = run_campaign(
             c, runtime=args.runtime, agent_specs_dir=args.agent_specs_dir,
@@ -1642,7 +1776,7 @@ def _cmd_run_campaign(args) -> int:
             auto_mock_judges=args.auto_mock_judges, mock_response=args.mock_response,
             mock_judge_response=args.mock_judge_response,
             mock_analyst_response=args.mock_analyst_response,
-            mock_orchestrator_response=args.mock_orchestrator_response)
+            mock_orchestrator_response=args.mock_orchestrator_response, emitter=emitter)
     except Exception as exc:
         print(f"run-campaign failed: {type(exc).__name__}: {exc}", file=sys.stderr)
         return EXIT_VALIDATION_REJECTED
@@ -1656,6 +1790,9 @@ def _cmd_approve_recovery(args) -> int:
     c = RunController(args.run_dir)
     recovery = c.approve_recovery(args.approved_by, note=args.note)
     print(f"recovery approved: id={recovery['id']} failed_stage={recovery['failed_stage']}")
+    emitter = CampaignEventEmitter(c.run_dir, run_id=c.state.get("run_id"), quiet=True)
+    emitter.emit("approval_granted", stage=recovery["failed_stage"],
+                detail={"recovery_id": recovery["id"]})
     return EXIT_SUCCESS
 
 
