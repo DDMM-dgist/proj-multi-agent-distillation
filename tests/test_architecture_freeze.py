@@ -56,6 +56,15 @@ corrective_action`` fix (in ``runtimes/pydantic_ai/recovery_bridge.py`` and
 ``runtimes/pydantic_ai/cli.py``, neither of which is a frozen file). No stage, gate,
 recovery-taxonomy, capability-routing, protected-reference, schema_version, role/action-set, or
 Judge change; every other field of every frozen file is untouched.
+
+v19 (data_coverage/uncertainty/physical_validation/analysis executor closure) deliberately
+re-froze actions.py to add four new backed action_type entries — see FREEZE_REVISION below for
+exactly what changed and what deliberately did not.
+
+v20 (R19 forensic-defect corrections: idempotent dispatch + partial-Judge-resume + atomic UTF-8
+persistence) deliberately re-froze orchestration/exchange.py, runtimes/pydantic_ai/driver.py, and
+runtimes/pydantic_ai/production_router.py again for the same reason as v10-v19 — see
+FREEZE_REVISION below for exactly what changed and what deliberately did not.
 """
 from __future__ import annotations
 
@@ -404,7 +413,60 @@ FREEZE_REVISION = (
     "config with no explicit pydantic_ai block for one of them (e.g. a frozen production config "
     "like R17's) is completely unaffected and continues to fail closed exactly as before. No stage, "
     "gate, recovery-taxonomy, capability-routing, protected-reference, schema_version, or Judge "
-    "change; every other frozen file, and every other field of actions.py, is untouched."
+    "change; every other frozen file, and every other field of actions.py, is untouched. "
+    "v20 (R19 forensic-defect corrections: idempotent dispatch + partial-Judge-resume + atomic "
+    "UTF-8 persistence) re-freezes orchestration/exchange.py, runtimes/pydantic_ai/driver.py, and "
+    "runtimes/pydantic_ai/production_router.py to close one bounded durability defect family "
+    "found by forensic analysis of a real production run (R19) that hit an interrupted "
+    "three-Judge gate: Judge 1's accepted result already existed, Judge 2's raw-response write "
+    "was cut short by a UnicodeEncodeError (leaving a zero-byte raw file) under a non-UTF-8 "
+    "default locale, and resuming crashed again with a bare FileExistsError from "
+    "FileExchangeRuntime.dispatch before even re-invoking Judge 1. Three changes, deliberately "
+    "combined into one revision because they are one defect family: (1) FileExchangeRuntime."
+    "dispatch is now idempotent and immutable rather than fail-if-exists: task identity "
+    "(task_id) stays deterministic; if no packet exists one is written; if one exists, its "
+    "content is canonically compared (json.dumps(..., sort_keys=True)) against the newly "
+    "derived task -- identical content is reused as a no-op, differing content fails closed "
+    "with the new TaskPacketConflictError (a FileExistsError subclass, so any existing bare "
+    "`except FileExistsError` handler -- e.g. runtimes/pydantic_ai/cli.py's single-role-invoke "
+    "command, not itself a frozen file -- still catches it); the existing conflicting packet is "
+    "never deleted, renamed, or overwritten. (2) every textual JSON/text write in the exchange "
+    "persistence path -- FileExchangeRuntime.dispatch/_preserve_raw/accept (exchange.py), "
+    "driver._write_record (the shared provenance-write primitive used by both driver.run_task "
+    "and, via import, production_router.run_role), and production_router."
+    "_persist_reasoning_artifact -- now goes through one new shared helper, orchestration."
+    "exchange.atomic_write_text(path, text, encoding=\"utf-8\"): write to a fresh temp file in "
+    "the same directory, flush+fsync, then os.replace onto the target only after encoding/"
+    "writing fully succeeds; any exception (including a UnicodeEncodeError) removes the temp "
+    "file and re-raises without ever truncating or corrupting the existing durable file at the "
+    "target path. Every read of a file written this way (dispatch's own existing-packet "
+    "comparison, collect, accept's task-packet read) is likewise made an explicit "
+    "encoding=\"utf-8\" read instead of the platform/locale default, so a file written as UTF-8 "
+    "is not later unreadable under an ASCII/C/POSIX locale. Raw-response suffix-on-"
+    "resubmission preservation (_preserve_raw) and the reasoning-output/provenance attempt-"
+    "scoped filename conventions are entirely UNCHANGED -- only the underlying write primitive "
+    "is atomic+UTF-8 now. No hidden chain-of-thought retention policy changed; this is a "
+    "persistence-integrity fix only. (3) runtimes/pydantic_ai/cli.py (NOT a frozen file) gained "
+    "resume-aware per-Judge-index logic in run_three_judge_gate: for each judge index the "
+    "deterministic task is always re-derived and (re-)dispatched (idempotent per (1)); a new "
+    "helper, _resume_judge_vote, checks whether an already-accepted result exists at "
+    "exchange/results/{task_id}.json, and if so revalidates it against the CURRENT criteria/"
+    "review_lens (validate_judge_vote) and requires a corresponding accepted=true provenance "
+    "record (via the new _accepted_judge_provenance_exists) -- if both hold, that vote is "
+    "reused and the Judge is NOT invoked again; if no result exists yet (including when only a "
+    "malformed/zero-byte/incomplete raw response is present, which is never treated as accepted "
+    "state, since accept() only ever writes results/ after full contract validation), the Judge "
+    "is invoked exactly once for that index; any existing result that no longer cleanly binds "
+    "to the currently derived task fails closed via the new JudgeResumeConflictError. Gate "
+    "aggregation itself is UNCHANGED: votes (reused or freshly invoked) are collected exactly "
+    "as before, the decision is computed the same way, and controller.record_gate is still "
+    "called exactly once at the end -- no new Gate-checkpointing mechanism was introduced "
+    "because the existing all-or-nothing record_gate call was already atomic (confirmed during "
+    "the R19 forensic audit: the interrupted run's gates/ directory was empty, proving Gate "
+    "aggregation was never partially recorded). No stage, contract, recovery-taxonomy, "
+    "capability-routing, protected-reference, schema_version, role/action-set, or Judge-vote "
+    "SEMANTIC change (the Judge lens/criteria/verdict contract is identical); every other "
+    "frozen file, and every other field of the three re-frozen files, is untouched."
 )
 FROZEN_MODEL = "qwen2.5-7b-instruct"
 
@@ -414,7 +476,7 @@ FROZEN = {
     "agents/judge.md":
         "cc32f81efdbf825067f2688eb78a2f41982f9183ef78a33badb31906dabc8aa8",
     "orchestration/exchange.py":
-        "f29362891c18c728dc9de0a8c3ee51590c9be6be53f5b811bdfd861d0e82a8ae",
+        "be100a2525cc8b64c680462aa7fde2ef74d547223e84cb1ece2f081484a23669",
     "runtimes/pydantic_ai/tool_registry.py":
         "3d398a718da1c9e89d03585acdc9fafcfeb2d4767569ffac6027edcd13c1e467",
     "runtimes/pydantic_ai/models.py":
@@ -424,9 +486,9 @@ FROZEN = {
     "runtimes/pydantic_ai/role_outputs.py":
         "2ca372aea8a105504fa8ed08c9e2fe47b04733564046b788b92d586139e4708a",
     "runtimes/pydantic_ai/production_router.py":
-        "85cd6e73eabeb3f03ea29cc809f5d00e0f494b3bf6e37f5b205bc9875b91e65a",
+        "ff8d2f36d453775a46de25d85f9464c20fa8831bf68f5124f2c8c58b2079ac0f",
     "runtimes/pydantic_ai/driver.py":
-        "571636918a2827ceded12e9ee3b0cad7f23ab73887d61ed0cc2b6d5727986719",
+        "db480c20d126b7511e8bbaa4fc2018adb56aa789fabe496ba4f08313379f5939",
     "runtimes/pydantic_ai/actions.py":
         "72e2877c9ae73fb9914c6c6f991afbd7ddb2bd61d796f35c920a8072106a8088",
     "runtimes/pydantic_ai/controller_bridge.py":

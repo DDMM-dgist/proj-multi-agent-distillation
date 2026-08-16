@@ -205,12 +205,15 @@ def _accept_typed_result(invocation, spec, context, mode) -> RouteResult:
 def _persist_reasoning_artifact(context, rec, instance) -> tuple[Path, str]:
     """Hash-bind the accepted reasoning output as its own on-disk artifact (distinct from the
     provenance record, which is a per-attempt log): attempt-scoped filename so a retry never
-    overwrites a prior accepted artifact, mirroring driver._write_record's convention."""
+    overwrites a prior accepted artifact, mirroring driver._write_record's convention. The write
+    is atomic and explicit UTF-8, so a failed encode/write never truncates or corrupts an
+    existing durable artifact."""
+    from orchestration.exchange import atomic_write_text
     from workflow.integrity import sha256_file
     out_dir = Path(context.exchange_dir).resolve() / "reasoning_outputs"
     out_dir.mkdir(parents=True, exist_ok=True)
     path = out_dir / f"{rec.task_id}.{rec.attempt_id}.{type(instance).__name__}.json"
-    path.write_text(instance.model_dump_json(indent=2) + "\n")
+    atomic_write_text(path, instance.model_dump_json(indent=2) + "\n")
     return path, sha256_file(path)
 
 

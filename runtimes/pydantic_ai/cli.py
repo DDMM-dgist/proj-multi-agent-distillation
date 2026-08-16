@@ -886,16 +886,95 @@ def judge_read_allowlist(gate_context, evidence_path):
     return []
 
 
+class JudgeResumeConflictError(RuntimeError):
+    """Raised when a persisted judge-gate result/provenance binding conflicts with the currently
+    derived task for the same task_id (e.g. a stale result no longer matching the run's current
+    criteria/review_lens, or a result with no corresponding accepted=true provenance record).
+    Fails closed rather than silently reusing or overwriting an inconsistent record."""
+
+
+def _accepted_judge_provenance_exists(exchange, task_id: str) -> bool:
+    prov_dir = exchange.exchange_dir / "provenance"
+    if not prov_dir.is_dir():
+        return False
+    for path in prov_dir.glob(f"{task_id}.*.json"):
+        try:
+            rec = json.loads(path.read_text(encoding="utf-8"))
+        except (json.JSONDecodeError, OSError):
+            continue  # a malformed/partial provenance record is never treated as accepted
+        if rec.get("task_id") == task_id and rec.get("accepted") is True:
+            return True
+    return False
+
+
+def _resume_judge_vote(exchange, task):
+    """Resume-aware Judge-vote resolution for one already-dispatched judge task (Part B of the
+    R19 durability revision).
+
+    Returns an already-accepted, revalidated vote dict to reuse (the Judge is NOT invoked again),
+    or ``None`` if no accepted result exists yet and the Judge must actually be invoked this run.
+    A malformed/zero-byte/incomplete raw response never counts as accepted state, because
+    ``FileExchangeRuntime.accept`` only ever writes to ``results/`` after full contract validation
+    succeeds -- so the mere existence of a raw response is not checked here at all. Any existing
+    result that no longer binds cleanly to the currently derived task (wrong lens/criteria, or no
+    matching accepted=true provenance record) fails closed via ``JudgeResumeConflictError`` rather
+    than being silently reused or replaced."""
+    from orchestration.exchange import validate_judge_vote
+    task_id = task["task_id"]
+    result_path = exchange.inbox / f"{task_id}.json"
+    if not result_path.is_file():
+        return None
+    try:
+        raw_result = json.loads(result_path.read_text(encoding="utf-8"))
+    except json.JSONDecodeError as exc:
+        raise JudgeResumeConflictError(
+            f"existing judge result at {result_path} is not valid JSON: {exc}") from exc
+    try:
+        validated = validate_judge_vote(raw_result, list(task["criteria"]),
+                                        task["context"]["review_lens"])
+    except ValueError as exc:
+        raise JudgeResumeConflictError(
+            f"existing judge result at {result_path} does not match the currently derived "
+            f"criteria/review_lens for task_id={task_id!r}: {exc}") from exc
+    if not _accepted_judge_provenance_exists(exchange, task_id):
+        raise JudgeResumeConflictError(
+            f"judge result at {result_path} exists with no corresponding accepted=true "
+            f"provenance record for task_id={task_id!r}")
+    return validated
+
+
 def run_three_judge_gate(controller, stage_name, specs, runtime_factory, runtime_context_factory,
                          evidence_path, *, mode="primary", emitter=None):
-    from orchestration.exchange import FileExchangeRuntime
+    """Run (or resume) the three-Judge gate for ``stage_name``.
+
+    Resume-aware per Judge index: the expected task packet is always deterministically re-derived
+    and (re-)dispatched (idempotent no-op if identical content already exists; fails closed via
+    ``TaskPacketConflictError`` if it conflicts -- see ``FileExchangeRuntime.dispatch``). If an
+    already-accepted, still-valid result exists for that exact task, it is reused and the Judge is
+    NOT invoked again; otherwise the Judge is invoked exactly once for that index. Gate aggregation
+    is unchanged: all votes (reused or freshly invoked) are collected, the decision is computed,
+    and ``controller.record_gate`` is called exactly once at the end, atomically, as before."""
+    from orchestration.exchange import FileExchangeRuntime, TaskPacketConflictError
     from .production_router import run_role
     gate_context = controller.gate_context(stage_name)
     exchange = FileExchangeRuntime(runtime_context_factory(1).exchange_dir)
     votes = []
     for index, lens in enumerate(gate_context["review_lenses"], 1):
         task = _judge_task(stage_name, index, lens, gate_context, evidence_path, controller)
-        exchange.dispatch(specs["judge"], task)
+        try:
+            exchange.dispatch(specs["judge"], task)
+        except TaskPacketConflictError:
+            raise  # never overwrite a conflicting existing task packet; fail closed
+        reused = _resume_judge_vote(exchange, task)
+        if reused is not None:
+            vote = dict(reused)
+            vote["judge_id"] = f"judge-{index}"
+            votes.append(vote)
+            if emitter is not None:
+                emitter.emit("judge_result", stage=stage_name, role="judge",
+                            detail={"judge_id": f"judge-{index}", "review_lens": lens.get("id"),
+                                    "verdict": vote.get("verdict"), "resumed": True})
+            continue
         ctx = runtime_context_factory(index)
         if emitter is not None:
             emitter.emit("role_invocation_started", stage=stage_name, role="judge",
@@ -912,7 +991,7 @@ def run_three_judge_gate(controller, stage_name, specs, runtime_factory, runtime
         if emitter is not None:
             emitter.emit("judge_result", stage=stage_name, role="judge",
                         detail={"judge_id": f"judge-{index}", "review_lens": lens.get("id"),
-                                "verdict": vote.get("verdict")})
+                                "verdict": vote.get("verdict"), "resumed": False})
     decision = "FAIL" if any(v["verdict"] == "FAIL" for v in votes) else (
         "PASS" if all(v["verdict"] == "PASS" for v in votes) else "REVISE")
     bundle = {**gate_context, "decision": decision, "votes": votes}
@@ -2061,8 +2140,11 @@ def main(argv=None) -> int:
     try:
         res = run_role(runtime, task, spec, ctx, controller=controller, registry=registry,
                        mode=cli_mode)
-    except FileExistsError:
-        print("duplicate task dispatch (task packet already exists)", file=sys.stderr)
+    except FileExistsError as exc:
+        # An identical re-dispatch is now a silent no-op (see FileExchangeRuntime.dispatch); this
+        # only fires for a genuine task-identity conflict (TaskPacketConflictError) or another
+        # component's own pre-existing FileExistsError guard.
+        print(f"task identity conflict: {exc}", file=sys.stderr)
         return EXIT_DUPLICATE
     except Exception as exc:  # pragma: no cover
         print(f"internal error: {exc}", file=sys.stderr)

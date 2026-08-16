@@ -1,11 +1,53 @@
 """Provider-neutral JSON task/result packets for agent runtimes."""
 import datetime as dt
 import json
+import os
+import tempfile
 import uuid
 from pathlib import Path
 from typing import Any, Mapping
 
 from .specs import AgentSpec, RESULT_STATUSES
+
+
+def atomic_write_text(path: Path, text: str, *, encoding: str = "utf-8") -> None:
+    """Write ``text`` to ``path`` durably and atomically: encode+write to a fresh temp file in the
+    SAME directory, flush + fsync it, then ``os.replace`` it onto the target only after encoding
+    and writing fully succeed. If anything raises (including a ``UnicodeEncodeError`` from
+    non-ASCII text under a non-UTF-8 default locale) the temp file is removed and the exception is
+    re-raised -- ``path`` is left completely untouched, never truncated or partially written.
+    Every textual JSON/text persistence call site in the exchange layer must go through this
+    (never a bare ``Path.write_text``), and always with an explicit encoding rather than the
+    platform/locale default."""
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fd, tmp_name = tempfile.mkstemp(dir=str(path.parent), prefix=f".{path.name}.", suffix=".tmp")
+    try:
+        with os.fdopen(fd, "w", encoding=encoding) as fh:
+            fh.write(text)
+            fh.flush()
+            os.fsync(fh.fileno())
+        os.replace(tmp_name, str(path))
+    except BaseException:
+        try:
+            os.unlink(tmp_name)
+        except OSError:
+            pass
+        raise
+
+
+def _canonical(payload: Mapping[str, Any]) -> str:
+    return json.dumps(payload, sort_keys=True, separators=(",", ":"))
+
+
+class TaskPacketConflictError(FileExistsError):
+    """Raised by ``FileExchangeRuntime.dispatch`` when a task packet already exists on disk with
+    content that differs from the newly derived task under the same deterministic ``task_id``.
+
+    Task identity is immutable: re-dispatching the identical task is a no-op reuse (never an
+    error), but two DIFFERENT task contents can never legitimately share one task_id, so this is a
+    hard, fail-closed stop -- the existing, possibly-in-flight-or-already-answered packet is never
+    silently overwritten, deleted, or renamed aside."""
 
 
 def _now() -> str:
@@ -299,11 +341,25 @@ class FileExchangeRuntime:
         self.raw.mkdir(parents=True, exist_ok=True)
 
     def dispatch(self, spec: AgentSpec, task: Mapping[str, Any]) -> Path:
+        """Idempotent, immutable task dispatch. Task identity (``task_id``) is deterministic and
+        immutable: if no packet exists yet, one is written (atomically, UTF-8). If a packet
+        already exists, its content is canonically compared against the newly derived task --
+        identical content is reused as a no-op (so a restarted/resumed caller can safely
+        re-derive and re-dispatch the same task without error), while differing content under the
+        same task_id is a genuine identity conflict and fails closed with
+        ``TaskPacketConflictError`` rather than ever overwriting, deleting, or renaming aside the
+        existing packet."""
         task = validate_task(task, spec)
         path = self.outbox / f"{task['task_id']}.json"
         if path.exists():
-            raise FileExistsError(f"task packet already exists: {path}")
-        path.write_text(json.dumps(task, indent=2) + "\n")
+            existing = json.loads(path.read_text(encoding="utf-8"))
+            if _canonical(existing) == _canonical(task):
+                return path  # identical re-dispatch: idempotent no-op, reuse the existing packet
+            raise TaskPacketConflictError(
+                f"task packet conflict for task_id={task['task_id']!r}: an existing packet at "
+                f"{path} has different content than the newly derived task; task identity is "
+                "immutable and the existing packet is never overwritten")
+        atomic_write_text(path, json.dumps(task, indent=2) + "\n")
         return path
 
     def collect(self, spec: AgentSpec, task_id: str) -> dict[str, Any]:
@@ -313,8 +369,8 @@ class FileExchangeRuntime:
         task_path = self.outbox / f"{task_id}.json"
         if not task_path.is_file():
             raise FileNotFoundError(f"dispatched task packet is missing: {task_path}")
-        return validate_agent_response(json.loads(path.read_text()), spec,
-                                       json.loads(task_path.read_text()))
+        return validate_agent_response(json.loads(path.read_text(encoding="utf-8")), spec,
+                                       json.loads(task_path.read_text(encoding="utf-8")))
 
     def _preserve_raw(self, task_id: str, raw_text: str) -> Path:
         """Write the unedited response bytes before any parse/validation.
@@ -322,13 +378,16 @@ class FileExchangeRuntime:
         Re-submissions never overwrite a prior raw file: the second and later
         responses for a task land at ``{task_id}.1.json``, ``.2.json``, ... so
         the full audit trail of what each agent actually emitted is retained.
+        The write itself is atomic and explicit UTF-8: a raw response containing non-ASCII text
+        (e.g. an em dash) must never leave a truncated/zero-byte file behind under a non-UTF-8
+        default locale.
         """
         target = self.raw / f"{task_id}.json"
         suffix = 0
         while target.exists():
             suffix += 1
             target = self.raw / f"{task_id}.{suffix}.json"
-        target.write_text(raw_text)
+        atomic_write_text(target, raw_text)
         return target
 
     def accept(self, spec: AgentSpec, task_id: str, raw_text: str) -> dict[str, Any]:
@@ -355,10 +414,10 @@ class FileExchangeRuntime:
             ) from error
         try:
             validated = validate_agent_response(
-                payload, spec, json.loads(task_path.read_text()))
+                payload, spec, json.loads(task_path.read_text(encoding="utf-8")))
         except ValueError as error:
             raise ValueError(f"{error} (raw preserved at {raw_path})") from error
 
         result_path = self.inbox / f"{task_id}.json"
-        result_path.write_text(json.dumps(validated, indent=2) + "\n")
+        atomic_write_text(result_path, json.dumps(validated, indent=2) + "\n")
         return validated

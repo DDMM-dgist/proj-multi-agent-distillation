@@ -12,7 +12,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-from orchestration.exchange import FileExchangeRuntime, validate_agent_response
+from orchestration.exchange import FileExchangeRuntime, atomic_write_text, validate_agent_response
 
 from .interface import AgentInvocation
 from .models import RuntimeContext, ValidationErrorRecord
@@ -29,9 +29,11 @@ class DriverResult:
 
 
 def _write_record(prov_dir: Path, rec) -> Path:
-    # Attempt-scoped filename so retries never overwrite a prior attempt's record.
+    # Attempt-scoped filename so retries never overwrite a prior attempt's record. Written
+    # atomically and as explicit UTF-8 so a failed encode/write (e.g. non-ASCII raw_response text
+    # under a non-UTF-8 default locale) can never truncate or corrupt an existing record.
     path = prov_dir / f"{rec.task_id}.{rec.attempt_id}.json"
-    path.write_text(rec.model_dump_json(indent=2) + "\n")
+    atomic_write_text(path, rec.model_dump_json(indent=2) + "\n")
     return path
 
 
