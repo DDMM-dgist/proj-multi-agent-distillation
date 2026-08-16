@@ -106,7 +106,14 @@ stages:
     # role/action are canonical (runtimes/pydantic_ai/actions.py + executors.py::BINDINGS);
     # parameters are run-specific and must be filled before initialization -- see
     # _exec_build_physical_validation_report for the required keys (validation_profile,
-    # frames_path, report_path, ...).
+    # frames_path, report_path, ...). If frames_path will resolve to a raw LAMMPS dump
+    # (integer atom types, no per-atom element/species column), parameters MUST also bind
+    # student_config to the run's deployed Student configuration (the same file whose
+    # deploy.elements ordering built the MD's pair_coeff line) as a declared workflow input,
+    # e.g. student_config: "{run_dir}/inputs/00N-student.<kind>.yaml" -- cli.py resolves the
+    # authoritative specorder from student_config.deploy.elements at dispatch (Controller-
+    # bound hash, never a model-supplied one) and fails closed if it cannot. Self-describing
+    # frame formats (e.g. extxyz) never need student_config.
     pydantic_ai:
       role: simulation
       action: build_physical_validation_report

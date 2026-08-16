@@ -212,6 +212,54 @@ def _fill_default_parameters(controller, stage_name, params):
     return params
 
 
+def _resolve_physical_validation_species_mapping(controller, params):
+    """Resolve physical_validation's LAMMPS type->species ordering from the
+    Controller-bound ``student_config``'s ``deploy.elements`` -- the same ordering
+    already used to build that config's LAMMPS ``pair_coeff`` line -- rather than
+    trusting any model-supplied mapping. A stage config MAY also carry a literal
+    ``specorder`` override, but only as a redundant check against the authoritative
+    source: it must match exactly, or dispatch fails closed. No ``student_config`` ->
+    no injected mapping at all (self-describing frame formats like extxyz never
+    needed one; a raw LAMMPS dump that needs one will fail closed inside the
+    executor itself, via validation.species_mapping.requires_specorder)."""
+    import yaml
+    from validation.species_mapping import validate_specorder
+    student_config = params.get("student_config")
+    explicit_specorder = params.get("specorder")
+    if not student_config:
+        if explicit_specorder:
+            raise ValueError(
+                "physical_validation was given an explicit specorder override with no bound "
+                "student_config to prove its provenance against; bind "
+                "pydantic_ai.parameters.student_config or remove the override")
+        return params
+    resolved_path = str(Path(student_config).resolve())
+    bound_hash = None
+    for record in controller.state.get("inputs", []):
+        candidates = {record.get("source"), record.get("snapshot")} - {None}
+        if any(str(Path(raw).resolve()) == resolved_path for raw in candidates):
+            bound_hash = record.get("sha256")
+            break
+    if not bound_hash:
+        raise ValueError(
+            "physical_validation student_config is not a controller-bound input; it must be "
+            "declared under the workflow's top-level inputs so its hash is Controller-verified")
+    cfg = yaml.safe_load(Path(resolved_path).read_text()) or {}
+    specorder = validate_specorder((cfg.get("deploy") or {}).get("elements"))
+    if explicit_specorder and list(explicit_specorder) != specorder:
+        raise ValueError(
+            "physical_validation explicit specorder override contradicts the authoritative "
+            f"student_config deploy.elements ordering ({explicit_specorder!r} != {specorder!r})")
+    params = dict(params)
+    params.pop("specorder", None)
+    params["species_mapping"] = {
+        "source": "student_config.deploy.elements",
+        "specorder": specorder,
+        "student_config_sha256": bound_hash,
+    }
+    return params
+
+
 def _protected_reference_from_inputs(controller):
     import yaml
     from validation.protected_reference import validate_reference_config
@@ -283,6 +331,8 @@ def _proposal_from_stage(controller, stage_name, stage_cfg):
         snapshot_path = snapshot_dir / "run_state.snapshot.json"
         snapshot_path.write_text(json.dumps(_assemble_run_summary_state(controller), indent=2) + "\n")
         params["run_state_path"] = str(snapshot_path.resolve())
+    if action == "build_physical_validation_report":
+        params = _resolve_physical_validation_species_mapping(controller, params)
     # Idempotency is scoped to the CURRENT recovery iteration, not just the stage: quarantining a
     # stage's outputs at start_iteration() is meaningless if the very next dispatch of that same
     # stage/action is silently treated as a DUPLICATE of the pre-recovery attempt and never

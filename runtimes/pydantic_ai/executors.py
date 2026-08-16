@@ -327,6 +327,7 @@ def _exec_build_physical_validation_report(proposal):
     from validation.structure_dynamics import (compute_rdf, compute_coordination,
                                                 compute_density, compute_msd, compute_nve_drift)
     from validation.report import make_check, validate_validation_report
+    from validation.species_mapping import requires_specorder, validate_specorder
     from workflow.integrity import artifact_digest
     p = _params(proposal)
     profile_path = Path(p["validation_profile"]).resolve()
@@ -336,7 +337,20 @@ def _exec_build_physical_validation_report(proposal):
         raise ValueError("validation_profile has no declared checks")
 
     frames_path = Path(p["frames_path"]).resolve()
-    frames = read(str(frames_path), index=":")
+    species_mapping = p.get("species_mapping")
+    read_kwargs = {}
+    if requires_specorder(frames_path):
+        # A raw LAMMPS dump's integer atom types are meaningless without an
+        # authoritative mapping (see validation.species_mapping) -- fail closed rather
+        # than let ASE silently reinterpret them as atomic numbers.
+        if not species_mapping or not species_mapping.get("specorder"):
+            raise ValueError(
+                "physical_validation frames_path is a LAMMPS dump with integer atom types "
+                "and no resolved species_mapping.specorder was supplied; bind a student_config "
+                "(deploy.elements) to this stage so the Student deployment's authoritative "
+                "type ordering can be resolved before dispatch")
+        read_kwargs["specorder"] = validate_specorder(species_mapping["specorder"])
+    frames = read(str(frames_path), index=":", **read_kwargs)
     if not frames:
         raise ValueError("physical_validation frames_path is empty")
     elements = p.get("elements") or sorted({s for atoms in frames for s in atoms.get_chemical_symbols()})
@@ -397,6 +411,8 @@ def _exec_build_physical_validation_report(proposal):
         "checks": checks,
         "evidence": evidence,
     }
+    if species_mapping:
+        report["species_mapping"] = species_mapping
     report_path = Path(p["report_path"])
     report_path.parent.mkdir(parents=True, exist_ok=True)
     report_path.write_text(json.dumps(report, indent=2) + "\n")

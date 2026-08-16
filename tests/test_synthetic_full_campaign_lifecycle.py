@@ -350,6 +350,61 @@ def _physical_validation_stage_cfg(root: Path, shared: dict) -> tuple:
     return cfg, [frames_path, shared["validation_profile"]]
 
 
+_LAMMPS_DUMP_TEMPLATE = """ITEM: TIMESTEP
+0
+ITEM: NUMBER OF ATOMS
+{n_atoms}
+ITEM: BOX BOUNDS pp pp pp
+0.0 10.0
+0.0 10.0
+0.0 10.0
+ITEM: ATOMS id type x y z fx fy fz
+{atom_lines}
+"""
+
+
+def _physical_validation_lammps_stage_cfg(root: Path, shared: dict, student_config: Path) -> tuple:
+    """Same production route/contract as ``_physical_validation_stage_cfg``, but
+    ``frames_path`` is a REAL raw LAMMPS dump (integer atom types, no element column
+    -- see ``templates/lammps/prod_md.in.template``) with a bound ``student_config``,
+    proving cli.py resolves the authoritative specorder from
+    ``student_config.deploy.elements`` end to end through the real production dispatch."""
+    frames_path = root / "physical_validation_trajectory.dump"
+    positions = [(0, 0, 0), (1.6, 0, 0), (0, 1.6, 0), (0, 0, 1.6)]
+    # deploy.elements == [O, Si] -> type 1 = O, type 2 = Si; types below match the
+    # Si,Si,O,O composition _physical_validation_stage_cfg already exercises via extxyz.
+    types = [2, 2, 1, 1]
+    lines = [f"{i} {t} {pos[0]} {pos[1]} {pos[2]} 0.0 0.0 0.0"
+            for i, (t, pos) in enumerate(zip(types, positions), start=1)]
+    frames_path.write_text(_LAMMPS_DUMP_TEMPLATE.format(n_atoms=len(types),
+                                                        atom_lines="\n".join(lines)))
+    cfg = {
+        "name": "physical_validation", "command": None,
+        "outputs": ["artifacts/physical_validation_report.json"],
+        "gate": {"criteria": ["physical validation report is complete"]},
+        "contract": {
+            "kind": "validation_manifest",
+            "manifest": "artifacts/physical_validation_report.json",
+            "validator": "validation.report.validate_validation_report",
+        },
+        "pydantic_ai": {
+            "role": "simulation", "action": "build_physical_validation_report",
+            "idempotency_key": "synthetic-path:physical_validation_lammps:001",
+            "parameters": {
+                "validation_profile": str(shared["validation_profile"]),
+                "frames_path": str(frames_path),
+                "student_config": str(student_config),
+                "r_max": 4.0,
+                "cutoffs": {"Si-O": 2.2, "default": 3.0},
+                "energies": [-10.0, -10.0001, -10.0002],
+                "n_atoms": 4,
+                "report_path": "{artifacts_dir}/physical_validation_report.json",
+            },
+        },
+    }
+    return cfg, [frames_path, shared["validation_profile"], student_config]
+
+
 def _analysis_stage_cfg(root: Path, shared: dict) -> tuple:
     cfg = {
         "name": "analysis", "command": None,
@@ -395,7 +450,12 @@ def _manual_stage_cfg(name: str) -> dict:
            "gate": {"criteria": [f"{name} is complete"]}}
 
 
-def _twelve_stage_workflow(root: Path, automated_stage_names) -> Path:
+def _twelve_stage_workflow(root: Path, automated_stage_names, extra_workflow_inputs=(),
+                          stage_overrides=None) -> Path:
+    """``stage_overrides`` (optional ``{stage_name: callable(root, shared) -> (cfg,
+    inputs)}``) lets a caller substitute one target stage's automated config for a
+    variant that still shares the SAME campaign-level ``shared`` configs (e.g. a real
+    LAMMPS-dump ``physical_validation`` variant) without duplicating this function."""
     training, evaluation = _training_evaluation_stage_cfgs(root)
     by_name = {"dataset_split": _dataset_split_stage_cfg(root), "training": training,
               "evaluation": evaluation}
@@ -404,9 +464,13 @@ def _twelve_stage_workflow(root: Path, automated_stage_names) -> Path:
 
     shared = (_shared_campaign_configs(root)
              if automated_stage_names & _NEEDS_SHARED_CONFIGS else None)
-    extra_inputs = []
+    extra_inputs = list(extra_workflow_inputs)
     for name in TARGET_STAGES:
-        if name in automated_stage_names:
+        if stage_overrides and name in stage_overrides:
+            cfg, stage_inputs = stage_overrides[name](root, shared)
+            by_name[name] = cfg
+            extra_inputs.extend(stage_inputs)
+        elif name in automated_stage_names:
             cfg, stage_inputs = _AUTOMATED_STAGE_CFG[name](root, shared)
             by_name[name] = cfg
             extra_inputs.extend(stage_inputs)
@@ -551,6 +615,37 @@ class SyntheticCampaignLifecyclePathsTests(unittest.TestCase):
             root = Path(tmp)
             workflow = _twelve_stage_workflow(root, automated_stage_names=set())
             _drive_campaign_to_completion(root, workflow, manual_stage_names=set(TARGET_STAGES))
+
+    def test_path_d_physical_validation_reads_lammps_dump_via_bound_student_config(self):
+        """The EXECUTOR_SPECIES_MAPPING_BUG fix, exercised through the real 12-stage
+        production dispatch: physical_validation's frames_path is a genuine raw LAMMPS
+        dump (integer atom types, no element column) instead of the self-describing
+        extxyz the other paths use, with a bound student_config declaring deploy.
+        elements == [O, Si]. Proves the campaign still reaches COMPLETED and that the
+        resolved species_mapping (Controller-bound, not model-supplied) is recorded in
+        the report with the correct O/Si species -- not the H/He an unmapped read
+        would silently produce."""
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            student_config = root / "student.simple-nn.yaml"
+            student_config.write_text(yaml.safe_dump(
+                {"kind": "mock", "deploy": {"lammps_pair_style": "nn", "elements": ["O", "Si"]}}))
+
+            def _lammps_override(root, shared):
+                return _physical_validation_lammps_stage_cfg(root, shared, student_config)
+
+            workflow = _twelve_stage_workflow(
+                root, automated_stage_names=set(TARGET_STAGES),
+                extra_workflow_inputs=[student_config],
+                stage_overrides={"physical_validation": _lammps_override})
+            c = _drive_campaign_to_completion(root, workflow, manual_stage_names=set())
+            report = json.loads(
+                (c.run_dir / "artifacts" / "physical_validation_report.json").read_text())
+            self.assertEqual(report["species_mapping"]["specorder"], ["O", "Si"])
+            self.assertEqual(report["species_mapping"]["source"], "student_config.deploy.elements")
+            names = {chk["observable"] for chk in report["checks"]}
+            self.assertIn("rdf_Si_Si", names)
+            self.assertIn("coordination_O", names)
 
 
 if __name__ == "__main__":  # pragma: no cover
