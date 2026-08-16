@@ -38,7 +38,84 @@ def register_json_evidence_adapter(
     _JSON_EVIDENCE_ADAPTERS.append((summary_key, predicate, summarizer))
 
 
-def _frame_summary(path: Path) -> dict:
+def _frame_category(atoms) -> str:
+    """A frame's source category. Prefers ``source_category`` -- the field frozen teacher_baseline
+    (and other original-split-sourced) frames actually carry -- over the legacy generic
+    ``config_type``/``source`` keys, which remain the fallback for evidence produced by code paths
+    that never adopted ``source_category``."""
+    return str(atoms.info.get(
+        "source_category", atoms.info.get("config_type", atoms.info.get("source", "unknown"))))
+
+
+def _frame_deployment_slice(atoms) -> str:
+    """A frame's declared deployment-slice membership. Most frames carry a literal
+    ``deployment_slice_membership`` info key; some instead embed it inline as
+    ``"deployment_slice_membership=<value>"`` within ``source_active_learning_type`` (an existing,
+    real encoding this reads rather than treats as an evidence gap). Falls back to the legacy
+    generic ``domain`` key, then ``"unknown"``, for evidence that carries neither convention."""
+    direct = atoms.info.get("deployment_slice_membership")
+    if direct not in (None, ""):
+        return str(direct)
+    embedded = atoms.info.get("source_active_learning_type")
+    if isinstance(embedded, str) and "deployment_slice_membership=" in embedded:
+        return embedded.split("deployment_slice_membership=", 1)[1].strip()
+    return str(atoms.info.get("domain", "unknown"))
+
+
+def _is_split_membership_manifest(payload: dict) -> bool:
+    """Generic shape-signature match for a split/lineage crosswalk manifest (e.g.
+    ``configs/provenance/teacher_training_split_manifest.json``) -- never a hardcoded file name.
+    A matching manifest is a dict with a non-empty top-level ``records`` list whose entries each
+    carry ``source_category``, ``source_local_index``, and ``split``."""
+    records = payload.get("records")
+    if not isinstance(records, list) or not records:
+        return False
+    sample = records[0]
+    return isinstance(sample, dict) and {"source_category", "source_local_index", "split"} <= set(sample)
+
+
+def build_split_crosswalk(paths: Iterable[str | Path]) -> dict:
+    """Build a deterministic ``(source_category, source_local_index) -> split`` crosswalk from
+    every JSON artifact among ``paths`` whose own shape matches a split-membership manifest (see
+    ``_is_split_membership_manifest``) -- the run-bound Teacher split manifest is the only such
+    artifact in a normal run, but this never hardcodes its name or path.
+
+    Returns ``{"resolved": {...}, "ambiguous": {...}, "sources": [...]}``. A key present in more
+    than one matching manifest, or repeated within one manifest, with DIFFERENT ``split`` values is
+    moved to ``"ambiguous"`` and removed from ``"resolved"`` -- callers must fail closed on an
+    ambiguous key (never guess which side is right) rather than silently picking either value.
+    ``"sources"`` records the path/sha256 of every manifest actually used, for provenance.
+    """
+    resolved: dict[tuple, str] = {}
+    ambiguous: set[tuple] = set()
+    sources: list[dict] = []
+    for raw in paths:
+        p = Path(raw)
+        if p.suffix.lower() != ".json" or not p.exists():
+            continue
+        try:
+            payload = json.loads(p.read_text(encoding="utf-8"))
+        except Exception:
+            continue
+        if not isinstance(payload, dict) or not _is_split_membership_manifest(payload):
+            continue
+        sources.append({"path": str(p.resolve()), "sha256": sha256_file(p)})
+        for record in payload["records"]:
+            if not isinstance(record, dict):
+                continue
+            key = (str(record.get("source_category")), record.get("source_local_index"))
+            split = record.get("split")
+            if key in ambiguous:
+                continue
+            if key in resolved and resolved[key] != split:
+                ambiguous.add(key)
+                del resolved[key]
+                continue
+            resolved[key] = split
+    return {"resolved": resolved, "ambiguous": ambiguous, "sources": sources}
+
+
+def _frame_summary(path: Path, *, split_crosswalk: dict | None = None) -> dict:
     from ase.io import read
     import math
     import numpy as np
@@ -48,18 +125,41 @@ def _frame_summary(path: Path) -> dict:
     categories = Counter()
     domains = Counter()
     atom_counts = []
-    missing_lineage = 0
     label_keys = set()
     finite_teacher_energy = 0
     finite_teacher_force = 0
+    resolved = (split_crosswalk or {}).get("resolved", {})
+    ambiguous = (split_crosswalk or {}).get("ambiguous", set())
+    split_counts = Counter()
+    source_split_joined = 0
+    source_split_ambiguous = 0
+    source_split_unjoined = 0
+    descendant_lineage_missing = 0
     for index, atoms in enumerate(frames):
         symbols = Counter(atoms.get_chemical_symbols())
         compositions[" ".join(f"{k}{v}" for k, v in sorted(symbols.items()))] += 1
-        categories[str(atoms.info.get("config_type", atoms.info.get("source", "unknown")))] += 1
-        domains[str(atoms.info.get("domain", "unknown"))] += 1
+        categories[_frame_category(atoms)] += 1
+        domains[_frame_deployment_slice(atoms)] += 1
         atom_counts.append(len(atoms))
-        if "parent_structure_id" not in atoms.info and index > 0:
-            missing_lineage += 1
+        cat = atoms.info.get("source_category")
+        local_index = atoms.info.get("source_local_index")
+        if cat is not None and local_index is not None:
+            # This frame declares original-split membership provenance (frozen teacher_baseline
+            # source frames and similar) -- join it to the authoritative split manifest rather
+            # than requiring the unrelated acquisition-descendant `parent_structure_id` concept
+            # (see workflow.steps._base_parent_id) for frames that were never given one.
+            key = (str(cat), int(local_index))
+            if key in ambiguous:
+                source_split_ambiguous += 1
+            elif key in resolved:
+                source_split_joined += 1
+                split_counts[str(resolved[key])] += 1
+            else:
+                source_split_unjoined += 1
+        elif "parent_structure_id" not in atoms.info and index > 0:
+            # No original-split signature on this frame at all -- fall back to the
+            # acquisition/augmentation descendant-lineage convention.
+            descendant_lineage_missing += 1
         for key in atoms.info:
             if key.endswith("energy") or key in {"energy", "teacher_energy"}:
                 label_keys.add(key)
@@ -79,7 +179,15 @@ def _frame_summary(path: Path) -> dict:
         "composition_counts": dict(compositions.most_common(32)),
         "category_counts": dict(categories.most_common(64)),
         "domain_counts": dict(domains.most_common(64)),
-        "missing_lineage_frames": missing_lineage,
+        "source_split_joined_frames": source_split_joined,
+        "source_split_joined_counts": dict(split_counts),
+        "source_split_ambiguous_frames": source_split_ambiguous,
+        "source_split_unjoined_frames": source_split_unjoined,
+        "descendant_lineage_missing_frames": descendant_lineage_missing,
+        # Backward-compatible alias: any frame whose lineage (of either kind) could not be
+        # established -- never again "every frame but the first" for split-sourced evidence that
+        # simply uses a different, still-real lineage convention.
+        "missing_lineage_frames": source_split_ambiguous + source_split_unjoined + descendant_lineage_missing,
         "label_keys": sorted(label_keys),
         "finite_teacher_energy_count": finite_teacher_energy,
         "finite_teacher_force_count": finite_teacher_force,
@@ -122,10 +230,17 @@ def _label_manifest_summary(payload: dict) -> dict:
 
 
 def _teacher_baseline_report_summary(payload: dict) -> dict:
+    from adapters.teacher import species_mapping_is_attested
+
     checks = payload.get("checks") if isinstance(payload.get("checks"), list) else []
     operational = next(
         (c for c in checks if isinstance(c, dict)
          and c.get("observable") == "fresh_teacher_energy_force_finiteness"),
+        {},
+    )
+    species_check = next(
+        (c for c in checks if isinstance(c, dict)
+         and c.get("observable") == "runtime_species_type_mapping_attested"),
         {},
     )
     details = operational.get("details") if isinstance(operational.get("details"), dict) else {}
@@ -140,6 +255,7 @@ def _teacher_baseline_report_summary(payload: dict) -> dict:
     )
     status = operational.get("status")
     n_frames = details.get("n_frames")
+    species_mapping = payload.get("species_mapping") if isinstance(payload.get("species_mapping"), dict) else {}
     return {
         "structure_count": n_frames,
         "expected_structure_count": n_frames,
@@ -163,6 +279,9 @@ def _teacher_baseline_report_summary(payload: dict) -> dict:
         "max_force_unit": operational.get("unit"),
         "fresh_label_output_integrity": details.get("fresh_label_output_integrity"),
         "fresh_label_manifest_integrity": details.get("fresh_label_manifest_integrity"),
+        "species_mapping_attested": species_mapping_is_attested(species_mapping),
+        "species_mapping_check_status": species_check.get("status"),
+        "species_mapping_fallback_applied": species_mapping.get("fallback_applied"),
     }
 
 
@@ -246,13 +365,35 @@ register_json_evidence_adapter(
     lambda payload: bool({"teacher_model_sha256", "source_sha256", "n_frames"} & set(payload)),
     _label_manifest_summary,
 )
+def _split_membership_manifest_summary(payload: dict) -> dict:
+    records = payload.get("records") or []
+    split_counts: Counter = Counter()
+    category_counts: Counter = Counter()
+    for record in records:
+        if isinstance(record, dict):
+            split_counts[str(record.get("split"))] += 1
+            category_counts[str(record.get("source_category"))] += 1
+    return {
+        "n_records": len(records),
+        "split_counts": dict(split_counts),
+        "category_counts": dict(category_counts.most_common(64)),
+        "split_params": payload.get("split_params"),
+        "total_frames": payload.get("total_frames"),
+        "source_dataset": payload.get("source_dataset"),
+    }
+
+
 register_json_evidence_adapter(
     "structural_coverage_evidence", _is_directed_coverage_evidence,
     _structural_coverage_evidence_summary,
 )
+register_json_evidence_adapter(
+    "split_membership_manifest", _is_split_membership_manifest,
+    _split_membership_manifest_summary,
+)
 
 
-def summarize_artifact(path: str | Path) -> dict:
+def summarize_artifact(path: str | Path, *, split_crosswalk: dict | None = None) -> dict:
     path = Path(path).resolve()
     suffix = path.suffix.lower()
     summary = {
@@ -263,7 +404,8 @@ def summarize_artifact(path: str | Path) -> dict:
     }
     try:
         if suffix in {".xyz", ".extxyz"}:
-            summary.update({"summary_kind": "ase_frames", **_frame_summary(path)})
+            summary.update({"summary_kind": "ase_frames",
+                            **_frame_summary(path, split_crosswalk=split_crosswalk)})
         elif suffix == ".json":
             summary.update({"summary_kind": "json_manifest", **_json_summary(path)})
         else:
@@ -282,6 +424,11 @@ def build_bounded_evidence(
     validation_outcomes: Iterable[dict] = (),
 ) -> dict:
     out = Path(out_path).resolve()
+    artifact_paths = list(artifacts)
+    # Built once from the full artifact set (not per-frame-file): any registered split-membership
+    # manifest among these artifacts (see build_split_crosswalk) becomes the authoritative crosswalk
+    # every .extxyz artifact's frame-level source lineage is joined against below.
+    split_crosswalk = build_split_crosswalk(artifact_paths)
     protocol_records = []
     for ref in protocol_refs:
         p = Path(ref).resolve()
@@ -290,9 +437,12 @@ def build_bounded_evidence(
     payload = {
         "schema_version": 1,
         "max_evidence_bytes": MAX_EVIDENCE_BYTES,
-        "artifacts": [summarize_artifact(path) for path in artifacts],
+        "artifacts": [summarize_artifact(path, split_crosswalk=split_crosswalk)
+                      for path in artifact_paths],
         "protocol_refs": protocol_records,
         "validation_outcomes": list(validation_outcomes),
+        "split_crosswalk_sources": split_crosswalk["sources"],
+        "split_crosswalk_ambiguous_key_count": len(split_crosswalk["ambiguous"]),
     }
     text = json.dumps(payload, indent=2, sort_keys=True)
     if len(text.encode("utf-8")) > MAX_EVIDENCE_BYTES:

@@ -78,5 +78,50 @@ class RootCauseTests(unittest.TestCase):
         self.assertTrue(rec.requires_human_approval)
 
 
+# --- R20 forensic-audit checklist item 6: teacher_baseline was misclassified as a
+# reference_disagreement/teacher_vs_dft failure although it uses no DFT labels at all -- a
+# classification asserting a Teacher-vs-DFT comparison must be rejected unless the failed stage's
+# own evidence actually contains one (dft_comparison_evidence_present, computed deterministically
+# by cli._stage_evidence_reveals_dft_comparison). See Scope F.
+@unittest.skipUnless(_HAS_PYDANTIC, "pydantic not installed")
+class DftComparisonAssertionGatingTests(unittest.TestCase):
+    def _validate(self, c, **over):
+        from runtimes.pydantic_ai.root_cause import validate_root_cause_classification
+        kwargs = dict(available_artifacts=AVAILABLE, valid_recovery_targets=TARGETS)
+        kwargs.update(over)
+        return validate_root_cause_classification(c, **kwargs)
+
+    def test_reference_disagreement_category_rejected_without_dft_comparison_evidence(self):
+        from runtimes.pydantic_ai.root_cause import RootCauseValidationError
+        c = _classification(failure_category="reference_disagreement",
+                            affected_channel="teacher_support",
+                            recommended_recovery_target="teacher_baseline")
+        with self.assertRaises(RootCauseValidationError):
+            self._validate(c, dft_comparison_evidence_present=False)
+
+    def test_dft_named_channel_rejected_without_dft_comparison_evidence(self):
+        from runtimes.pydantic_ai.root_cause import RootCauseValidationError
+        c = _classification(affected_channel="teacher_vs_dft",
+                            recommended_recovery_target="teacher_baseline")
+        with self.assertRaises(RootCauseValidationError):
+            self._validate(c, dft_comparison_evidence_present=False)
+
+    def test_non_dft_classification_unaffected_by_gate(self):
+        # The default fixture (affected_channel="student_vs_teacher") makes no Teacher-vs-DFT
+        # claim at all -- the gate must not reject it merely because evidence is absent.
+        c = self._validate(_classification(), dft_comparison_evidence_present=False)
+        self.assertEqual(c.affected_channel, "student_vs_teacher")
+
+    def test_reference_disagreement_accepted_when_dft_comparison_evidence_present(self):
+        # Same classification that was rejected above must be ACCEPTED once the failed stage's
+        # evidence genuinely contains a Teacher-vs-DFT comparison (e.g. a real
+        # reference_validation gate failure) -- the gate is evidence-bound, not a blanket ban.
+        c = _classification(failure_category="reference_disagreement",
+                            affected_channel="teacher_support",
+                            recommended_recovery_target="teacher_baseline")
+        validated = self._validate(c, dft_comparison_evidence_present=True)
+        self.assertEqual(validated.failure_category, "reference_disagreement")
+
+
 if __name__ == "__main__":  # pragma: no cover
     unittest.main()

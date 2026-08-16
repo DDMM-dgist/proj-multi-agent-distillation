@@ -176,5 +176,92 @@ class CliTests(unittest.TestCase):
             self.assertEqual(code, cli.EXIT_BLOCKED_POLICY)
 
 
+# --- R20 forensic-audit checklist item 8: the return-stage hidden constraint. Analyst/
+# Orchestrator recovery context must expose only the Controller-admissible return-stage subset
+# (return_index <= failed_stage_index) -- never the full stage-name set, which is exactly the R20
+# defect (Orchestrator proposed return_stage="reference_validation", downstream of the failed
+# teacher_baseline stage, accepted here only to be rejected much later inside propose_recovery).
+class AdmissibleReturnStagesTests(unittest.TestCase):
+    def test_returns_prefix_up_to_and_including_failed_stage(self):
+        from runtimes.pydantic_ai.cli import admissible_return_stages
+        stages = [{"name": "a"}, {"name": "b"}, {"name": "c"}, {"name": "d"}]
+        self.assertEqual(admissible_return_stages(stages, "c"), {"a", "b", "c"})
+
+    def test_excludes_downstream_stages(self):
+        from runtimes.pydantic_ai.cli import admissible_return_stages
+        stages = [{"name": "data_curation"}, {"name": "teacher_baseline"},
+                 {"name": "reference_validation"}, {"name": "student_training"}]
+        admissible = admissible_return_stages(stages, "teacher_baseline")
+        self.assertEqual(admissible, {"data_curation", "teacher_baseline"})
+        self.assertNotIn("reference_validation", admissible)
+        self.assertNotIn("student_training", admissible)
+
+    def test_first_stage_failure_has_only_itself_as_admissible_return_stage(self):
+        from runtimes.pydantic_ai.cli import admissible_return_stages
+        stages = [{"name": "teacher_baseline"}, {"name": "reference_validation"},
+                 {"name": "student_training"}]
+        self.assertEqual(admissible_return_stages(stages, "teacher_baseline"), {"teacher_baseline"})
+
+    def test_last_stage_failure_admits_the_full_stage_set(self):
+        from runtimes.pydantic_ai.cli import admissible_return_stages
+        stages = [{"name": "a"}, {"name": "b"}, {"name": "c"}]
+        self.assertEqual(admissible_return_stages(stages, "c"), {"a", "b", "c"})
+
+
+class StageEvidenceRevealsDftComparisonTests(unittest.TestCase):
+    def _write_json(self, tmp, name, payload):
+        path = Path(tmp) / name
+        path.write_text(json.dumps(payload), encoding="utf-8")
+        return path
+
+    def _teacher_baseline_payload(self, *, dft_labels_used, protected_reference_labels_used):
+        return {
+            "schema_version": 1, "profile": "teacher_baseline",
+            "teacher": {"kind": "mock", "config": "/x/teacher.yaml", "model_sha256": "abc"},
+            "deployment_domain": {"structure_classes": ["bulk"],
+                                  "dft_labels_used": dft_labels_used,
+                                  "protected_reference_labels_used": protected_reference_labels_used},
+            "applicability": {"status": "CONDITIONAL", "limitations": []},
+            "species_mapping": {"fallback_applied": False},
+            "checks": [], "evidence": [],
+        }
+
+    def test_no_dft_evidence_on_teacher_baseline_artifact_returns_false(self):
+        from runtimes.pydantic_ai.cli import _stage_evidence_reveals_dft_comparison
+        with tempfile.TemporaryDirectory() as tmp:
+            path = self._write_json(tmp, "teacher_baseline.json", self._teacher_baseline_payload(
+                dft_labels_used=False, protected_reference_labels_used=False))
+            self.assertFalse(_stage_evidence_reveals_dft_comparison([path]))
+
+    def test_dft_labels_used_on_teacher_baseline_artifact_returns_true(self):
+        from runtimes.pydantic_ai.cli import _stage_evidence_reveals_dft_comparison
+        with tempfile.TemporaryDirectory() as tmp:
+            path = self._write_json(tmp, "teacher_baseline.json", self._teacher_baseline_payload(
+                dft_labels_used=True, protected_reference_labels_used=False))
+            self.assertTrue(_stage_evidence_reveals_dft_comparison([path]))
+
+    def test_protected_reference_labels_used_on_teacher_baseline_artifact_returns_true(self):
+        from runtimes.pydantic_ai.cli import _stage_evidence_reveals_dft_comparison
+        with tempfile.TemporaryDirectory() as tmp:
+            path = self._write_json(tmp, "teacher_baseline.json", self._teacher_baseline_payload(
+                dft_labels_used=False, protected_reference_labels_used=True))
+            self.assertTrue(_stage_evidence_reveals_dft_comparison([path]))
+
+    def test_dft_labeled_frame_evidence_returns_true(self):
+        from ase import Atoms
+        from ase.io import write
+        from runtimes.pydantic_ai.cli import _stage_evidence_reveals_dft_comparison
+        atoms = Atoms("Cu", positions=[[0, 0, 0]], cell=[10, 10, 10], pbc=True)
+        atoms.info["dft_energy"] = -1.0
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "frames.extxyz"
+            write(str(path), [atoms])
+            self.assertTrue(_stage_evidence_reveals_dft_comparison([path]))
+
+    def test_no_artifacts_returns_false(self):
+        from runtimes.pydantic_ai.cli import _stage_evidence_reveals_dft_comparison
+        self.assertFalse(_stage_evidence_reveals_dft_comparison([]))
+
+
 if __name__ == "__main__":  # pragma: no cover
     unittest.main()

@@ -1524,6 +1524,60 @@ def _select_reasoning_provider_runtime():
         "provider unavailable: set PYDANTIC_AI_PROVIDER to local-openai|ollama|anthropic|openai")
 
 
+def admissible_return_stages(stages, failed_stage) -> set:
+    """The exact recovery return-stage subset ``RunController.propose_recovery`` can ever accept
+    for a gate failure at ``failed_stage``: stages at or before it in declared workflow order
+    (``propose_recovery`` rejects ``return_index > self._stage_index(failed_stage)`` -- see
+    ``workflow/controller.py``, a frozen file this function deliberately never needs to touch).
+
+    Both the Analyst's recovery-target context and the Orchestrator's return-stage context, and
+    ``validate_recovery_plan_proposal``'s own contextual check, must be given exactly this subset
+    -- never the full stage-name set. Passing the full set (the pre-fix defect: R20's Orchestrator
+    proposed ``return_stage="reference_validation"``, downstream of the failed ``teacher_baseline``
+    stage, and it was accepted here only to be rejected much later, deep inside
+    ``propose_recovery``) lets a model choose a stage that can never actually be bound, silently
+    deferring an avoidable rejection instead of preventing it.
+    """
+    ordered = [stage["name"] for stage in stages]
+    failed_index = ordered.index(failed_stage)
+    return set(ordered[:failed_index + 1])
+
+
+def _stage_evidence_reveals_dft_comparison(artifact_paths) -> bool:
+    """Deterministic, evidence-shape-based check: does the failed stage's OWN evidence contain an
+    actual Teacher-vs-DFT comparison? Computed once per gate failure from
+    ``pending_recovery["artifact_sha256"]``'s keys (the failed stage's own registered output
+    artifacts -- never the Analyst's/Orchestrator's own claims) and threaded into both
+    ``root_cause.validate_root_cause_classification`` and
+    ``recovery_bridge.validate_recovery_plan_proposal`` as ``dft_comparison_evidence_present``.
+
+    Reuses ``bounded_evidence.summarize_artifact``'s existing, generic per-artifact summaries
+    rather than adding a second evidence reader: a teacher_baseline-profile JSON report's own
+    ``dft_labels_used``/``protected_reference_labels_used`` fields (already computed from
+    ``deployment_domain`` -- see ``bounded_evidence._teacher_baseline_report_summary``), or any
+    ``.extxyz`` frame evidence whose ``label_keys`` name a dft-labeled channel, are the only two
+    ways real Teacher-vs-DFT evidence can currently appear in a stage's own registered artifacts.
+    A stage whose own evidence genuinely does recompute a Teacher-vs-DFT channel (e.g.
+    reference_validation) trivially satisfies this check via its own artifacts -- this helper adds
+    no stage-name special case, it only reads what is actually in the evidence.
+    """
+    from .bounded_evidence import summarize_artifact
+    for path in artifact_paths:
+        try:
+            summary = summarize_artifact(path)
+        except Exception:
+            continue
+        teacher_baseline = summary.get("teacher_baseline")
+        if isinstance(teacher_baseline, dict) and (
+                teacher_baseline.get("dft_labels_used") or
+                teacher_baseline.get("protected_reference_labels_used")):
+            return True
+        label_keys = summary.get("label_keys") or []
+        if any("dft" in str(key).lower() for key in label_keys):
+            return True
+    return False
+
+
 def _propose_recovery_via_reasoning_roles(controller, *, runtime, agent_specs_dir, exchange_dir,
                                           repo_root, mock_analyst_response,
                                           mock_orchestrator_response,
@@ -1552,7 +1606,17 @@ def _propose_recovery_via_reasoning_roles(controller, *, runtime, agent_specs_di
     pending = c.state["pending_recovery"]
     failed_stage = pending["failed_stage"]
     emitter.emit("recovery_started", stage=failed_stage)
-    stage_names = {stage["name"] for stage in c.state["stages"]}
+    # Controller-admissible return-stage subset, surfaced to both the Analyst's recovery-target
+    # context and the Orchestrator's return-stage context, and validated against below -- see
+    # admissible_return_stages's docstring for why this must be a strict subset of all stage
+    # names.
+    stage_names = admissible_return_stages(c.state["stages"], failed_stage)
+    # Deterministically computed from the failed stage's OWN evidence artifacts, never trusted
+    # from the Analyst's/Orchestrator's own claims -- see the helper's docstring. Surfaced to both
+    # roles' context (so a well-behaved model self-corrects) and enforced by both contextual
+    # validators below (so a model that ignores the context still fails closed).
+    dft_comparison_evidence_present = _stage_evidence_reveals_dft_comparison(
+        pending["artifact_sha256"])
     available_artifacts = {a["path"] for a in c.state["artifacts"]}
     roster = c.state.get("recovery_capability_roster") or DEFAULT_RECOVERY_CAPABILITY_ROSTER
     exchange = Path(exchange_dir) if exchange_dir else c.run_dir / "exchange"
@@ -1572,7 +1636,16 @@ def _propose_recovery_via_reasoning_roles(controller, *, runtime, agent_specs_di
         "inputs": [], "criteria": ["diagnosis is evidence-bound to registered artifacts",
                                    "diagnosis names an actionable recovery target"],
         "constraints": ["Cite only evidence_refs/affected_artifact_refs that are controller-"
-                       "registered artifact paths already listed in context.recovery_evidence."],
+                       "registered artifact paths already listed in context.recovery_evidence.",
+                       "recommended_recovery_target must be one of "
+                       "context.recovery_evidence.valid_recovery_targets -- already restricted "
+                       "to the failed stage and stages at or before it in workflow order; a "
+                       "downstream stage is never a valid recovery target.",
+                       "if context.recovery_evidence.dft_comparison_evidence_present is false, "
+                       "the failed stage's own evidence contains no Teacher-vs-DFT comparison -- "
+                       "do not name a 'dft' affected_channel or choose failure_category "
+                       "reference_disagreement; classify as an evidence/provenance gap instead "
+                       "(e.g. evidence_gap or lineage_or_leakage)"],
         "context": {"expected_output_model": "RootCauseClassification", "stage": failed_stage,
                    "recovery_evidence": {
                        "failed_stage": failed_stage, "verdict": pending["verdict"],
@@ -1580,6 +1653,7 @@ def _propose_recovery_via_reasoning_roles(controller, *, runtime, agent_specs_di
                        "artifact_sha256": pending["artifact_sha256"],
                        "available_artifacts": sorted(available_artifacts),
                        "valid_recovery_targets": sorted(stage_names),
+                       "dft_comparison_evidence_present": dft_comparison_evidence_present,
                    }},
     }
     if runtime == "mock":
@@ -1603,7 +1677,8 @@ def _propose_recovery_via_reasoning_roles(controller, *, runtime, agent_specs_di
     def root_cause_validator(classification):
         return validate_root_cause_classification(
             classification, available_artifacts=available_artifacts,
-            valid_recovery_targets=stage_names)
+            valid_recovery_targets=stage_names,
+            dft_comparison_evidence_present=dft_comparison_evidence_present)
 
     emitter.emit("role_invocation_started", stage=failed_stage, role="analyst",
                 action="recovery_diagnosis")
@@ -1628,17 +1703,26 @@ def _propose_recovery_via_reasoning_roles(controller, *, runtime, agent_specs_di
         "inputs": [], "criteria": ["proposal is bound to the supplied diagnosis artifact",
                                    "capability and return_stage are both registered"],
         "constraints": ["capability must be one of context.valid_capabilities",
-                       "return_stage must be one of context.valid_stage_names",
+                       "return_stage must be one of context.valid_stage_names -- this is already "
+                       "the exact set of stages at or before the failed stage in workflow order; "
+                       "a downstream stage can never be a valid return_stage and is rejected "
+                       "before any diagnosis/proposal is even considered",
                        "diagnosis_artifact_sha256 must equal context.diagnosis_artifact_sha256",
                        "corrective_action, if set, must be {\"action_type\": ..., \"parameters\": "
                        "{...}} with action_type one of "
                        "context.valid_actions_by_capability[capability]; omit corrective_action "
-                       "entirely if no registered action applies"],
+                       "entirely if no registered action applies",
+                       "if context.dft_comparison_evidence_present is false, do not set "
+                       "labeling.new_dft, labeling.teacher_relabel, or student_training.retrain -- "
+                       "the failed stage's own evidence contains no Teacher-vs-DFT comparison, so "
+                       "none of those costly actions is evidence-justified; propose an "
+                       "evidence-gathering corrective_action instead"],
         "context": {"expected_output_model": "RecoveryPlanProposal", "stage": failed_stage,
                    "diagnosis": json.loads(classification.model_dump_json()),
                    "diagnosis_artifact_sha256": diagnosis_sha256,
                    "valid_capabilities": sorted(roster), "valid_stage_names": sorted(stage_names),
-                   "valid_actions_by_capability": valid_corrective_actions_by_capability(roster)},
+                   "valid_actions_by_capability": valid_corrective_actions_by_capability(roster),
+                   "dft_comparison_evidence_present": dft_comparison_evidence_present},
     }
     if runtime == "mock":
         if not mock_orchestrator_response:
@@ -1662,7 +1746,8 @@ def _propose_recovery_via_reasoning_roles(controller, *, runtime, agent_specs_di
     def plan_proposal_validator(proposal):
         return validate_recovery_plan_proposal(
             proposal, expected_failed_stage=failed_stage, expected_diagnosis_sha256=diagnosis_sha256,
-            capability_roster=roster, valid_stage_names=stage_names)
+            capability_roster=roster, valid_stage_names=stage_names,
+            dft_comparison_evidence_present=dft_comparison_evidence_present)
 
     emitter.emit("role_invocation_started", stage=failed_stage, role="orchestrator",
                 action="recovery_plan_proposal")

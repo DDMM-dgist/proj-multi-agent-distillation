@@ -346,5 +346,62 @@ class CorrectiveActionContractTests(unittest.TestCase):
         self.assertNotIn("orchestration", exposed)
 
 
+# --- R20 forensic-audit checklist item 7: a Stage-1 evidence/provenance-gap failure must not
+# authorize fresh DFT, a teacher relabel, or Student retraining unless the failed stage's OWN
+# evidence actually contains a Teacher-vs-DFT comparison (dft_comparison_evidence_present, computed
+# deterministically by cli._stage_evidence_reveals_dft_comparison -- never trusted from the
+# proposal itself). See Scope F.
+@unittest.skipUnless(_HAS_PYDANTIC, "pydantic not installed")
+class DftComparisonEvidenceGatingTests(unittest.TestCase):
+    def _validate(self, p, **over):
+        from runtimes.pydantic_ai.recovery_bridge import validate_recovery_plan_proposal
+        kwargs = dict(expected_failed_stage="produce_evidence",
+                     expected_diagnosis_sha256="d" * 64,
+                     capability_roster=VALID_CAPABILITY_ROSTER, valid_stage_names=VALID_STAGES)
+        kwargs.update(over)
+        return validate_recovery_plan_proposal(p, **kwargs)
+
+    def test_teacher_relabel_rejected_without_dft_comparison_evidence(self):
+        from runtimes.pydantic_ai.recovery_bridge import RecoveryPlanValidationError
+        # Default fixture proposal already sets labeling.teacher_relabel=True.
+        with self.assertRaises(RecoveryPlanValidationError) as ctx:
+            self._validate(_proposal(), dft_comparison_evidence_present=False)
+        self.assertIn("labeling.teacher_relabel", str(ctx.exception))
+
+    def test_new_dft_rejected_without_dft_comparison_evidence(self):
+        from runtimes.pydantic_ai.recovery_bridge import RecoveryPlanValidationError
+        with self.assertRaises(RecoveryPlanValidationError) as ctx:
+            self._validate(
+                _proposal(labeling={"teacher_relabel": False, "new_dft": True}),
+                dft_comparison_evidence_present=False)
+        self.assertIn("labeling.new_dft", str(ctx.exception))
+
+    def test_student_retrain_rejected_without_dft_comparison_evidence(self):
+        from runtimes.pydantic_ai.recovery_bridge import RecoveryPlanValidationError
+        with self.assertRaises(RecoveryPlanValidationError) as ctx:
+            self._validate(
+                _proposal(labeling={"teacher_relabel": False, "new_dft": False},
+                         student_training={"retrain": True, "mode": "full"}),
+                dft_comparison_evidence_present=False)
+        self.assertIn("student_training.retrain", str(ctx.exception))
+
+    def test_proposal_naming_no_unsupported_action_passes_without_dft_comparison_evidence(self):
+        # An evidence-gap recovery may still legitimately request more evidence (e.g. a
+        # corrective_action re-extracting failing frames) without authorizing any of the three
+        # gated actions -- this must NOT be rejected merely because evidence is absent.
+        p = self._validate(
+            _proposal(labeling={"teacher_relabel": False, "new_dft": False},
+                     student_training={"retrain": False, "mode": "none"}),
+            dft_comparison_evidence_present=False)
+        self.assertFalse(p.labeling.new_dft)
+
+    def test_teacher_relabel_accepted_when_dft_comparison_evidence_present(self):
+        # Same proposal that was rejected above must be ACCEPTED once real Teacher-vs-DFT
+        # comparison evidence genuinely exists on the failed stage -- the gate is evidence-bound,
+        # not a blanket ban on these actions.
+        p = self._validate(_proposal(), dft_comparison_evidence_present=True)
+        self.assertTrue(p.labeling.teacher_relabel)
+
+
 if __name__ == "__main__":  # pragma: no cover
     unittest.main()

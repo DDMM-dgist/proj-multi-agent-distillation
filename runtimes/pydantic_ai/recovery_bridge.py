@@ -270,7 +270,9 @@ def valid_corrective_actions_by_capability(capability_roster: dict) -> dict[str,
 
 def validate_recovery_plan_proposal(proposal: RecoveryPlanProposal, *, expected_failed_stage: str,
                                     expected_diagnosis_sha256: str, capability_roster: dict,
-                                    valid_stage_names) -> RecoveryPlanProposal:
+                                    valid_stage_names,
+                                    dft_comparison_evidence_present: bool = True
+                                    ) -> RecoveryPlanProposal:
     """Contextual, fail-closed validation beyond Pydantic shape (mirrors
     ``root_cause.validate_root_cause_classification``'s role for ``RootCauseClassification``).
 
@@ -280,6 +282,19 @@ def validate_recovery_plan_proposal(proposal: RecoveryPlanProposal, *, expected_
     ``valid_capabilities`` name-set because ``corrective_action.action_type``, when supplied, must
     be validated against the actions THAT role is actually allowed to dispatch
     (``actions.ROLE_ALLOWED_ACTIONS``) -- a plain set of capability names carries no role.
+
+    ``dft_comparison_evidence_present``: same deterministic, caller-computed signal
+    (``cli._stage_evidence_reveals_dft_comparison``) as
+    ``root_cause.validate_root_cause_classification`` takes -- computed from the FAILED STAGE'S
+    OWN evidence, never trusted from the proposal. When False, a proposal authorizing fresh DFT
+    (``labeling.new_dft``), a teacher relabel (``labeling.teacher_relabel``), or Student retraining
+    (``student_training.retrain``) is rejected: those are exactly the costly scientific-compute
+    actions R20 authorized off an evidence/provenance-gap diagnosis that had been mislabeled as a
+    Teacher-vs-DFT disagreement -- none of the three is evidence-justified when the failed stage
+    made no Teacher-vs-DFT comparison at all. This does not block a corrective_action requesting
+    more evidence (e.g. "validate_teacher_reference" / extracting failing frames): only the three
+    named authorizations above are gated, since those are the ones a genuine evidence gap can never
+    itself justify.
     """
     if proposal.failed_stage != expected_failed_stage:
         raise RecoveryPlanValidationError(
@@ -301,6 +316,22 @@ def validate_recovery_plan_proposal(proposal: RecoveryPlanProposal, *, expected_
                 f"corrective_action.action_type {proposal.corrective_action.action_type!r} is not "
                 f"an action {role!r} (the role responsible for capability {proposal.capability!r}) "
                 f"may dispatch -- allowed: {sorted(allowed)}")
+    if not dft_comparison_evidence_present:
+        unsupported = []
+        if proposal.labeling.new_dft:
+            unsupported.append("labeling.new_dft")
+        if proposal.labeling.teacher_relabel:
+            unsupported.append("labeling.teacher_relabel")
+        if proposal.student_training.retrain:
+            unsupported.append("student_training.retrain")
+        if unsupported:
+            raise RecoveryPlanValidationError(
+                f"proposal authorizes {unsupported} but the failed stage's own evidence contains "
+                "no Teacher-vs-DFT comparison -- fresh DFT, teacher relabeling, and Student "
+                "retraining are not justified by an evidence/provenance gap alone; propose an "
+                "evidence-gathering corrective_action instead (e.g. extract failing frames / "
+                "validate_teacher_reference) and re-diagnose once real Teacher-vs-DFT evidence "
+                "exists")
     return proposal
 
 

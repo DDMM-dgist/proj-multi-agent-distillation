@@ -256,6 +256,11 @@ class ProductionReadinessTests(unittest.TestCase):
                             "applicability_status": "NOT_ESTABLISHED",
                             "applicability_limitations": ["dilute_oxygen_vacancy = NOT_ESTABLISHED"],
                             "require_lineage": False,
+                            "teacher_md_sanity": {
+                                "n_structures": 3, "temperature_K": 300, "timestep_fs": 1.0,
+                                "friction_per_fs": 0.01, "n_steps": 4, "snapshot_interval": 2,
+                                "seed": 7,
+                            },
                         },
                     },
                     "gate": {"criteria": ["teacher baseline report is valid"]},

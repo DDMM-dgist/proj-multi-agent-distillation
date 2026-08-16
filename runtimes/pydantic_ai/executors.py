@@ -955,6 +955,108 @@ def _evidence(role, path):
     return evidence_record(role, path)
 
 
+def _teacher_md_sanity_checks(cfg, teacher_config, frames, report_path):
+    """Bounded Teacher-driven MD dynamic sanity check (scope: teacher acceptance, not a new
+    top-level stage). Runs a small deterministic Langevin trajectory, under the SAME bound
+    Teacher calculator used for the operational labels above, seeded from a handful of already-
+    approved operational structures (no new sampling/acquisition policy). Purpose is only to
+    catch an obviously broken Teacher dynamical response (energy/force blow-up, atoms colliding
+    or the structure collapsing) before the Teacher is trusted as a labeling oracle -- this is
+    not a physical-accuracy benchmark and makes no Teacher-vs-DFT claim.
+
+    "No unphysical minimum interatomic distance" and "no obvious structural collapse" are both
+    detected by the same minimum-pairwise-distance metric: a collapsing structure and an
+    unphysical close contact are the same observable at this coarse a resolution, and inventing a
+    second, materially different collapse metric would exceed the bounded scope of this check.
+    """
+    import math
+    import numpy as np
+    from adapters.acquisition import run_teacher_md
+    from ase.io import read, write
+    from validation.report import make_check
+    from workflow.integrity import artifact_digest
+
+    n_structures = int(cfg.get("n_structures", 3))
+    if n_structures < 1:
+        raise ValueError("teacher_md_sanity.n_structures must be >= 1")
+    stride = max(1, len(frames) // n_structures)
+    seeds = frames[::stride][:n_structures]
+    if not seeds:
+        raise ValueError("teacher_md_sanity found no operational structures to seed the MD sanity check")
+
+    seed_path = cfg.get("seed_structures_path") or str(
+        Path(report_path).with_name("teacher_md_sanity_seed.extxyz"))
+    trajectory_path = cfg.get("trajectory_path") or str(
+        Path(report_path).with_name("teacher_md_sanity_trajectory.extxyz"))
+    write(seed_path, [s.copy() for s in seeds])
+    run_teacher_md(cfg, teacher_config, seed_path, trajectory_path, capture_labels=True)
+
+    md_frames = read(trajectory_path, index=":")
+    if not md_frames:
+        raise ValueError("teacher_md_sanity trajectory produced no snapshots")
+    counts_by_seed: dict = {}
+    for atoms in md_frames:
+        idx = atoms.info["seed_structure_index"]
+        counts_by_seed[idx] = counts_by_seed.get(idx, 0) + 1
+    if (len(counts_by_seed) != len(seeds) or len(set(counts_by_seed.values())) != 1
+            or next(iter(counts_by_seed.values())) < 1):
+        raise ValueError(
+            "teacher_md_sanity trajectory is incomplete: expected every seed structure to "
+            f"produce an equal, non-zero number of snapshots, got {counts_by_seed}")
+
+    md_energies, md_fmax, md_min_distance = [], [], []
+    for atoms in md_frames:
+        energy = float(atoms.info["teacher_energy"])
+        forces = np.asarray(atoms.arrays["teacher_forces"], dtype=float)
+        if (not math.isfinite(energy) or forces.shape != (len(atoms), 3)
+                or not np.all(np.isfinite(forces))):
+            raise ValueError("teacher_md_sanity produced non-finite or malformed energy/forces")
+        md_energies.append(energy)
+        md_fmax.append(float(np.max(np.linalg.norm(forces, axis=1))))
+        n = len(atoms)
+        if n < 2:
+            md_min_distance.append(float("inf"))
+        else:
+            d = atoms.get_all_distances(mic=True)
+            iu = np.triu_indices(n, k=1)
+            md_min_distance.append(float(np.min(d[iu])))
+
+    force_threshold = float(cfg.get("force_spike_threshold_eV_per_angstrom", 50.0))
+    distance_threshold = float(cfg.get("min_distance_threshold_angstrom", 0.5))
+    finite_min_distances = [m for m in md_min_distance if math.isfinite(m)]
+    details = {
+        "n_seed_structures": len(seeds), "n_snapshots": len(md_frames),
+        "snapshots_per_seed": next(iter(counts_by_seed.values())),
+        "temperature_K": float(cfg["temperature_K"]), "timestep_fs": float(cfg.get("timestep_fs", 1.0)),
+        "n_steps": int(cfg["n_steps"]), "snapshot_interval": int(cfg.get("snapshot_interval", 100)),
+        "energy_min": min(md_energies), "energy_max": max(md_energies),
+        "trajectory": str(Path(trajectory_path).resolve()),
+        "trajectory_integrity": artifact_digest(trajectory_path),
+        "seed_structures": str(Path(seed_path).resolve()),
+        "seed_structures_integrity": artifact_digest(seed_path),
+    }
+    checks = [
+        make_check("teacher_dynamics_sanity", "teacher_md_sanity_no_force_spike", max(md_fmax),
+                   "eV/Angstrom", {"operator": "max", "threshold": force_threshold}, details=details),
+    ]
+    if finite_min_distances:
+        checks.append(make_check(
+            "teacher_dynamics_sanity", "teacher_md_sanity_no_collapse", min(finite_min_distances),
+            "Angstrom", {"operator": "min", "threshold": distance_threshold}, details=details))
+    else:
+        checks.append(make_check(
+            "teacher_dynamics_sanity", "teacher_md_sanity_no_collapse", details=details,
+            reason="every sanity-MD snapshot has fewer than 2 atoms; a pairwise minimum-"
+                   "distance collapse check is not applicable to single-atom structures"))
+    for check in checks:
+        check["purpose"] = "deployment_stability"
+        check["reference_source"] = "teacher"
+        check["protocol"] = ("short deterministic Langevin MD under the bound Teacher calculator, "
+                             "seeded from already-approved operational structures -- a dynamical "
+                             "sanity gate, not a physical-accuracy or sampling protocol")
+    return checks
+
+
 def _exec_build_teacher_baseline(proposal):
     import math
     import numpy as np
@@ -986,13 +1088,19 @@ def _exec_build_teacher_baseline(proposal):
         raise ValueError("Teacher baseline produced no finite energies")
     report_path = Path(p["report_path"])
     report_path.parent.mkdir(parents=True, exist_ok=True)
-    required = ["deployment_domain", "applicability_status", "applicability_limitations"]
+    required = ["deployment_domain", "applicability_status", "applicability_limitations",
+               "teacher_md_sanity"]
     missing = [name for name in required if name not in p]
     if missing:
         raise ValueError("Teacher baseline requires explicit deployment/applicability evidence: " + ", ".join(missing))
     deployment_domain = p["deployment_domain"]
     applicability_status = p["applicability_status"]
     limitations = list(p["applicability_limitations"])
+    from adapters.teacher import species_mapping_is_attested
+    species_mapping = label_manifest_payload.get("species_mapping_evidence") or {}
+    species_mapping_attested = species_mapping_is_attested(species_mapping)
+    md_sanity_checks = _teacher_md_sanity_checks(
+        p["teacher_md_sanity"], load_config(p["teacher_config"]), frames, report_path)
     report = {
         "schema_version": 1,
         "profile": p.get("profile", "teacher_baseline"),
@@ -1003,6 +1111,7 @@ def _exec_build_teacher_baseline(proposal):
         "validation_profile": str(Path(p["validation_profile"]).resolve()),
         "deployment_domain": deployment_domain,
         "applicability": {"status": applicability_status, "limitations": limitations},
+        "species_mapping": species_mapping,
         "checks": [{
             "domain": "operational_teacher_inference",
             "observable": "fresh_teacher_energy_force_finiteness",
@@ -1019,7 +1128,20 @@ def _exec_build_teacher_baseline(proposal):
                         "fresh_label_output_integrity": artifact_digest(labeled_output),
                         "fresh_label_manifest": str(Path(label_manifest).resolve()),
                         "fresh_label_manifest_integrity": artifact_digest(label_manifest)},
-        }],
+        }, {
+            "domain": "operational_teacher_inference",
+            "observable": "runtime_species_type_mapping_attested",
+            "status": "PASS" if species_mapping_attested else "FAIL",
+            "value": 1 if species_mapping_attested else 0,
+            "unit": "boolean",
+            "criterion": {"operator": "equals", "target": 1},
+            "purpose": "deployment_stability",
+            "reference_source": "teacher",
+            "protocol": "deterministic capture of the calculator kwargs actually bound at "
+                       "construction time (adapters.teacher.load_teacher_with_species_evidence), "
+                       "never an LLM's interpretation of the declared config",
+            "details": {"fallback_applied": bool(species_mapping.get("fallback_applied"))},
+        }, *md_sanity_checks],
         "evidence": [
             _evidence("teacher_config", p["teacher_config"]),
             _evidence("distillation_scope", p["distillation_scope"]),

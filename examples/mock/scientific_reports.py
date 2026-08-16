@@ -24,6 +24,13 @@ def teacher_baseline(teacher_config, distillation_scope, validation_profile, evi
         "deployment_domain": {"structure_classes": ["mock-seed-neighborhood"]},
         "applicability": {"status": "CONDITIONAL",
                           "limitations": ["mock evidence only"]},
+        "species_mapping": {
+            "declared_chemical_symbols": None,
+            "declared_chemical_species_to_atom_type_map": None,
+            "runtime_chemical_species_to_atom_type_map": None,
+            "fallback_applied": False,
+            "fallback_reason": None,
+        },
         "checks": [{
             "domain": "accuracy", "observable": "mock_teacher_reference",
             "status": "RECORDED", "value": 0.0, "unit": "mock-unit",

@@ -24,6 +24,16 @@ from workflow.controller import RunController
 from workflow.steps import establish_validation_contract_from_configs, split_dataset
 
 
+def _valid_species_mapping():
+    return {
+        "declared_chemical_symbols": ["O", "Si"],
+        "declared_chemical_species_to_atom_type_map": None,
+        "runtime_chemical_species_to_atom_type_map": {"O": "O", "Si": "Si"},
+        "fallback_applied": True,
+        "fallback_reason": "chemical_species_to_atom_type_map required",
+    }
+
+
 GATE_CRITERION = "artifact is complete and internally consistent"
 
 TEACHER_DOMAIN = {"structure_classes": ["liquid", "crystal"], "temperature_range_K": [300, 1500]}
@@ -236,6 +246,7 @@ class TeacherBaselineDomainCrossCheckTests(unittest.TestCase):
             "validation_profile": str(validation_profile),
             "deployment_domain": domain,
             "applicability": {"status": "CONDITIONAL", "limitations": ["high-T only"]},
+            "species_mapping": _valid_species_mapping(),
             "checks": [{
                 "domain": "dynamics", "observable": "diffusion", "status": "RECORDED",
                 "value": 1.2, "unit": "A2/ps", "criterion": None,

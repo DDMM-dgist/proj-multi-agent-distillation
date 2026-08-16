@@ -17,7 +17,8 @@ from ase.md.langevin import Langevin
 from ase.md.velocitydistribution import MaxwellBoltzmannDistribution
 
 from adapters import load_config, resolve_config_path
-from adapters.teacher import load_teacher, teacher_model_reference
+from adapters.teacher import (load_teacher, load_teacher_with_species_evidence,
+                              teacher_model_reference)
 from workflow.integrity import artifact_digest
 
 
@@ -82,8 +83,14 @@ def run_augment_atoms(cfg, seed_path, out_path):
     return Path(out_path)
 
 
-def run_teacher_md(cfg, teacher_cfg, seed_path, out_path):
-    """Generate snapshots by Langevin MD under the teacher ASE calculator."""
+def run_teacher_md(cfg, teacher_cfg, seed_path, out_path, capture_labels=False):
+    """Generate snapshots by Langevin MD under the teacher ASE calculator.
+
+    ``capture_labels=True`` additionally records ``teacher_energy``/``teacher_forces`` on each
+    snapshot (computed while the live MD ``atoms`` object still has its calculator attached, since
+    ``atoms.copy()`` drops it) -- used by the teacher_baseline dynamic sanity check, never by the
+    default acquisition/sampling path, so acquisition output is unchanged by default.
+    """
     seeds = read(seed_path, index=":")
     calc = load_teacher(teacher_cfg)
     snapshots = []
@@ -122,6 +129,9 @@ def run_teacher_md(cfg, teacher_cfg, seed_path, out_path):
         n_steps = int(cfg["n_steps"])
 
         def capture():
+            if capture_labels:
+                label_energy = float(atoms.get_potential_energy())
+                label_forces = np.asarray(atoms.get_forces(), dtype=float)
             frame = atoms.copy()
             # Apply the FixCom-free snapshot constraints (never mutating the live MD
             # atoms), and record scalar provenance so an omitted FixCom is auditable
@@ -144,6 +154,9 @@ def run_teacher_md(cfg, teacher_cfg, seed_path, out_path):
                 frame.info["friction_ase_time_inverse"] = float(
                     cfg["friction_ase_time_inverse"]
                 )
+            if capture_labels:
+                frame.info["teacher_energy"] = label_energy
+                frame.arrays["teacher_forces"] = label_forces
             snapshots.append(frame)
 
         dyn.attach(capture, interval=stride)
@@ -189,7 +202,7 @@ def validate_lineage(structures_path, grouping_key="parent_structure_id"):
 def label_with_teacher(teacher_cfg, structures_path, out_path, manifest_path, include_stress=False):
     """Attach teacher labels to ASE-readable structures and write provenance."""
     frames = read(structures_path, index=":")
-    calc = load_teacher(teacher_cfg)
+    calc, species_mapping_evidence = load_teacher_with_species_evidence(teacher_cfg)
     for index, atoms in enumerate(frames):
         atoms.calc = calc
         atoms.info["teacher_energy"] = float(atoms.get_potential_energy())
@@ -222,6 +235,11 @@ def label_with_teacher(teacher_cfg, structures_path, out_path, manifest_path, in
                                  if model_path and model_path.is_file() else None),
         "teacher_head": teacher_cfg.get("calculator", {}).get("kwargs", {}).get("head"),
         "calculator": teacher_cfg.get("calculator", {}),
+        # Actual runtime-resolved species/type mapping the calculator was constructed with (and
+        # whether the identity-mapping fallback in adapters.teacher.load_teacher was applied) --
+        # distinct from `calculator` above, which is only the DECLARED config, never the resolved
+        # runtime state.
+        "species_mapping_evidence": species_mapping_evidence,
         "teacher_config_integrity": artifact_digest(config_path) if config_path else None,
         "teacher_config_sha256": _sha256(config_path) if config_path else None,
         "source": str(Path(structures_path).resolve()),

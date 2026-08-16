@@ -105,10 +105,41 @@ class RootCauseValidationError(ValueError):
     pass
 
 
+# affected_channel values that assert a Teacher-vs-DFT physical-accuracy comparison was actually
+# made -- the exact assertion R20 demonstrated being made with no such comparison anywhere in the
+# failed stage's evidence (teacher_baseline uses no DFT labels at all). Free-text (see root_cause.
+# py's module docstring on why affected_channel is not itself a schema Enum), so matched loosely.
+_DFT_CHANNEL_MARKERS = ("dft", "reference_disagreement")
+
+
+def _asserts_dft_comparison(classification: "RootCauseClassification") -> bool:
+    channel = (classification.affected_channel or "").strip().lower()
+    # `failure_category` is a `str`-mixin Enum member (see recovery_taxonomy.failure_category_enum):
+    # `str(member)` renders "FailureCategory.reference_disagreement", not the raw registered code,
+    # so compare the member's own `.value` (equivalently, `==` against the plain string) rather than
+    # its `str()` -- otherwise this half of the gate can never fire.
+    category = classification.failure_category.value \
+        if hasattr(classification.failure_category, "value") else str(classification.failure_category)
+    return (any(marker in channel for marker in _DFT_CHANNEL_MARKERS)
+            or category == "reference_disagreement")
+
+
 def validate_root_cause_classification(classification: RootCauseClassification, *,
-                                       available_artifacts, valid_recovery_targets):
+                                       available_artifacts, valid_recovery_targets,
+                                       dft_comparison_evidence_present: bool = True):
     """Evidence-bind a classification. Raises if it cites a nonexistent artifact, has no
-    evidence, or targets an unknown recovery stage. (failure_category is enforced by the model.)"""
+    evidence, or targets an unknown recovery stage. (failure_category is enforced by the model.)
+
+    ``dft_comparison_evidence_present``: deterministically computed by the caller (see
+    ``cli._stage_evidence_reveals_dft_comparison``) from the FAILED STAGE'S OWN evidence
+    artifacts -- never trusted from the classification itself. When False, a classification
+    asserting a Teacher-vs-DFT channel/disagreement (``affected_channel`` naming "dft", or
+    ``failure_category == "reference_disagreement"``) is rejected: the failed stage made no such
+    comparison, so no evidence supports that specific claim (R20 forensic finding: teacher_baseline
+    was misclassified as a ``reference_disagreement``/``teacher_vs_dft`` failure although it uses
+    no DFT labels at all). This does not block genuine Teacher-vs-DFT diagnoses where the evidence
+    actually contains one (e.g. a reference_validation gate failure) -- only an unsupported one.
+    """
     available = set(available_artifacts)
     cited = [r.path for r in classification.evidence_refs] + \
             [r.path for r in classification.affected_artifact_refs]
@@ -120,6 +151,14 @@ def validate_root_cause_classification(classification: RootCauseClassification, 
     if classification.recommended_recovery_target not in set(valid_recovery_targets):
         raise RootCauseValidationError(
             f"invalid recovery target: {classification.recommended_recovery_target}")
+    if not dft_comparison_evidence_present and _asserts_dft_comparison(classification):
+        raise RootCauseValidationError(
+            "classification asserts a Teacher-vs-DFT channel/disagreement (affected_channel="
+            f"{classification.affected_channel!r}, failure_category="
+            f"{classification.failure_category!r}), but the failed stage's own evidence contains "
+            "no Teacher-vs-DFT comparison (no dft-labeled energy/forces, and no protected-"
+            "reference/DFT usage recorded) -- this is unsupported by evidence; classify as an "
+            "evidence/provenance gap instead (e.g. 'evidence_gap' or 'lineage_or_leakage')")
     return classification
 
 

@@ -3,6 +3,7 @@ import hashlib
 import json
 from pathlib import Path
 
+from adapters.teacher import species_mapping_is_attested
 from validation.report import validate_validation_report
 
 
@@ -103,6 +104,19 @@ def validate_teacher_baseline_report(manifest_path, required_observables=None,
     accepted = set(accepted_applicability or {"SUPPORTED", "CONDITIONAL"})
     if enforce_required_pass and applicability["status"] not in accepted:
         raise ValueError("teacher applicability is outside the accepted statuses")
+    species_mapping = payload.get("species_mapping")
+    if not isinstance(species_mapping, dict):
+        raise ValueError("teacher baseline requires species_mapping evidence")
+    if not species_mapping_is_attested(species_mapping):
+        raise ValueError(
+            "teacher baseline species_mapping is not attested: the declared config names a "
+            "chemical_symbols/chemical_species_to_atom_type_map convention (or the identity-"
+            "mapping fallback was applied) but species_mapping."
+            "runtime_chemical_species_to_atom_type_map is not a resolved non-empty mapping -- "
+            "this must reflect the actual bound calculator state "
+            "(adapters.teacher.load_teacher_with_species_evidence), not merely a declared config "
+            "value"
+        )
     for check in payload["checks"]:
         if check.get("purpose") not in PURPOSES:
             raise ValueError(f"teacher baseline check has invalid purpose: {check.get('observable')}")
