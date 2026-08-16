@@ -1063,6 +1063,7 @@ def _exec_build_teacher_baseline(proposal):
     from ase.io import read
     from adapters import load_config
     from adapters.acquisition import label_with_teacher
+    from adapters.teacher import load_teacher_with_species_evidence, species_mapping_is_attested
     from validation.teacher_baseline import validate_teacher_baseline_report
     from workflow.integrity import artifact_digest
     p = _params(proposal)
@@ -1073,8 +1074,23 @@ def _exec_build_teacher_baseline(proposal):
     labeled_output = p.get("labeled_output") or str(Path(p["report_path"]).with_suffix(".extxyz"))
     label_manifest = p.get("label_manifest_path") or str(
         Path(p["report_path"]).with_name("teacher_baseline_labels.manifest.json"))
+    teacher_cfg = load_config(p["teacher_config"])
+    # Fail-fast: attest the actual constructed-calculator species/type mapping immediately after
+    # calculator construction, BEFORE the expensive per-frame Teacher inference (label_with_teacher,
+    # below) or Teacher-MD sanity checks run -- an unattested mapping must never be discovered only
+    # after both have already been paid for.
+    _, preflight_species_mapping = load_teacher_with_species_evidence(teacher_cfg)
+    if not species_mapping_is_attested(preflight_species_mapping):
+        raise ValueError(
+            "Teacher baseline species_mapping is not attested: the declared config names a "
+            "chemical_symbols/chemical_species_to_atom_type_map convention (or the identity-"
+            "mapping fallback was applied) but the constructed calculator's own runtime state "
+            "does not carry a resolved, non-empty species/type mapping -- refusing to run Teacher "
+            f"inference or Teacher-MD against an unattested mapping (evidence: "
+            f"{preflight_species_mapping})"
+        )
     label_manifest_payload = label_with_teacher(
-        load_config(p["teacher_config"]), structures, labeled_output, label_manifest,
+        teacher_cfg, structures, labeled_output, label_manifest,
         bool(p.get("include_stress", False)))
     frames = read(labeled_output, index=":")
     energies = [float(a.info["teacher_energy"]) for a in frames]
@@ -1096,7 +1112,6 @@ def _exec_build_teacher_baseline(proposal):
     deployment_domain = p["deployment_domain"]
     applicability_status = p["applicability_status"]
     limitations = list(p["applicability_limitations"])
-    from adapters.teacher import species_mapping_is_attested
     species_mapping = label_manifest_payload.get("species_mapping_evidence") or {}
     species_mapping_attested = species_mapping_is_attested(species_mapping)
     md_sanity_checks = _teacher_md_sanity_checks(

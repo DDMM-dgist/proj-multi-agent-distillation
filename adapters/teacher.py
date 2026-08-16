@@ -6,10 +6,35 @@ and foundation models (MACE-MP-0, MatterSim, Orb, ...).
 Adding a new `kind` normally needs only a config with `calculator.factory` or
 `module`/`class` plus optional `constructor` and `model_arg`; the core does not
 dispatch on a teacher name.
+
+Species/type mapping attestation: a teacher config MAY declare a species-typing
+convention (`chemical_symbols` / legacy `chemical_species_to_atom_type_map`).
+When it does, the mapping actually bound into the constructed calculator's
+runtime state must be attested, not merely assumed from the declared config
+value (R20/R21 forensic finding: the identity-mapping fallback used to be the
+only thing that ever populated the "runtime" mapping, but it is a legacy
+exception-handling path that real NequIP 0.15 never triggers, so the runtime
+mapping silently stayed absent even though the calculator was, in fact,
+constructed and usable -- a WRONG_RUNTIME_ATTRIBUTE_PATH /
+WRAPPER_VS_MODEL_INTROSPECTION_GAP). The runtime mapping is now read directly
+off the constructed calculator's own transforms (duck-typed via a
+`lookup_table` attribute -- the shape NequIP/Allegro's
+`ChemicalSpeciesToAtomTypeMapper` builds -- indexed by ASE atomic number, never
+a hardcoded species list), and cross-checked against the declared config value
+and, when available, the compiled model archive's own embedded `type_names`
+metadata. Any disagreement between sources fails closed
+(`SpeciesMappingConflictError`); a declared convention with no resolvable
+runtime mapping fails closed via `species_mapping_is_attested`, as before.
 """
 import importlib
 
 from adapters import resolve_config_path
+
+
+class SpeciesMappingConflictError(ValueError):
+    """Two or more independently-sourced species/type mappings (declared
+    config, constructed-calculator runtime state, compiled-model metadata)
+    disagree. Raised instead of silently trusting any single source."""
 
 
 def teacher_model_reference(cfg):
@@ -22,22 +47,141 @@ def teacher_model_reference(cfg):
     return value
 
 
-def _species_mapping_evidence(declared_kwargs: dict, runtime_kwargs: dict,
-                              fallback_reason) -> dict:
-    """Deterministic evidence of the actual runtime species/type mapping a Teacher calculator was
-    constructed with, and whether the identity-mapping fallback/reconciliation below was applied.
+def _ordered_symbols_to_type_map(symbols_like):
+    """Normalize a `chemical_symbols`-shaped value (list, or the legacy
+    Dict[str, str] form some NequIP versions also accept) into
+    {chemical_symbol: 0-based type index}, using the same `enumerate()`
+    ordering `ChemicalSpeciesToAtomTypeMapper` itself uses when it builds its
+    `lookup_table` -- so this always agrees with what the constructed
+    calculator actually did with the same declared input."""
+    symbols = list(symbols_like)
+    return {symbol: index for index, symbol in enumerate(symbols)}
 
-    Derived only from the real, already-resolved calculator kwargs at construction time (never an
-    LLM's interpretation, and never a hardcoded material-specific mapping introduced here -- the
-    mapping's actual contents, whatever species it names, come entirely from the config/runtime
-    state being reported on).
+
+def _runtime_species_mapping_from_calculator(calc):
+    """Duck-type across the constructed calculator's own `transforms` for a
+    species/type mapper exposing `lookup_table` (a lookup indexed by ASE
+    atomic number, value = 0-based model type index, sentinel -1 = species not
+    mapped) -- the shape NequIP/Allegro's `ChemicalSpeciesToAtomTypeMapper`
+    builds -- and resolve it into {chemical_symbol: type_index} using ASE's own
+    atomic-number/symbol tables (never a hardcoded species list). This is the
+    actual bound runtime state, not the input kwargs the calculator happened to
+    be constructed with. Returns (mapping_or_None, source_or_None)."""
+    from ase.data import chemical_symbols as ase_chemical_symbols
+
+    transforms = getattr(calc, "transforms", None) or []
+    for position, transform in enumerate(transforms):
+        lookup_table = getattr(transform, "lookup_table", None)
+        if lookup_table is None:
+            continue
+        mapping = {}
+        for atomic_number in range(len(lookup_table)):
+            if atomic_number >= len(ase_chemical_symbols):
+                continue
+            try:
+                type_index = int(lookup_table[atomic_number])
+            except (TypeError, ValueError):
+                continue
+            if type_index < 0:
+                continue
+            mapping[ase_chemical_symbols[atomic_number]] = type_index
+        if mapping:
+            source = f"calculator.transforms[{position}].{type(transform).__name__}.lookup_table"
+            return mapping, source
+    return None, None
+
+
+def _compiled_model_type_names(compile_path):
+    """Best-effort: read a NequIP/Allegro `.nequip.pth` compiled archive's own
+    embedded `type_names` metadata directly (independent of any constructed
+    calculator), as an optional third cross-check source (Scope B: "when
+    available") against the declared/runtime species mapping. Never raises --
+    returns (None, None) whenever the archive isn't inspectable this way, since
+    the absence of this source alone must not block attestation. Returns
+    (mapping_or_None, source_or_None)."""
+    if not compile_path or not str(compile_path).endswith(".nequip.pth"):
+        return None, None
+    try:
+        import torch
+        from nequip.nn.graph_model import TYPE_NAMES_KEY
+    except Exception:
+        # Broken/partial nequip or torch installs (e.g. a torchvision import-order bug in
+        # nequip's own dependency chain) must disable this optional source, not propagate --
+        # this cross-check is best-effort ("when available"), never a hard requirement.
+        return None, None
+    try:
+        extra_files = {TYPE_NAMES_KEY: ""}
+        torch.jit.load(str(compile_path), _extra_files=extra_files, map_location="cpu")
+        raw = extra_files.get(TYPE_NAMES_KEY)
+        if not raw:
+            return None, None
+        text = raw.decode("utf-8") if isinstance(raw, bytes) else str(raw)
+        type_names = [name for name in text.split(" ") if name]
+        if not type_names:
+            return None, None
+        return (_ordered_symbols_to_type_map(type_names),
+                f"compiled_model[{compile_path}].type_names")
+    except Exception:
+        return None, None
+
+
+def _cross_check_species_mappings(sources: dict):
+    """`sources`: {source_name: mapping_or_None}. Callers already normalized
+    every mapping into {chemical_symbol: index}, so two agreeing sources
+    compare dict-equal regardless of the order the original species list was
+    declared/stored in. Fewer than two available sources means there is
+    nothing to cross-check. Any disagreement among the available sources fails
+    closed."""
+    present = {name: mapping for name, mapping in sources.items() if mapping}
+    if len(present) < 2:
+        return
+    names = list(present)
+    reference = present[names[0]]
+    conflicting = {name: mapping for name, mapping in present.items() if mapping != reference}
+    if conflicting:
+        detail = "; ".join(f"{name}={mapping}" for name, mapping in present.items())
+        raise SpeciesMappingConflictError(
+            "species/type mapping sources disagree (declared config, constructed-calculator "
+            f"runtime state, and/or compiled-model metadata): {detail}"
+        )
+
+
+def _species_mapping_evidence(declared_kwargs: dict, runtime_kwargs: dict,
+                              fallback_reason, *, runtime_mapping=None,
+                              runtime_mapping_source=None, compiled_mapping=None,
+                              compiled_mapping_source=None) -> dict:
+    """Deterministic evidence of the actual runtime species/type mapping a
+    Teacher calculator was constructed with, cross-checked against every other
+    available mapping source before being returned -- consistent sources are
+    accepted, conflicting ones fail closed (`SpeciesMappingConflictError`).
+
+    `runtime_chemical_species_to_atom_type_map` reflects the constructed
+    calculator's own state (`runtime_mapping`, introspected via
+    `_runtime_species_mapping_from_calculator`), falling back to the legacy
+    identity-mapping-fallback kwargs only when no real runtime mapping could be
+    introspected -- never merely the declared config value. Derived only from
+    the real, already-resolved calculator/runtime state (never an LLM's
+    interpretation, and never a hardcoded material-specific mapping introduced
+    here -- the mapping's actual contents, whatever species it names, come
+    entirely from the config/runtime state being reported on).
     """
+    declared_symbols = declared_kwargs.get("chemical_symbols")
+    declared_map = _ordered_symbols_to_type_map(declared_symbols) if declared_symbols else None
+    _cross_check_species_mappings({
+        "declared_config": declared_map,
+        "constructed_calculator_runtime": runtime_mapping,
+        "compiled_model_metadata": compiled_mapping,
+    })
+    resolved_runtime_map = (runtime_mapping if runtime_mapping is not None
+                            else runtime_kwargs.get("chemical_species_to_atom_type_map"))
     return {
         "declared_chemical_symbols": declared_kwargs.get("chemical_symbols"),
         "declared_chemical_species_to_atom_type_map":
             declared_kwargs.get("chemical_species_to_atom_type_map"),
-        "runtime_chemical_species_to_atom_type_map":
-            runtime_kwargs.get("chemical_species_to_atom_type_map"),
+        "runtime_chemical_species_to_atom_type_map": resolved_runtime_map,
+        "runtime_mapping_source": runtime_mapping_source,
+        "compiled_model_type_names_map": compiled_mapping,
+        "compiled_model_metadata_source": compiled_mapping_source,
         "fallback_applied": fallback_reason is not None,
         "fallback_reason": fallback_reason,
     }
@@ -73,20 +217,25 @@ def load_teacher_with_species_evidence(cfg):
     Returns (calculator, species_mapping_evidence).
     """
     calc_cfg = cfg["calculator"]
+    model = teacher_model_reference(cfg)
+    compiled_mapping, compiled_mapping_source = _compiled_model_type_names(model)
     if "factory" in calc_cfg:
         module_name, callable_name = calc_cfg["factory"].rsplit(".", 1)
         factory = getattr(importlib.import_module(module_name), callable_name)
         kwargs = dict(calc_cfg.get("kwargs", {}))
         declared_kwargs = dict(kwargs)
         model_arg = calc_cfg.get("model_arg", "model")
-        model = teacher_model_reference(cfg)
         if model_arg == "__positional__":
             calc = factory(model, **kwargs)
         else:
             if model_arg:
                 kwargs[model_arg] = model
             calc = factory(**kwargs)
-        return calc, _species_mapping_evidence(declared_kwargs, kwargs, None)
+        runtime_mapping, runtime_mapping_source = _runtime_species_mapping_from_calculator(calc)
+        return calc, _species_mapping_evidence(
+            declared_kwargs, kwargs, None,
+            runtime_mapping=runtime_mapping, runtime_mapping_source=runtime_mapping_source,
+            compiled_mapping=compiled_mapping, compiled_mapping_source=compiled_mapping_source)
     module = importlib.import_module(calc_cfg["module"])
     calc_cls = getattr(module, calc_cfg["class"])
     constructor = getattr(calc_cls, calc_cfg["constructor"]) \
@@ -94,7 +243,6 @@ def load_teacher_with_species_evidence(cfg):
     kwargs = dict(calc_cfg.get("kwargs", {}))
     declared_kwargs = dict(kwargs)
     model_arg = calc_cfg.get("model_arg", "model")
-    model = teacher_model_reference(cfg)
     fallback_reason = None
     if model_arg == "__positional__":
         try:
@@ -106,7 +254,11 @@ def load_teacher_with_species_evidence(cfg):
             kwargs["chemical_species_to_atom_type_map"] = {symbol: symbol for symbol in symbols}
             fallback_reason = str(exc)
             calc = constructor(model, **kwargs)
-        return calc, _species_mapping_evidence(declared_kwargs, kwargs, fallback_reason)
+        runtime_mapping, runtime_mapping_source = _runtime_species_mapping_from_calculator(calc)
+        return calc, _species_mapping_evidence(
+            declared_kwargs, kwargs, fallback_reason,
+            runtime_mapping=runtime_mapping, runtime_mapping_source=runtime_mapping_source,
+            compiled_mapping=compiled_mapping, compiled_mapping_source=compiled_mapping_source)
     if model_arg:
         kwargs[model_arg] = model
     try:
@@ -118,7 +270,11 @@ def load_teacher_with_species_evidence(cfg):
         kwargs["chemical_species_to_atom_type_map"] = {symbol: symbol for symbol in symbols}
         fallback_reason = str(exc)
         calc = constructor(**kwargs)
-    return calc, _species_mapping_evidence(declared_kwargs, kwargs, fallback_reason)
+    runtime_mapping, runtime_mapping_source = _runtime_species_mapping_from_calculator(calc)
+    return calc, _species_mapping_evidence(
+        declared_kwargs, kwargs, fallback_reason,
+        runtime_mapping=runtime_mapping, runtime_mapping_source=runtime_mapping_source,
+        compiled_mapping=compiled_mapping, compiled_mapping_source=compiled_mapping_source)
 
 
 def load_teacher(cfg):
