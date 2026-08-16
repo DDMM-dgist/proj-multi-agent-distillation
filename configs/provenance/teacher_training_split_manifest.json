@@ -2,6 +2,9 @@
   "schema_version": 3,
   "purpose": "Deterministic reconstruction of the KISTI Allegro teacher's original train/validation/test split, derived from recovered training artifacts, NOT trusted from any prior narrative claim. Cross-version reproduction (torch==2.6.0+cu124, the original KISTI runtime, vs torch==2.12.1+cu130, the local reconstruction runtime) has been empirically verified to produce zero membership discrepancy -- see cross_version_verification below.",
   "source_dataset": "gpu_finetune_handoff/kisti_assets/kisti_pack/dataset.xyz (sha256 of kisti_pack.tar.gz verified against kisti_pack.sha256)",
+  "source_dataset_sha256": "382d0b2b35ed9c571314ff59df71e9c989397ad7360735e3dc4c12b8b6bcabd4",
+  "index_semantics": "source_dataset_positional_index",
+  "index_semantics_note": "`records[*].global_index` is a POSITIONAL index into `source_dataset_sha256`'s own frame order (0-based, exactly 0..total_frames-1, bijective with (source_category, source_local_index)) -- this is an explicit semantic declaration, not something a generic reader should ever infer merely from the field being named `global_index`. See validation.teacher_evidence_profile._load_positional_split_manifest, which requires this exact declaration before treating this manifest as a positional-index split source, and re-verifies source_dataset_sha256 against the live dataset file before trusting it for even one frame.",
   "source_config": "gpu_finetune_handoff/kisti_assets/kisti_pack/teacher_run/.hydra/config.yaml",
   "split_method": "nequip.data.dataset.utils.RandomSplitAndIndexDataset (nequip 0.15.0/0.16.1 source read verbatim, re-implemented here using the real torch.utils.data.random_split, not a custom reimplementation of its rounding logic)",
   "split_params": {

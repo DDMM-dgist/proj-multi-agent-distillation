@@ -147,6 +147,45 @@ carry no generalization-evidence value at all.
 | validation | 1,142 | 202 | direct (`monitored_metric`) | No |
 | test | 1,142 | 208 | none (evaluated once, post-hoc) | Yes |
 
+## Positional-index join representation (second, opt-in join key)
+
+`teacher_training_split_manifest.json` now also carries `source_dataset_sha256`
+(`382d0b2b35ed9c571314ff59df71e9c989397ad7360735e3dc4c12b8b6bcabd4`, matching
+the chain-of-custody table above) and an explicit `index_semantics:
+"source_dataset_positional_index"` declaration. This licenses a SECOND,
+independent join representation, `(source_dataset_sha256, positional_index)`,
+alongside the pre-existing `(source_category, source_local_index)` key —
+`validation.teacher_evidence_profile._load_positional_split_manifest`/
+`_verified_positional_split_join` require this exact declaration, plus a live
+sha256 + frame-count + full-coverage (bijective 0..total_frames-1) recheck
+against the actual `dataset.xyz` file, before trusting `records[*].global_index`
+as a positional index for even one frame. This is precisely the caution raised
+above about `global_index` not being a safe cross-artifact key: the
+declaration + live-file reverification is what makes THIS manifest's
+`global_index` safely usable as a position into `dataset.xyz`'s specific frame
+order, without licensing that same field name in any other artifact (e.g.
+`protected_source_rows.csv`, which enumerates a different order and carries no
+such declaration).
+
+## Operational-evaluation-population run-independence (verified for r22)
+
+The 2,134-frame operational baseline's underlying structures (positions,
+species, `(source_category, source_local_index, structure_id)` identity) are
+confirmed byte-identical, extending the existing r2–r11 finding, in
+`runs/sio2-sox-allegro-simplenn-r22/artifacts/teacher_baseline_operational.extxyz`
+as well: 0 chemical-symbol mismatches, 0.0 max position difference, and an
+identical 2,134-member identity-key set, against
+`runs/sio2-sox-allegro-simplenn-r2/artifacts/teacher_baseline_candidates.extxyz`
+(sha256 `97ebfbfe248811d5a4cbb3b979f1bd0ff982595a94b7e6612155cfb3d99364f0`) — the
+run-independent, deterministically-selected candidate population (see
+`teacher_baseline_slice_manifest.json`'s `selection_policy:
+deterministic_existing_deployment_evidence_v1`). r22's copy differs only by the
+addition of that run's own `teacher_energy`/`teacher_forces`/`label_source`
+Teacher-prediction fields — it adds no new/different structures. A campaign
+that needs this population's structural content therefore has a run-independent
+source (r2's candidates file, or the deterministic slice-manifest selection
+policy applied fresh) and need not depend on the aborted R22 run's own copy.
+
 ## What this file does NOT do
 
 - Does not mutate, re-run, or bind to R11 or any other specific run.

@@ -8,7 +8,15 @@ may, and often does, contain more than one member.
 """
 from __future__ import annotations
 
+import json
+import tempfile
 import unittest
+from pathlib import Path
+
+import numpy as np
+from ase import Atoms
+from ase.calculators.singlepoint import SinglePointCalculator
+from ase.io import write
 
 from validation.teacher_evidence_profile import (
     CAMPAIGN_INSUFFICIENT_EVIDENCE_FOR_PLANNING,
@@ -19,7 +27,11 @@ from validation.teacher_evidence_profile import (
     PROTECTED_DATA_RESTRICTIONS,
     TRAINING_CORPUS_CONSISTENCY,
     TeacherEvidenceProfile,
+    _frame_has_finite_labels,
+    _load_positional_split_manifest,
+    _verified_positional_split_join,
     derive_admissible_decision_space,
+    inspect_teacher_evidence,
 )
 
 
@@ -164,6 +176,259 @@ class AdmissibleDecisionSpaceTests(unittest.TestCase):
         self.assertIn(ORIGINAL_HELDOUT_FIDELITY, result["admissible_components"])
         self.assertNotIn(DEPLOYMENT_APPLICABILITY, result["admissible_components"])
         self.assertNotIn(INDEPENDENT_REFERENCE_FIDELITY, result["admissible_components"])
+
+
+def _custom_key_frame(local_index, *, category="bulk", energy=-1.0, forces=None):
+    a = Atoms("Cu", positions=[[local_index, 0, 0]], cell=[10, 10, 10], pbc=True)
+    a.info["source_category"] = category
+    a.info["source_local_index"] = local_index
+    a.info["dft_energy"] = energy
+    a.new_array("dft_forces", forces if forces is not None else np.zeros((1, 3)))
+    return a
+
+
+def _ase_calc_frame(local_index, *, category="bulk", energy=-1.0, forces=None, calc=True):
+    a = Atoms("Cu", positions=[[local_index, 0, 0]], cell=[10, 10, 10], pbc=True)
+    a.info["source_category"] = category
+    a.info["source_local_index"] = local_index
+    if calc:
+        a.calc = SinglePointCalculator(
+            a, energy=energy, forces=forces if forces is not None else np.zeros((1, 3)))
+    return a
+
+
+class ASELabelFallbackTests(unittest.TestCase):
+    """Item 1: standard ASE calculator-backed labels, generically recognized -- only as a
+    fallback when the configured custom-key convention is genuinely absent."""
+
+    def test_custom_key_labels_still_recognized_unchanged(self):
+        frame = _custom_key_frame(0)
+        self.assertTrue(
+            _frame_has_finite_labels(frame, energy_key="dft_energy", forces_key="dft_forces"))
+
+    def test_standard_ase_calculator_energy_forces_recognized(self):
+        frame = _ase_calc_frame(0)
+        self.assertIsNone(frame.info.get("dft_energy"))
+        self.assertTrue(
+            _frame_has_finite_labels(frame, energy_key="dft_energy", forces_key="dft_forces"))
+
+    def test_missing_calculator_fails_closed(self):
+        frame = _ase_calc_frame(0, calc=False)
+        self.assertFalse(
+            _frame_has_finite_labels(frame, energy_key="dft_energy", forces_key="dft_forces"))
+
+    def test_non_finite_energy_fails_closed(self):
+        frame = _ase_calc_frame(0, energy=float("nan"))
+        self.assertFalse(
+            _frame_has_finite_labels(frame, energy_key="dft_energy", forces_key="dft_forces"))
+
+    def test_non_finite_forces_fail_closed(self):
+        frame = _ase_calc_frame(0, forces=np.array([[float("inf"), 0.0, 0.0]]))
+        self.assertFalse(
+            _frame_has_finite_labels(frame, energy_key="dft_energy", forces_key="dft_forces"))
+
+    def test_malformed_force_shape_fails_closed(self):
+        frame = _ase_calc_frame(0, forces=np.zeros((2, 3)))  # 1 atom, but 2 force rows
+        self.assertFalse(
+            _frame_has_finite_labels(frame, energy_key="dft_energy", forces_key="dft_forces"))
+
+    def test_malformed_custom_labels_do_not_fall_through_to_calculator(self):
+        # A frame that DECLARES a custom-key label but stores it malformed must fail closed on
+        # that path -- it must never silently fall through to a (possibly valid) calculator label.
+        frame = _custom_key_frame(0, energy=float("nan"))
+        frame.calc = SinglePointCalculator(frame, energy=-1.0, forces=np.zeros((1, 3)))
+        self.assertFalse(
+            _frame_has_finite_labels(frame, energy_key="dft_energy", forces_key="dft_forces"))
+
+
+def _write_positional_manifest(path: Path, *, records, source_dataset_sha256, total_frames):
+    payload = {
+        "index_semantics": "source_dataset_positional_index",
+        "source_dataset_sha256": source_dataset_sha256,
+        "total_frames": total_frames,
+        "records": records,
+    }
+    path.write_text(json.dumps(payload))
+
+
+class PositionalSplitJoinTests(unittest.TestCase):
+    """Item 2: the second, opt-in (source_dataset_sha256, positional_index) join representation
+    -- admissible only after fail-closed digest/count/coverage verification against the REAL
+    training-DB file."""
+
+    def _write_db(self, root: Path, n=4):
+        frames = [_ase_calc_frame(i) for i in range(n)]
+        db_path = root / "db.extxyz"
+        write(str(db_path), frames)
+        import hashlib
+        sha256 = hashlib.sha256(db_path.read_bytes()).hexdigest()
+        return db_path, sha256
+
+    def test_positional_join_succeeds_with_matching_digest_count_and_coverage(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            db_path, sha256 = self._write_db(root, n=4)
+            db_frames = [_ase_calc_frame(i) for i in range(4)]
+            manifest_path = root / "manifest.json"
+            _write_positional_manifest(
+                manifest_path,
+                records=[{"global_index": i, "split": "train" if i < 3 else "test"}
+                         for i in range(4)],
+                source_dataset_sha256=sha256, total_frames=4)
+            manifest_data = _load_positional_split_manifest(manifest_path)
+            self.assertIsNotNone(manifest_data)
+            verified = _verified_positional_split_join(
+                manifest_data, dataset_path=db_path, db_frames=db_frames)
+            self.assertEqual(verified, {0: "train", 1: "train", 2: "train", 3: "test"})
+
+    def test_digest_mismatch_fails_closed(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            db_path, _real_sha256 = self._write_db(root, n=4)
+            db_frames = [_ase_calc_frame(i) for i in range(4)]
+            manifest_path = root / "manifest.json"
+            _write_positional_manifest(
+                manifest_path,
+                records=[{"global_index": i, "split": "train"} for i in range(4)],
+                source_dataset_sha256="0" * 64, total_frames=4)
+            manifest_data = _load_positional_split_manifest(manifest_path)
+            verified = _verified_positional_split_join(
+                manifest_data, dataset_path=db_path, db_frames=db_frames)
+            self.assertIsNone(verified)
+
+    def test_frame_count_mismatch_fails_closed(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            db_path, sha256 = self._write_db(root, n=4)
+            db_frames = [_ase_calc_frame(i) for i in range(4)]
+            manifest_path = root / "manifest.json"
+            _write_positional_manifest(
+                manifest_path,
+                records=[{"global_index": i, "split": "train"} for i in range(4)],
+                source_dataset_sha256=sha256, total_frames=5)  # declared count disagrees
+            manifest_data = _load_positional_split_manifest(manifest_path)
+            verified = _verified_positional_split_join(
+                manifest_data, dataset_path=db_path, db_frames=db_frames)
+            self.assertIsNone(verified)
+
+    def test_duplicate_positional_index_fails_closed(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            manifest_path = root / "manifest.json"
+            _write_positional_manifest(
+                manifest_path,
+                records=[{"global_index": 0, "split": "train"},
+                         {"global_index": 0, "split": "test"},
+                         {"global_index": 1, "split": "train"}],
+                source_dataset_sha256="ab" * 32, total_frames=2)
+            manifest_data = _load_positional_split_manifest(manifest_path)
+            self.assertIsNone(manifest_data)
+
+    def test_missing_positional_index_fails_closed(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            db_path, sha256 = self._write_db(root, n=4)
+            db_frames = [_ase_calc_frame(i) for i in range(4)]
+            manifest_path = root / "manifest.json"
+            _write_positional_manifest(
+                manifest_path,
+                # index 2 omitted entirely -- only 3 records for a declared 4-frame total.
+                records=[{"global_index": i, "split": "train"} for i in (0, 1, 3)],
+                source_dataset_sha256=sha256, total_frames=4)
+            manifest_data = _load_positional_split_manifest(manifest_path)
+            self.assertIsNotNone(manifest_data)  # loads fine; the omission is a coverage gap
+            verified = _verified_positional_split_join(
+                manifest_data, dataset_path=db_path, db_frames=db_frames)
+            self.assertIsNone(verified)  # record count (3) != declared total_frames (4): fail closed
+
+    def test_out_of_range_positional_index_fails_closed(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            db_path, sha256 = self._write_db(root, n=4)
+            db_frames = [_ase_calc_frame(i) for i in range(4)]
+            manifest_path = root / "manifest.json"
+            _write_positional_manifest(
+                manifest_path,
+                records=[{"global_index": i, "split": "train"} for i in (0, 1, 2, 99)],
+                source_dataset_sha256=sha256, total_frames=4)
+            manifest_data = _load_positional_split_manifest(manifest_path)
+            verified = _verified_positional_split_join(
+                manifest_data, dataset_path=db_path, db_frames=db_frames)
+            self.assertIsNone(verified)
+
+
+class InspectTeacherEvidenceJoinIntegrationTests(unittest.TestCase):
+    """Item 2/3 integration: ``inspect_teacher_evidence`` end-to-end over both join
+    representations, including its fail-closed conflict policy."""
+
+    def _write_db(self, root: Path, n=4):
+        frames = [_ase_calc_frame(i) for i in range(n)]
+        db_path = root / "db.extxyz"
+        write(str(db_path), frames)
+        import hashlib
+        sha256 = hashlib.sha256(db_path.read_bytes()).hexdigest()
+        return db_path, sha256
+
+    def test_category_local_index_join_still_works_alone(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            db_path, _sha256 = self._write_db(root, n=4)
+            manifest_path = root / "manifest.json"
+            manifest_path.write_text(json.dumps({"records": [
+                {"source_category": "bulk", "source_local_index": i,
+                 "split": "train" if i < 3 else "test"} for i in range(4)]}))
+            profile, _ = inspect_teacher_evidence(
+                original_training_db_path=db_path,
+                split_source_manifest_paths=[manifest_path],
+                target_split="test")
+            self.assertTrue(profile.original_split_recovered)
+            self.assertTrue(profile.genuine_holdout_test_available)
+            self.assertEqual(profile.genuine_holdout_test_frame_count, 1)
+
+    def test_both_join_representations_agreeing_succeeds(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            db_path, sha256 = self._write_db(root, n=4)
+            category_manifest = root / "category_manifest.json"
+            category_manifest.write_text(json.dumps({"records": [
+                {"source_category": "bulk", "source_local_index": i,
+                 "split": "train" if i < 3 else "test"} for i in range(4)]}))
+            positional_manifest = root / "positional_manifest.json"
+            _write_positional_manifest(
+                positional_manifest,
+                records=[{"global_index": i, "split": "train" if i < 3 else "test"}
+                         for i in range(4)],
+                source_dataset_sha256=sha256, total_frames=4)
+            profile, _ = inspect_teacher_evidence(
+                original_training_db_path=db_path,
+                split_source_manifest_paths=[category_manifest, positional_manifest],
+                target_split="test")
+            self.assertTrue(profile.original_split_recovered)
+            self.assertTrue(profile.genuine_holdout_test_available)
+            self.assertEqual(profile.genuine_holdout_test_frame_count, 1)
+
+    def test_both_join_representations_disagreeing_fails_closed(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            db_path, sha256 = self._write_db(root, n=4)
+            # Category join says index 3 is "test"; positional join says index 3 is "train" --
+            # a genuine cross-representation conflict.
+            category_manifest = root / "category_manifest.json"
+            category_manifest.write_text(json.dumps({"records": [
+                {"source_category": "bulk", "source_local_index": i,
+                 "split": "train" if i < 3 else "test"} for i in range(4)]}))
+            positional_manifest = root / "positional_manifest.json"
+            _write_positional_manifest(
+                positional_manifest,
+                records=[{"global_index": i, "split": "train"} for i in range(4)],
+                source_dataset_sha256=sha256, total_frames=4)
+            profile, _ = inspect_teacher_evidence(
+                original_training_db_path=db_path,
+                split_source_manifest_paths=[category_manifest, positional_manifest],
+                target_split="test")
+            self.assertFalse(profile.original_split_recovered)
+            self.assertFalse(profile.genuine_holdout_test_available)
+            self.assertIsNone(profile.genuine_holdout_test_frame_count)
 
 
 if __name__ == "__main__":  # pragma: no cover

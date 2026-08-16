@@ -203,16 +203,146 @@ def _frame_split_key(atoms, *, label: str):
     return (str(cat), int(local_index))
 
 
+def _frame_has_finite_ase_calculator_labels(atoms) -> bool:
+    """Fall back to the standard ASE calculator-attached label convention
+    (``atoms.calc``/``atoms.calc.results`` via ``get_potential_energy()``/``get_forces()``) for a
+    frame that carries no CONFIGURED custom-key label. This is a storage-representation fact
+    only: whether the resulting values are genuine DFT/reference labels is established by the
+    caller's frozen evidence source/provenance role (e.g. ``original_training_db_path`` being the
+    attested original training corpus), never guessed here merely because an ASE calculator
+    happens to be attached. Fails closed (returns False) on: no calculator attached;
+    ``PropertyNotImplementedError`` for either property; non-finite energy; non-finite forces; a
+    force array shape other than ``(len(atoms), 3)``.
+    """
+    import numpy as np
+    from ase.calculators.calculator import PropertyNotImplementedError
+
+    if atoms.calc is None:
+        return False
+    try:
+        energy = atoms.get_potential_energy()
+        forces = atoms.get_forces()
+    except PropertyNotImplementedError:
+        return False
+    if not np.isfinite(float(energy)):
+        return False
+    forces = np.asarray(forces, dtype=float)
+    if forces.shape != (len(atoms), 3):
+        return False
+    return bool(np.all(np.isfinite(forces)))
+
+
 def _frame_has_finite_labels(atoms, *, energy_key: str, forces_key: str) -> bool:
+    """Whether ``atoms`` carries a genuinely finite energy/forces label. Tries the CONFIGURED
+    custom-key storage convention (``atoms.info[energy_key]``/``atoms.arrays[forces_key]``)
+    FIRST -- unchanged from this function's original behavior. Only when that convention is
+    genuinely ABSENT (neither key present at all, not merely malformed) does it fall back to the
+    standard ASE calculator-attached convention (see ``_frame_has_finite_ase_calculator_labels``).
+    A frame that declares a custom-key label but stores it malformed still fails closed on that
+    path -- it never silently falls through to a different label source.
+    """
     import numpy as np
 
-    value = atoms.info.get(energy_key)
-    if not isinstance(value, (int, float)) or not np.isfinite(float(value)):
+    custom_energy = atoms.info.get(energy_key)
+    custom_forces = atoms.arrays.get(forces_key)
+    if custom_energy is None and custom_forces is None:
+        return _frame_has_finite_ase_calculator_labels(atoms)
+    if not isinstance(custom_energy, (int, float)) or not np.isfinite(float(custom_energy)):
         return False
-    forces = atoms.arrays.get(forces_key)
-    if forces is None or not np.all(np.isfinite(np.asarray(forces, dtype=float))):
+    if custom_forces is None or not np.all(np.isfinite(np.asarray(custom_forces, dtype=float))):
         return False
     return True
+
+
+def _load_positional_split_manifest(path: Union[str, Path]):
+    """Load one manifest as a dataset-scoped positional-index split source, IFF it explicitly
+    self-declares that semantics via top-level ``index_semantics ==
+    "source_dataset_positional_index"`` and a bound ``source_dataset_sha256``. A manifest is
+    never treated as a positional-index source merely because its records happen to carry a
+    field named ``global_index`` -- a field's NAME is not evidence of its MEANING; only this
+    explicit declaration is.
+
+    Returns ``None`` if ``path`` is not a JSON file, does not parse, is not a dict, lacks the
+    declaration, or its records are malformed/self-contradictory (e.g. a duplicate positional
+    index within the manifest itself). Otherwise returns ``{"source_dataset_sha256": str,
+    "index_to_split": {int: str}, "total_frames": int}`` -- WITHOUT yet verifying that the
+    declared sha256/count match any real dataset file; that verification is
+    ``_verified_positional_split_join``'s job, the only gate allowed to actually mark
+    ``original_split_recovered`` True from this representation.
+    """
+    p = Path(path)
+    if p.suffix.lower() != ".json" or not p.exists():
+        return None
+    try:
+        payload = json.loads(p.read_text(encoding="utf-8"))
+    except Exception:
+        return None
+    if not isinstance(payload, dict):
+        return None
+    if payload.get("index_semantics") != "source_dataset_positional_index":
+        return None
+    source_dataset_sha256 = payload.get("source_dataset_sha256")
+    records = payload.get("records")
+    total_frames = payload.get("total_frames")
+    if not isinstance(source_dataset_sha256, str) or not source_dataset_sha256:
+        return None
+    if not isinstance(records, list) or not records:
+        return None
+    if not isinstance(total_frames, int) or total_frames <= 0:
+        return None
+    index_to_split: dict = {}
+    for record in records:
+        if not isinstance(record, dict):
+            return None
+        index = record.get("global_index")
+        split = record.get("split")
+        if not isinstance(index, int) or isinstance(index, bool) or split is None:
+            return None
+        if index in index_to_split:
+            return None
+        index_to_split[index] = split
+    return {
+        "source_dataset_sha256": source_dataset_sha256,
+        "index_to_split": index_to_split,
+        "total_frames": total_frames,
+    }
+
+
+def _verified_positional_split_join(manifest_data: dict, *, dataset_path, db_frames):
+    """Fail-closed verification gate for a loaded positional-split manifest (see
+    ``_load_positional_split_manifest``) against the REAL training-DB file: returns the
+    ``{positional_index: split}`` mapping only when ALL of the following hold, and ``None``
+    (fail closed) otherwise --
+
+      * the LIVE sha256 of ``dataset_path`` equals the manifest's declared
+        ``source_dataset_sha256`` (never trust a stale/asserted digest);
+      * the manifest's declared ``total_frames`` equals its own record count AND the actual
+        parsed frame count of ``db_frames``;
+      * the set of positional indices across records is EXACTLY ``{0, ..., total_frames - 1}`` --
+        no duplicates (already excluded when the manifest was loaded) and no omissions or
+        out-of-range values.
+
+    This join is never partially trusted: any single mismatch voids the whole mapping.
+    """
+    from workflow.integrity import sha256_file
+
+    if dataset_path is None:
+        return None
+    resolved_dataset_path = Path(dataset_path).resolve()
+    if not resolved_dataset_path.is_file():
+        return None
+    live_sha256 = sha256_file(resolved_dataset_path)
+    if live_sha256 != manifest_data["source_dataset_sha256"]:
+        return None
+    total_frames = manifest_data["total_frames"]
+    index_to_split = manifest_data["index_to_split"]
+    if len(index_to_split) != total_frames:
+        return None
+    if total_frames != len(db_frames):
+        return None
+    if set(index_to_split) != set(range(total_frames)):
+        return None
+    return index_to_split
 
 
 def inspect_teacher_evidence(
@@ -250,12 +380,23 @@ def inspect_teacher_evidence(
       * ``teacher_model_available``: ``teacher_model_path`` is given and exists.
       * ``original_training_db_available``/``original_labels_available``: the training DB parses
         as a non-empty structure file, and (for labels) EVERY frame in it carries finite
-        ``label_energy_key``/``label_forces_key`` values -- a DB with even one unlabeled frame
-        does not satisfy ``original_labels_available``.
-      * ``original_split_recovered``: a genuine crosswalk join (``bounded_evidence.
+        ``label_energy_key``/``label_forces_key`` values -- either via the CONFIGURED custom-key
+        convention, or, when that convention is genuinely absent, via a standard ASE
+        calculator-attached label (see ``_frame_has_finite_labels``,
+        ``_frame_has_finite_ase_calculator_labels``) -- a DB with even one unlabeled frame does not
+        satisfy ``original_labels_available``.
+      * ``original_split_recovered``: EITHER of two independent join representations resolving
+        unambiguously for the ENTIRE corpus -- (1) a crosswalk join (``bounded_evidence.
         build_split_crosswalk``) of every training-DB frame's ``(source_category,
-        source_local_index)`` against ``split_source_manifest_paths`` resolves unambiguously for
-        the ENTIRE corpus -- one unjoinable or ambiguous frame fails the whole check closed.
+        source_local_index)`` against ``split_source_manifest_paths``, or (2) a dataset-scoped
+        positional-index join, ``(source_dataset_sha256, positional_index)`` (see
+        ``_load_positional_split_manifest``/``_verified_positional_split_join``), admissible only
+        after fail-closed verification that the live training-DB sha256 and frame count match the
+        manifest's declared values and every positional index resolves exactly once. If only one
+        representation is available and joinable, it is used. If BOTH are available, they must
+        AGREE frame-for-frame -- any disagreement fails the whole check closed rather than
+        silently preferring either representation. One unjoinable or ambiguous frame (in whichever
+        representation(s) are in play) fails the whole check closed.
       * ``genuine_holdout_test_available``/``genuine_holdout_test_frame_count``: computed from
         that SAME join -- the count of training-DB frames whose resolved split equals
         ``target_split`` -- only when ``original_split_recovered`` holds and ``target_split`` is
@@ -301,17 +442,42 @@ def inspect_teacher_evidence(
         resolved = crosswalk["resolved"]
         ambiguous = crosswalk["ambiguous"]
         keys = []
-        joinable = True
+        category_joinable = True
         for atoms in db_frames:
             key = _frame_split_key(atoms, label="original_training_db_path")
             if key is None or key in ambiguous or key not in resolved:
-                joinable = False
+                category_joinable = False
                 break
             keys.append(key)
-        original_split_recovered = joinable and bool(keys)
+        category_splits = (
+            [resolved[key] for key in keys] if category_joinable and keys else None)
+
+        positional_splits = None
+        for manifest_path in split_source_manifest_paths:
+            manifest_data = _load_positional_split_manifest(manifest_path)
+            if manifest_data is None:
+                continue
+            verified = _verified_positional_split_join(
+                manifest_data, dataset_path=original_training_db_path, db_frames=db_frames)
+            if verified is not None:
+                positional_splits = [verified[i] for i in range(len(db_frames))]
+                break
+
+        if category_splits is not None and positional_splits is not None:
+            # Both representations resolved independently -- they must AGREE, frame for frame,
+            # or this fails closed rather than silently preferring either one.
+            effective_splits = category_splits if category_splits == positional_splits else None
+        elif category_splits is not None:
+            effective_splits = category_splits
+        elif positional_splits is not None:
+            effective_splits = positional_splits
+        else:
+            effective_splits = None
+
+        original_split_recovered = effective_splits is not None
         if original_split_recovered and target_split:
             genuine_holdout_test_frame_count = sum(
-                1 for key in keys if resolved[key] == target_split)
+                1 for split in effective_splits if split == target_split)
             genuine_holdout_test_available = genuine_holdout_test_frame_count > 0
             if not genuine_holdout_test_available:
                 genuine_holdout_test_frame_count = None
