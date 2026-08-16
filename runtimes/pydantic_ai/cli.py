@@ -113,6 +113,28 @@ def _build_parser() -> argparse.ArgumentParser:
     approve_recovery.add_argument("--run-dir", required=True)
     approve_recovery.add_argument("--approved-by", required=True)
     approve_recovery.add_argument("--note", default=None)
+    plan_teacher_validation = sub.add_parser(
+        "plan-teacher-validation",
+        help="manual/debug: run the autonomous Teacher-validation planning step outside "
+             "run-campaign's automatic pre-Stage-1 invocation (write-once; a no-op if a plan is "
+             "already committed)")
+    plan_teacher_validation.add_argument("--run-dir", required=True)
+    plan_teacher_validation.add_argument("--runtime", choices=("mock", "pydantic-ai"),
+                                        required=True)
+    plan_teacher_validation.add_argument("--agent-specs-dir", default="agent_specs")
+    plan_teacher_validation.add_argument("--exchange-dir", default=None)
+    plan_teacher_validation.add_argument("--repo-root", default=".")
+    plan_teacher_validation.add_argument(
+        "--mock-orchestrator-response", default=None,
+        help="test-only: canned TeacherValidationPlanProposal JSON (required with --runtime mock)")
+    authorize_downstream_reliance = sub.add_parser(
+        "authorize-downstream-teacher-reliance",
+        help="record explicit human approval for costly downstream reliance (Teacher labeling / "
+             "Student training) on a committed Teacher validation plan that lacks predictive-"
+             "fidelity evidence")
+    authorize_downstream_reliance.add_argument("--run-dir", required=True)
+    authorize_downstream_reliance.add_argument("--authorized-by", required=True)
+    authorize_downstream_reliance.add_argument("--note", default=None)
     r = sub.add_parser("run-task", help="run one task through the runtime")
     r.add_argument("--runtime", choices=("mock", "pydantic-ai"), required=True)
     r.add_argument("--agent", required=True, help="agent/role name (spec basename)")
@@ -155,6 +177,115 @@ def _stage_config(controller, stage_name):
     return {}
 
 
+def _selective_provenance_inputs(controller, stage_name):
+    """Return the small, explicitly-declared set of provenance-only run INPUT paths that
+    ``stage_name``'s bounded-evidence assembly should see, beyond its own registered stage output
+    artifacts (``c.state["artifacts"]``, which is all ``run_production_stage`` bound before this
+    existed).
+
+    Generic over the declaring block's shape, never a hardcoded manifest/stage name: any top-level
+    workflow-config key ending in ``_provenance`` whose value is a dict declares its own scope --
+    ``applies_to_stage`` (matched against ``stage_name``) and ``bound_evidence_input_indices``
+    (the ONLY indices from that block actually added; a block may reference other, purely
+    documentary input indices -- e.g. a human-readable provenance record -- that it deliberately
+    leaves out of this list). Each index is looked up in ``controller.state["inputs"]`` (the full
+    run input roster -- see ``RunController.initialize``). This is deliberately NOT
+    ``_cmd_preflight``'s "every input, unfiltered" approach: only inputs a block explicitly opts
+    in, by index, are ever added. A block whose declared ``role`` names a run-declared
+    ``protected_reference_roles`` entry is skipped entirely, so protected-reference data can never
+    reach a stage's Judge through this path.
+    """
+    import yaml
+    cfg = yaml.safe_load(Path(controller.state["workflow_config"]).read_text()) or {}
+    protected_roles = set(controller.state.get("protected_reference_roles", []))
+    inputs = controller.state.get("inputs", [])
+    paths = []
+    for key, block in cfg.items():
+        if not key.endswith("_provenance") or not isinstance(block, dict):
+            continue
+        if block.get("applies_to_stage") != stage_name:
+            continue
+        if block.get("role") in protected_roles:
+            continue
+        indices = block.get("bound_evidence_input_indices")
+        if not isinstance(indices, list):
+            continue
+        for value in indices:
+            if isinstance(value, int) and 0 <= value < len(inputs):
+                path = inputs[value].get("snapshot") or inputs[value].get("source")
+                if path:
+                    paths.append(path)
+    return paths
+
+
+def _teacher_validation_not_applicable_reason(controller, stage_name, stage_cfg):
+    """Return a non-empty reason string iff ``stage_name`` declares an OPTIONAL
+    ``teacher_validation_component`` (a single ``validation.teacher_evidence_profile.
+    VALIDATION_COMPONENTS`` name) and this run's own COMMITTED ``teacher_validation_plan`` did
+    not select it -- meaning this stage's work does not apply to this run at all. Returns None
+    (stage IS applicable / dispatch proceeds normally) whenever the stage declares no such
+    component, or the component IS among the plan's ``selected_components``.
+
+    A stage that declares this key but has no committed plan yet is left to whatever normal
+    dispatch failure follows (never silently marked not-applicable for a merely-not-yet-planned
+    run) -- the automatic pre-campaign planning step is expected to have already committed a plan
+    before any stage reaches this check when a workflow declares ``teacher_evidence_sources``."""
+    component = stage_cfg.get("teacher_validation_component")
+    if not component:
+        return None
+    plan = controller.state.get("teacher_validation_plan")
+    if plan is None:
+        return None
+    if component in (plan.get("selected_components") or []):
+        return None
+    return (f"stage {stage_name!r} requires Teacher-validation component {component!r}, which "
+           f"this run's committed Teacher validation plan (selected_components="
+           f"{plan.get('selected_components')!r}) does not select")
+
+
+def _teacher_validation_downstream_reliance_gap(controller, stage_name, stage_cfg):
+    """Return a non-empty reason string iff ``stage_name`` is a COSTLY downstream-reliance stage
+    (``approval_boundary`` in ``{"costly_teacher_labeling", "costly_training"}``) that would rely
+    on this run's committed Teacher validation plan while that plan lacks
+    ``ORIGINAL_HELDOUT_FIDELITY``/``INDEPENDENT_REFERENCE_FIDELITY``, and no distinct
+    ``authorize_downstream_teacher_reliance`` has been recorded for it yet.
+
+    This is a SEPARATE gate from the stage's own generic ``approval_boundary`` action-approval
+    mechanism (``grant_action_approval``/``has_action_approval``): that mechanism authorizes the
+    action in general, independent of any Teacher-validation evidence; this one specifically
+    binds a human's knowing acceptance of relying on an evidence-limited Teacher to the EXACT
+    committed plan (see ``RunController.authorize_downstream_teacher_reliance`` -- the approval
+    recorded there is bound to this run's ``evidence_profile_sha256``/``validation_objectives``/
+    plan ``content_sha256`` and is invalidated by any change to them).
+
+    Returns None (no gap -- dispatch proceeds to the normal approval_boundary/producer path) when
+    the stage isn't costly, no plan is committed yet (nothing to check against -- a stage
+    reaching this point with no plan either declares no ``teacher_evidence_sources`` at all, or
+    planning has not yet run; either way this is not this gate's concern), the plan already
+    includes a fidelity component, or downstream reliance has already been authorized.
+    """
+    route = stage_cfg.get("pydantic_ai") or {}
+    if route:
+        boundary = route.get("approval_boundary")
+    else:
+        default = _default_stage_route(stage_name)
+        boundary = default[2] if default else None
+    if boundary not in ("costly_teacher_labeling", "costly_training"):
+        return None
+    plan = controller.state.get("teacher_validation_plan")
+    if plan is None:
+        return None
+    fidelity = {"ORIGINAL_HELDOUT_FIDELITY", "INDEPENDENT_REFERENCE_FIDELITY"}
+    if fidelity & set(plan.get("selected_components") or []):
+        return None
+    if plan.get("downstream_reliance_approval") is not None:
+        return None
+    return (f"stage {stage_name!r} (approval_boundary={boundary!r}) relies on this run's "
+           f"committed Teacher validation plan, which selected only "
+           f"{plan.get('selected_components')!r} (no predictive-fidelity component) -- run "
+           "`authorize-downstream-teacher-reliance` before this stage may dispatch")
+
+
 def _default_stage_route(stage_name):
     return {
         "teacher_baseline": ("simulation", "build_teacher_baseline", "costly_teacher_labeling"),
@@ -186,13 +317,31 @@ def _input_source(controller, contains=None, suffix=None, exclude_contains=None)
     return None
 
 
-def _fill_default_parameters(controller, stage_name, params):
-    """Fill in the one generic default this framework infers on the caller's behalf:
+def _fill_default_parameters(controller, stage_name, params, route=None):
+    """Fill in the generic defaults this framework infers on the caller's behalf:
     a `reference_validation` stage with no bound parameters resolves its Teacher config
     and report/prediction output paths from the controller's bound inputs/declared
     outputs. Every other stage (including `teacher_baseline`, which requires an explicit
     `structures_path` -- there is no safe generic guess for which bound structures file
-    represents "the" deployment-domain baseline) must be given explicit parameters."""
+    represents "the" deployment-domain baseline) must be given explicit parameters.
+
+    A stage whose ``pydantic_ai`` route declares ``parameters_from_teacher_validation_plan:
+    true`` additionally gets ``target_split``/``reference_kind``/``source_dataset_role`` filled
+    from this run's own COMMITTED ``teacher_validation_plan`` (see
+    ``RunController.commit_teacher_validation_plan``) -- only for keys the stage config does not
+    already set explicitly (an explicit stage parameter always wins). This is opt-in per stage
+    (never automatic for a stage that does not declare the flag) and fails closed if no plan has
+    been committed yet, since there is nothing to fill from."""
+    if (route or {}).get("parameters_from_teacher_validation_plan"):
+        plan = controller.state.get("teacher_validation_plan")
+        if plan is None:
+            raise ValueError(
+                f"stage {stage_name!r} declares parameters_from_teacher_validation_plan but no "
+                "Teacher validation plan has been committed for this run yet"
+            )
+        for key in ("target_split", "reference_kind", "source_dataset_role"):
+            if key not in params and plan.get(key) is not None:
+                params[key] = plan[key]
     if not params and stage_name == "reference_validation":
         stage = controller.stage(stage_name)
         outputs = stage.get("outputs") or []
@@ -308,7 +457,7 @@ def _proposal_from_stage(controller, stage_name, stage_cfg):
         if isinstance(value, dict):
             return {k: fmt(v) for k, v in value.items()}
         return value
-    params = fmt(_fill_default_parameters(controller, stage_name, params))
+    params = fmt(_fill_default_parameters(controller, stage_name, params, route=route))
     protected_reference = _protected_reference_from_inputs(controller)
     if action == "validate_teacher_reference":
         if not protected_reference:
@@ -1067,6 +1216,21 @@ def run_production_stage(controller, stage_name, *, runtime, agent_specs_dir="ag
     c.verify_inputs()
     emitter.emit("stage_selected", **stage_progress_fields(c, stage_name))
     stage_cfg = _stage_config(c, stage_name)
+    not_applicable_reason = _teacher_validation_not_applicable_reason(c, stage_name, stage_cfg)
+    if not_applicable_reason is not None:
+        c.mark_stage_not_applicable(stage_name, reason=not_applicable_reason)
+        emitter.emit("stage_marked_not_applicable", stage=stage_name,
+                    detail={"reason": not_applicable_reason})
+        return StageRunResult("NOT_APPLICABLE", EXIT_SUCCESS, not_applicable_reason)
+    reliance_gap = _teacher_validation_downstream_reliance_gap(c, stage_name, stage_cfg)
+    if reliance_gap is not None:
+        emitter.emit("approval_required", stage=stage_name,
+                    detail={"status": "APPROVAL_REQUIRED",
+                            "approval_boundary": "teacher_validation_downstream_reliance"})
+        return StageRunResult(
+            "APPROVAL_REQUIRED", EXIT_APPROVAL_REQUIRED,
+            f"APPROVAL_REQUIRED: teacher_validation_downstream_reliance: {reliance_gap}",
+            approval_boundary="teacher_validation_downstream_reliance")
     proposal, role = _proposal_from_stage(c, stage_name, stage_cfg)
     try:
         proposal = _bind_acquisition_plan_for_stage(c, proposal)
@@ -1077,6 +1241,7 @@ def run_production_stage(controller, stage_name, *, runtime, agent_specs_dir="ag
         raise
     evidence_path = c.run_dir / "exchange" / "bounded_evidence" / f"{stage_name}.json"
     upstream = [a["path"] for a in c.state.get("artifacts", [])]
+    upstream += _selective_provenance_inputs(c, stage_name)
     build_bounded_evidence(upstream, evidence_path, protocol_refs=[c.state.get("workflow_config")])
     specs = load_agent_specs(agent_specs_dir)
     task = _producer_task(stage_name, role, evidence_path, c, proposal)
@@ -1222,7 +1387,9 @@ def run_production_stage(controller, stage_name, *, runtime, agent_specs_dir="ag
                               "controller stage did not complete", action_status=status)
     emitter.emit("artifact_registered", stage=stage_name,
                 detail={"artifacts": [str(p) for p in declared]})
-    build_bounded_evidence(declared, evidence_path, protocol_refs=[c.state.get("workflow_config")],
+    gate_evidence_artifacts = declared + _selective_provenance_inputs(c, stage_name)
+    build_bounded_evidence(gate_evidence_artifacts, evidence_path,
+                           protocol_refs=[c.state.get("workflow_config")],
                            validation_outcomes=_stage_validation_outcomes(c, stage_name))
 
     decision = "NO_GATE"
@@ -1347,11 +1514,14 @@ class CampaignRunResult:
 
 def _next_eligible_stage(controller):
     """The ONE workflow-invariant "what's next" decision a campaign makes: the first declared
-    stage (in workflow-config order) whose gate has not recorded PASS, or None once every stage
-    has. Contains no stage name, domain concept, or count -- entirely derived from the Controller's
-    own stage list, the same order/gate fields ``_previous_passed`` already enforces."""
+    stage (in workflow-config order) whose gate has not resolved as PASS or NOT_APPLICABLE, or
+    None once every stage has. Contains no stage name, domain concept, or count -- entirely
+    derived from the Controller's own stage list, the same order/gate fields ``_previous_passed``
+    already enforces. NOT_APPLICABLE (see ``RunController.mark_stage_not_applicable``) is treated
+    identically to PASS here: a stage the run's own evidence resolved as genuinely inapplicable is
+    just as "done, may proceed downstream" as one that actually ran and passed."""
     for stage in controller.state["stages"]:
-        if stage["gate"] != "PASS":
+        if stage["gate"] not in ("PASS", "NOT_APPLICABLE"):
             return stage
     return None
 
@@ -1883,6 +2053,152 @@ def _dispatch_recovery_corrective_action(controller, trigger, recovery, correcti
     return None
 
 
+def _commit_teacher_validation_plan_via_reasoning_roles(
+    controller, *, runtime, agent_specs_dir, exchange_dir, repo_root,
+    mock_orchestrator_response, emitter=None,
+) -> Optional["CampaignRunResult"]:
+    """Automatic pre-campaign Teacher-validation planning: deterministically inspect this run's
+    own frozen ``teacher_evidence_sources``, dispatch a real Orchestrator for a
+    ``TeacherValidationPlanProposal`` (which admissible component(s) this campaign will actually
+    USE -- the one genuinely scientific choice
+    ``inspect_teacher_evidence``/``derive_admissible_decision_space`` cannot make
+    deterministically), then bind the resulting draft through
+    ``commit_teacher_validation_plan``. This function authors no scientific judgment itself --
+    the component selection comes entirely from the dispatched Orchestrator; it only wires the
+    existing, already-validated bridge together.
+
+    A no-op (returns None immediately) whenever this run declares no ``teacher_evidence_sources``
+    (the whole pipeline is opt-in) or a plan is already committed (write-once, idempotent).
+    Returns None on success (a plan is now committed, campaign dispatch may proceed); returns a
+    terminal/pausing ``CampaignRunResult`` otherwise.
+    """
+    import dataclasses
+
+    from orchestration.specs import load_agent_specs
+    from validation.teacher_evidence_profile import (
+        derive_admissible_decision_space, inspect_teacher_evidence,
+    )
+
+    from .mock_runtime import MockAgentRuntime
+    from .models import RuntimeContext
+    from .orchestrator_bridge import OrchestratorActionProposal, dispatch_orchestrator_action
+    from .production_router import run_role
+    from .teacher_validation_plan import (
+        build_teacher_validation_plan_draft_from_proposal,
+        validate_teacher_validation_plan_proposal,
+    )
+
+    c = controller
+    emitter = emitter or CampaignEventEmitter(c.run_dir, quiet=True)
+    sources = c.state.get("teacher_evidence_sources")
+    if sources is None or c.state.get("teacher_validation_plan") is not None:
+        return None
+
+    profile, evidence_profile_sha256 = inspect_teacher_evidence(**sources)
+    decision_space = derive_admissible_decision_space(profile)
+    if decision_space["insufficient_evidence"]:
+        return CampaignRunResult(
+            CAMPAIGN_FAILED, EXIT_VALIDATION_REJECTED,
+            "FAILED: this run's teacher_evidence_sources admit NO Teacher-validation component "
+            "at all (CAMPAIGN_INSUFFICIENT_EVIDENCE_FOR_PLANNING) -- there is nothing for an "
+            "autonomous Teacher validation plan to select")
+
+    objectives = c._teacher_validation_objectives()
+    exchange = Path(exchange_dir) if exchange_dir else c.run_dir / "exchange"
+    specs = load_agent_specs(agent_specs_dir)
+
+    def ctx_factory(provider_name, model_id):
+        return RuntimeContext(exchange_dir=str(exchange), repo_root=repo_root,
+                              provider=provider_name, model_id=model_id,
+                              read_allow_prefixes=[], tools_enabled=False)
+
+    task = {
+        "schema_version": 1, "task_id": f"{c.state['run_id']}-teacher-validation-plan",
+        "agent": "orchestrator", "run_id": c.state["run_id"], "created_at": "run-campaign",
+        "instruction": ("Decide WHICH admissible Teacher-validation component(s) this campaign "
+                       "will actually use, from context.admissible_decision_space -- the "
+                       "evidence only establishes what is POSSIBLE, never which of it to use."),
+        "inputs": [],
+        "criteria": ["selected_components is a non-empty subset of admissible_components",
+                    "rationale is evidence-bound"],
+        "constraints": [
+            "selected_components must be drawn only from context.admissible_decision_space."
+            "admissible_components -- never a component this evidence does not support",
+            "evidence_profile_sha256 must equal context.evidence_profile_sha256",
+        ],
+        "context": {"expected_output_model": "TeacherValidationPlanProposal",
+                   "evidence_profile_sha256": evidence_profile_sha256,
+                   "admissible_decision_space": decision_space,
+                   "validation_objectives": objectives},
+    }
+    if runtime == "mock":
+        if not mock_orchestrator_response:
+            raise ValueError(
+                "--mock-orchestrator-response is required: teacher_evidence_sources are "
+                "declared for this run and --runtime mock cannot self-generate a "
+                "TeacherValidationPlanProposal")
+        orchestrator_runtime = MockAgentRuntime(
+            lambda t, s, ts: (Path(mock_orchestrator_response).read_text(), (0, 0)))
+        orchestrator_provider, orchestrator_model = "mock", "mock"
+    else:
+        try:
+            (orchestrator_runtime, orchestrator_provider,
+             orchestrator_model) = _select_reasoning_provider_runtime()
+        except _ProviderBlocked as exc:
+            if exc.reason == "APPROVAL_REQUIRED":
+                return CampaignRunResult(CAMPAIGN_WAITING_FOR_HUMAN_APPROVAL,
+                                         EXIT_APPROVAL_REQUIRED, exc.message)
+            return CampaignRunResult(CAMPAIGN_RESOURCE_BLOCKED, EXIT_PROVIDER_UNAVAILABLE,
+                                     exc.message)
+
+    def proposal_validator(proposal):
+        return validate_teacher_validation_plan_proposal(
+            proposal, expected_run_id=c.state["run_id"],
+            expected_evidence_profile_sha256=evidence_profile_sha256,
+            admissible_components=decision_space["admissible_components"],
+            validation_objectives=objectives)
+
+    emitter.emit("role_invocation_started", role="orchestrator",
+                action="teacher_validation_plan_proposal")
+    res = run_role(orchestrator_runtime, task, specs["orchestrator"],
+                   ctx_factory(orchestrator_provider, orchestrator_model), mode="primary",
+                   reasoning_validator=proposal_validator)
+    emitter.emit("role_invocation_completed", role="orchestrator",
+                action="teacher_validation_plan_proposal", detail={"accepted": res.accepted})
+    if not res.accepted:
+        return CampaignRunResult(
+            CAMPAIGN_FAILED, EXIT_VALIDATION_REJECTED,
+            f"teacher validation plan proposal rejected: {res.error}")
+    proposal = res.detail.instance
+
+    draft = build_teacher_validation_plan_draft_from_proposal(
+        proposal, decision_space=decision_space,
+        evidence_profile=dataclasses.asdict(profile),
+        proposed_by={"actor_kind": "system", "canonical_id": "orchestrator"},
+        validation_objectives=objectives)
+    plan_dir = c.run_dir / "teacher_validation" / "drafts"
+    plan_dir.mkdir(parents=True, exist_ok=True)
+    plan_path = plan_dir / f"{c.state['run_id']}.teacher_validation_plan.draft.json"
+    plan_path.write_text(json.dumps(draft.to_plan_json(), indent=2) + "\n")
+
+    action_proposal = OrchestratorActionProposal(
+        run_id=c.state["run_id"], stage="__pre_campaign__", requested_at="run-campaign",
+        rationale="commit the autonomously-proposed Teacher validation plan before Stage 1",
+        idempotency_key=(
+            f"{c.state['run_id']}:teacher_validation_planning:{evidence_profile_sha256}"),
+        action_type="commit_teacher_validation_plan",
+        parameters={"run_dir": str(c.run_dir), "plan_path": str(plan_path)})
+    outcome = dispatch_orchestrator_action(action_proposal, controller=c, mode="primary")
+    if outcome.status != "EXECUTED":
+        return CampaignRunResult(
+            CAMPAIGN_FAILED, EXIT_VALIDATION_REJECTED,
+            f"commit_teacher_validation_plan dispatch failed: {outcome.status}: "
+            f"{outcome.reason}")
+    emitter.emit("teacher_validation_plan_committed",
+                detail={"selected_components": outcome.artifact.get("selected_components")})
+    return None
+
+
 def _run_campaign_loop(controller, *, runtime, agent_specs_dir="agent_specs", exchange_dir=None,
                  repo_root=".", auto_mock_judges=False, mock_response=None,
                  mock_judge_response=None, mock_analyst_response=None,
@@ -1915,6 +2231,16 @@ def _run_campaign_loop(controller, *, runtime, agent_specs_dir="agent_specs", ex
 
     c = controller
     emitter = emitter or CampaignEventEmitter(c.run_dir, quiet=True)
+    # Automatic pre-campaign Teacher-validation planning: happens once, before Stage 1, and is a
+    # no-op for any run that never declared teacher_evidence_sources or already has a committed
+    # plan (see the function's own docstring for the write-once / opt-in guarantees).
+    planning_result = _commit_teacher_validation_plan_via_reasoning_roles(
+        c, runtime=runtime, agent_specs_dir=agent_specs_dir, exchange_dir=exchange_dir,
+        repo_root=repo_root, mock_orchestrator_response=mock_orchestrator_response,
+        emitter=emitter)
+    if planning_result is not None:
+        return planning_result
+    c = RunController(c.run_dir)
     if max_iterations is None:
         max_iterations = len(c.state["stages"]) + 1
     iterations = 0
@@ -2090,6 +2416,42 @@ def _cmd_approve_recovery(args) -> int:
     return EXIT_SUCCESS
 
 
+def _cmd_plan_teacher_validation(args) -> int:
+    from workflow.controller import RunController
+    c = RunController(args.run_dir)
+    emitter = CampaignEventEmitter(c.run_dir, run_id=c.state.get("run_id"), quiet=True)
+    if c.state.get("teacher_evidence_sources") is None:
+        print("this run did not declare teacher_evidence_sources; nothing to plan",
+             file=sys.stderr)
+        return EXIT_BLOCKED_POLICY
+    if c.state.get("teacher_validation_plan") is not None:
+        print("a Teacher validation plan is already committed for this run (write-once)")
+        return EXIT_SUCCESS
+    result = _commit_teacher_validation_plan_via_reasoning_roles(
+        c, runtime=args.runtime, agent_specs_dir=args.agent_specs_dir,
+        exchange_dir=args.exchange_dir, repo_root=args.repo_root,
+        mock_orchestrator_response=args.mock_orchestrator_response, emitter=emitter)
+    if result is not None:
+        stream = sys.stdout if result.exit_code == EXIT_SUCCESS else sys.stderr
+        print(f"outcome: {result.outcome}\n{result.message}", file=stream)
+        return result.exit_code
+    c = RunController(c.run_dir)
+    plan = c.state["teacher_validation_plan"]
+    print(f"teacher validation plan committed: selected_components={plan['selected_components']}")
+    return EXIT_SUCCESS
+
+
+def _cmd_authorize_downstream_teacher_reliance(args) -> int:
+    from workflow.controller import RunController
+    c = RunController(args.run_dir)
+    plan = c.authorize_downstream_teacher_reliance(args.authorized_by, note=args.note)
+    print(f"downstream Teacher reliance: selected_components={plan.get('selected_components')} "
+         f"status={plan.get('downstream_reliance_approval') is not None}")
+    emitter = CampaignEventEmitter(c.run_dir, run_id=c.state.get("run_id"), quiet=True)
+    emitter.emit("approval_granted", detail={"scope": "downstream_teacher_reliance"})
+    return EXIT_SUCCESS
+
+
 def main(argv=None) -> int:
     import os
     args = _build_parser().parse_args(argv)
@@ -2103,6 +2465,10 @@ def main(argv=None) -> int:
         return _cmd_run_campaign(args)
     if args.command == "approve-recovery":
         return _cmd_approve_recovery(args)
+    if args.command == "plan-teacher-validation":
+        return _cmd_plan_teacher_validation(args)
+    if args.command == "authorize-downstream-teacher-reliance":
+        return _cmd_authorize_downstream_teacher_reliance(args)
     if args.command != "run-task":  # pragma: no cover
         return EXIT_INTERNAL
     out = sys.stdout

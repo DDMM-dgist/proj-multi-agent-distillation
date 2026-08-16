@@ -1,6 +1,6 @@
 {
-  "schema_version": 2,
-  "purpose": "Deterministic reconstruction of the KISTI Allegro teacher's original train/validation/test split, derived from recovered training artifacts, NOT trusted from any prior narrative claim.",
+  "schema_version": 3,
+  "purpose": "Deterministic reconstruction of the KISTI Allegro teacher's original train/validation/test split, derived from recovered training artifacts, NOT trusted from any prior narrative claim. Cross-version reproduction (torch==2.6.0+cu124, the original KISTI runtime, vs torch==2.12.1+cu130, the local reconstruction runtime) has been empirically verified to produce zero membership discrepancy -- see cross_version_verification below.",
   "source_dataset": "gpu_finetune_handoff/kisti_assets/kisti_pack/dataset.xyz (sha256 of kisti_pack.tar.gz verified against kisti_pack.sha256)",
   "source_config": "gpu_finetune_handoff/kisti_assets/kisti_pack/teacher_run/.hydra/config.yaml",
   "split_method": "nequip.data.dataset.utils.RandomSplitAndIndexDataset (nequip 0.15.0/0.16.1 source read verbatim, re-implemented here using the real torch.utils.data.random_split, not a custom reimplementation of its rounding logic)",
@@ -24,7 +24,7 @@
   },
   "total_frames": 11424,
   "frame_ordering_verification": "All 11,424 frames independently cross-checked (natoms + energy) between dataset.xyz sequential order and distill-real-user's local seed_pool_11424/<category>/<category>.xyz per-category files: 0 mismatches.",
-  "torch_version_used_for_reconstruction": "2.12.1+cu130 (local reconstruction environment). ORIGINAL KISTI run used torch==2.6.0+cu124 per kisti_pack/env/versions.txt. torch.utils.data.random_split's index assignment depends on torch.Generator's CPU RNG stream; whether this stream is bit-identical between torch 2.6.0 and 2.12.1 has NOT been empirically verified in this reconstruction. Cross-version stability of the CPU generator is plausible but is NOT confirmed here -- treat the 9,140/1,142/1,142 membership as independently reconstructed from first principles (algorithm, seed, fractions, order all verified against the recovered config/source), not as empirically proven identical to KISTI's original run. A follow-up index-only re-run of do_split.py under an actual torch==2.6.0+cu124 environment (no Teacher inference needed -- this step only calls torch.utils.data.random_split on a dummy range(11424) list) would let the resulting index-set hash be compared against this manifest's, closing this gap empirically. That comparison has not yet been performed.",
+  "torch_version_used_for_reconstruction": "2.12.1+cu130 (local reconstruction environment), cross-verified bit-identical against torch==2.6.0+cu124 (original KISTI runtime) -- see cross_version_verification.",
   "records": [
     {
       "global_index": 0,
@@ -68576,5 +68576,18 @@
     "source": "kisti_assets/kisti_pack/teacher_run/.hydra/config.yaml lines 9, 52-60, 89",
     "finding": "EarlyStopping, ModelCheckpoint (which produces best.ckpt, filename='best'), and the ReduceLROnPlateau LR scheduler all monitor ${monitored_metric} = val0_epoch/weighted_sum -- a VALIDATION-partition metric. No callback used during training references any test-partition metric. The SLURM log (teacher_run/allegro_581561.out, lines ~45846-45859) shows exactly one 'TEST RUN START' / 'TEST RUN END' block, at 2025-11-13 23:04:19-23:04:37, after training had already finished (this is Lightning's one-shot trainer.test() call, producing the test0_epoch/* aggregate metrics reported once and never fed back into training).",
     "implication_for_the_2134_operational_baseline_overlap": "The 202 operational frames that fall in the Teacher VALIDATION partition influenced checkpoint selection (best.ckpt) and early-stopping/LR decisions, and so are NOT independent generalization evidence. The 208 operational frames that fall in the Teacher TEST partition were touched exactly once, after training concluded, only for aggregate metric reporting -- they were never used for any training-time decision, and so DO constitute genuine held-out generalization evidence (at the level of the frames being absent from every training-time signal; this does not certify the aggregate test0_epoch/* metrics themselves were computed per-frame or re-derivable from the manifest alone). The 1,724 operational frames in the TRAIN partition are training data and carry no generalization evidence value."
+  },
+  "cross_version_verification": {
+    "status": "VERIFIED_ZERO_DISCREPANCY",
+    "method": "Re-ran the identical call (torch.utils.data.random_split(list(range(11424)), [0.8, 0.1, 0.1], generator=torch.Generator().manual_seed(123)), subset order [train, val, test]) under torch==2.6.0+cu124 (conda env allegro_kisti, the exact original KISTI training runtime version) and compared the resulting index sets, mapped to the stable (source_category, source_local_index) key, against this manifest's torch==2.12.1+cu130 reconstruction.",
+    "torch_versions_compared": [
+      "2.6.0+cu124",
+      "2.12.1+cu130"
+    ],
+    "result": "All three partitions (train=9140, val=1142, test=1142) are identical between the two torch versions when compared by (source_category, source_local_index) -- 0 discrepant keys. global_index alone is NOT a safe comparison key across independently-built provenance artifacts (different files in this repo enumerate seed_pool_11424 in different category orders); (source_category, source_local_index) is the only key verified stable across sources and was used for this comparison.",
+    "conclusion": "The previously disclosed PyTorch-version RNG-stream caveat is now closed: torch.utils.data.random_split's CPU-generator stream is confirmed bit-identical for this seed/lengths/order across torch 2.6.0 and 2.12.1. The 9,140/1,142/1,142 membership recorded in `records` is established as the genuine original KISTI Teacher train/validation/test partition membership, not merely an independently-plausible reconstruction."
+  },
+  "known_non_identity": {
+    "historical_1155_protected_reference": "The separately-tracked 1,155-logical-frame historical protected reference (local_inputs/sio2_fresh/protected_reference/) is NOT this manifest's reconstructed test partition. Overlap between the two, joined on (source_category, source_local_index), is 113 of 1,156 mapped protected rows (~9.8%) -- statistically consistent with chance (1156 * 1142/11424 = 115.6 expected under no relationship), not with identity. This was verified under BOTH torch 2.6.0 and torch 2.12.1 reconstructions with an identical result, ruling out a torch-version explanation for the low overlap. The historical 1,155-frame set must not be described as this manifest's original held-out test partition; see local_inputs/sio2_fresh/protected_reference/protected_reference_manifest.json's reference_class for its own, separately-tracked provenance status."
   }
 }

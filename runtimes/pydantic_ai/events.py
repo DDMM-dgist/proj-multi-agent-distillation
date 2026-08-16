@@ -98,13 +98,14 @@ def terminal_class(outcome: str) -> str:
 def stage_progress_fields(controller, stage_name: Optional[str] = None) -> dict:
     """Generic ``{"stage", "stage_index", "stage_total"}`` derived entirely from the Controller's
     own declared stage list -- no stage name, count, or domain concept is assumed by this module.
-    With no ``stage_name``, reports the first stage whose gate has not recorded PASS (mirrors
-    ``cli._next_eligible_stage`` without importing it, to avoid a cli<->events import cycle)."""
+    With no ``stage_name``, reports the first stage whose gate has not resolved as PASS or
+    NOT_APPLICABLE (mirrors ``cli._next_eligible_stage`` without importing it, to avoid a
+    cli<->events import cycle)."""
     stages = controller.state.get("stages", [])
     total = len(stages)
     if stage_name is None:
         for index, stage in enumerate(stages, 1):
-            if stage.get("gate") != "PASS":
+            if stage.get("gate") not in ("PASS", "NOT_APPLICABLE"):
                 return {"stage": stage["name"], "stage_index": index, "stage_total": total}
         return {"stage": None, "stage_index": None, "stage_total": total}
     for index, stage in enumerate(stages, 1):

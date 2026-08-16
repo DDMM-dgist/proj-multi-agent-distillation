@@ -126,6 +126,65 @@ def split_dataset(dataset, output_dir, manifest, seed=2026, validation_fraction=
     return result
 
 
+def build_split_membership_population(source_dataset, split_source_manifest, target_split,
+                                      output_path, manifest_path=None):
+    """Deterministically extract the frames belonging to ``target_split`` from
+    ``source_dataset``, joined by the stable ``(source_category, source_local_index)`` key
+    against a split-membership manifest (see ``runtimes.pydantic_ai.bounded_evidence
+    ._is_split_membership_manifest``/``build_split_crosswalk``).
+
+    Generic over material, dataset size, and split name: this is the shared producer for any
+    ``recovered-original-holdout`` reference population (see
+    ``validation.protected_reference._validate_recovered_holdout_reference_config``), which
+    validates the resulting structures/manifest independently -- this function only selects and
+    writes frames, it does not itself decide whether the result is trustworthy enough to use as
+    a held-out reference.
+    """
+    from runtimes.pydantic_ai.bounded_evidence import build_split_crosswalk
+
+    crosswalk = build_split_crosswalk([split_source_manifest])
+    resolved = crosswalk["resolved"]
+    ambiguous = crosswalk["ambiguous"]
+    dataset = source_dataset
+    frames = read(dataset, index=":")
+    selected = []
+    for atoms in frames:
+        category = atoms.info.get("source_category")
+        local_index = atoms.info.get("source_local_index")
+        if category is None or local_index is None:
+            continue
+        key = (str(category), int(local_index))
+        if key in ambiguous:
+            continue
+        if resolved.get(key) == target_split:
+            selected.append(atoms)
+    if not selected:
+        raise ValueError(
+            f"no frames in {dataset!r} resolve to target_split {target_split!r} via "
+            f"{split_source_manifest!r}"
+        )
+    output_path = Path(output_path)
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    write(output_path, selected)
+    result = {
+        "schema_version": 1,
+        "source_dataset": str(Path(dataset).resolve()),
+        "source_dataset_sha256": sha256_file(dataset),
+        "split_source_manifest": str(Path(split_source_manifest).resolve()),
+        "split_source_manifest_sha256": sha256_file(split_source_manifest),
+        "target_split": target_split,
+        "frame_count": len(selected),
+        "structures": {
+            "path": str(output_path.resolve()),
+            "logical_frames": len(selected),
+            "sha256": sha256_file(output_path),
+        },
+    }
+    if manifest_path is not None:
+        _write_json(manifest_path, result)
+    return result
+
+
 def _structure_fingerprint(atoms):
     """Exact geometry fingerprint for duplicate control; no tolerance is implied."""
     payload = {

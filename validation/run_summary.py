@@ -11,8 +11,8 @@ from pathlib import Path
 
 from validation.report import validate_evidence
 
-STAGE_STATUSES = {"pending", "running", "completed", "failed", "interrupted"}
-GATE_STATUSES = {"pending", "PASS", "REVISE", "FAIL"}
+STAGE_STATUSES = {"pending", "running", "completed", "failed", "interrupted", "not_applicable"}
+GATE_STATUSES = {"pending", "PASS", "REVISE", "FAIL", "NOT_APPLICABLE"}
 
 
 def validate_run_summary_report(manifest_path, submitted_artifacts=None, allowed_evidence=None,

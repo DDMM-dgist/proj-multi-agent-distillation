@@ -56,28 +56,59 @@ linkage, not a metadata-only inference.
   those intermediates are not themselves preserved, only their final outputs
   (folded into `teacher_training_split_manifest.json`).
 
-### PyTorch-version caveat — not resolved, only disclosed
+### PyTorch-version caveat — RESOLVED (verified zero discrepancy)
 
 Local reconstruction ran under torch `2.12.1+cu130`. KISTI's original training
-ran under torch `2.6.0+cu124` (`kisti_pack/env/versions.txt`). Whether
-`torch.utils.data.random_split`'s CPU-generator RNG stream is bit-identical
-across that version range has **not been empirically tested** — it is
-plausible (PyTorch does not advertise breaking CPU-generator-stream changes
-between these versions) but unconfirmed. The 9,140/1,142/1,142 membership
-recorded here should be read as *independently re-derived from the algorithm,
-seed, fractions, and order recovered from source* — not as *empirically proven
-identical* to KISTI's actual run-time index assignment.
+ran under torch `2.6.0+cu124` (`kisti_pack/env/versions.txt`). This version
+gap has now been closed empirically, not merely argued as plausible: the
+identical call (`torch.utils.data.random_split(list(range(11424)), [0.8, 0.1,
+0.1], generator=torch.Generator().manual_seed(123))`, subset order
+`[train, val, test]`) was re-run inside the `allegro_kisti` conda environment,
+which carries `torch==2.6.0+cu124` — the exact original KISTI training runtime
+version — and its resulting index sets were compared against this manifest's
+torch `2.12.1+cu130` reconstruction.
 
-A concrete, low-cost way to close this gap later: re-run only
-`scripts/do_split.py` (a pure index-permutation call over `range(11424)`, no
-model, no Teacher inference) inside an actual `torch==2.6.0+cu124`
-environment, and compare the resulting index-set hash against this manifest's.
-`torch==2.6.0` is confirmed available from PyPI's version index
-(`pip index versions torch` lists it) and cu124 wheels are available from
-`download.pytorch.org`'s index per `KISTI_REQUIREMENTS.md`'s Item 3 —
-so building that environment is feasible, but has not been done; no such
-environment has been created in this repo, and this file records only that a
-gap exists, not that it has been closed.
+The comparison was done using the stable `(source_category,
+source_local_index)` key, not `global_index`: different provenance artifacts
+in this repo enumerate `seed_pool_11424` in different category orders (e.g.
+`global_index=3` denotes a different source row in
+`teacher_training_split_manifest.json` than it does in
+`local_inputs/sio2_fresh/protected_reference/protected_source_rows.csv`), so
+`global_index` alone is not a safe cross-artifact comparison key. Only
+`(source_category, source_local_index)` is verified stable across sources and
+was used here.
+
+**Result: zero discrepancy.** All three partitions — train=9,140, val=1,142,
+test=1,142 — are identical between torch `2.6.0+cu124` and torch `2.12.1+cu130`
+when compared by `(source_category, source_local_index)`. The
+`torch.utils.data.random_split` CPU-generator RNG stream is confirmed
+bit-identical for this seed/lengths/order across both versions. The
+9,140/1,142/1,142 membership recorded in `teacher_training_split_manifest.json`
+(see its `cross_version_verification` field) is therefore established as the
+genuine original KISTI Teacher train/validation/test partition membership, not
+merely an independently-plausible reconstruction.
+
+### Historical 1,155-frame protected reference is a DIFFERENT population — not this test partition
+
+The separately-tracked, physically-recovered 1,155-logical-frame historical
+protected reference
+(`local_inputs/sio2_fresh/protected_reference/protected_reference_manifest.json`)
+is **not** this manifest's reconstructed 1,142-frame test partition. Joined on
+`(source_category, source_local_index)`, the overlap between the two is 113 of
+1,156 mapped protected rows (~9.8%) — statistically consistent with chance
+(1,156 × 1,142⁄11,424 ≈ 115.6 expected under no relationship between the two
+populations), not with identity. This was verified under **both** the torch
+`2.6.0+cu124` and torch `2.12.1+cu130` reconstructions with an identical
+113-frame overlap result, which rules out a PyTorch-version explanation for
+the low overlap: the two populations differ because they were independently
+selected (one by algorithmic reconstruction from the recovered split
+procedure, the other by physical recovery matched via geometry content), not
+because of any RNG/version drift.
+
+The historical 1,155-frame set must not be described as this manifest's
+original held-out test partition. See
+`local_inputs/sio2_fresh/protected_reference/protected_reference_manifest.json`'s
+`reference_class` field for its own, separately-tracked provenance status.
 
 ## Checkpoint / test-partition role — verified, not assumed
 

@@ -237,6 +237,18 @@ def _exec_generate_group_split(proposal):
         raise
 
 
+def _exec_build_split_membership_population(proposal):
+    from workflow.integrity import artifact_digest
+    from workflow.steps import build_split_membership_population
+    p = _params(proposal)
+    result = build_split_membership_population(
+        p["source_dataset"], p["split_source_manifest"], p["target_split"],
+        p["output_path"], manifest_path=p.get("manifest_path"))
+    integrity_path = p.get("manifest_path") or result["structures"]["path"]
+    return {"path": result["structures"]["path"], "manifest": result,
+            "integrity": artifact_digest(integrity_path)}
+
+
 def _exec_compute_rdf(proposal):
     from ase.io import read
     from validation.structure_dynamics import compute_rdf
@@ -272,7 +284,7 @@ def _exec_generate_run_summary(proposal):
     state = json.loads(state_path.read_text())
 
     stages = state["stages"]
-    if all(stage["gate"] == "PASS" for stage in stages):
+    if all(stage["gate"] in ("PASS", "NOT_APPLICABLE") for stage in stages):
         campaign_outcome = "ALL_STAGES_PASSED"
     elif any(stage["gate"] in ("REVISE", "FAIL") for stage in stages):
         campaign_outcome = "RECOVERY_IN_PROGRESS_OR_REQUIRED"
@@ -1459,6 +1471,12 @@ BINDINGS: dict[str, ExecutorBinding] = {b.action_type: b for b in [
     _ready("generate_group_split", "data-curator", "workflow.steps.split_dataset",
            "dataset,output_dir,manifest", "split manifest (sha256-bound)",
            _exec_generate_group_split, validator="workflow.steps split integrity"),
+    _ready("build_split_membership_population", "data-curator",
+           "workflow.steps.build_split_membership_population",
+           "source_dataset,split_source_manifest,target_split,output_path[,manifest_path]",
+           "recovered split-membership population (sha256-bound)",
+           _exec_build_split_membership_population,
+           validator="validation.protected_reference recovered-original-holdout kind"),
     _hpc("acquire_structures", "data-curator", "adapters.acquisition.acquire",
          "acquisition_config,teacher_config,seed_structures,out_path",
          "acquired extxyz + acquisition manifest", "lineage validation"),

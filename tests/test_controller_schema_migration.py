@@ -42,7 +42,11 @@ class SchemaVersionTests(unittest.TestCase):
         # v9 additively carries the recovery taxonomy/policy/capability-roster fields
         # (workflow.recovery_taxonomy, recovery_policy, recovery_signature) introduced
         # alongside the frozen-architecture v12 revision; see test_architecture_freeze.py.
-        self.assertEqual(SCHEMA_VERSION, 9)
+        # v10 additively carries teacher_evidence_sources/teacher_validation_plan/
+        # stage_applicability (autonomous Teacher-validation planning; see
+        # test_architecture_freeze.py's v21 entry) -- this test's name is legacy but its
+        # assertion now targets the current SCHEMA_VERSION.
+        self.assertEqual(SCHEMA_VERSION, 10)
 
     def test_v6_manifest_loads_and_stays_v6_on_disk(self):
         with tempfile.TemporaryDirectory() as tmp:

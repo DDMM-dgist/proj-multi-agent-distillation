@@ -6,6 +6,38 @@ from pathlib import Path
 
 from workflow.integrity import artifact_digest, verify_artifact
 
+# Optional top-level `teacher_validation_objectives: list[str]` key a validation_profile.yaml MAY
+# declare (additive; a profile that omits it gets identical behavior to before this vocabulary
+# existed -- see runtimes.pydantic_ai.teacher_validation_plan, the consumer that reads it as
+# context for an autonomous Teacher-validation-planning proposal). Every value must be drawn from
+# this fixed, generic vocabulary: never a material/dataset/campaign-specific string. New
+# objectives are added here, never invented ad hoc by a config or a proposal.
+TEACHER_VALIDATION_OBJECTIVES = (
+    "require_predictive_fidelity_when_evidence_supports_it",
+    "assess_deployment_applicability_when_domain_evidence_exists",
+    "prohibit_unsupported_generalization_claims",
+)
+
+
+def parse_teacher_validation_objectives(profile_cfg):
+    """Parse and validate the OPTIONAL `teacher_validation_objectives` key from a parsed
+    validation_profile.yaml mapping. Returns ``[]`` if the key is absent (fully additive/backward
+    compatible); raises ValueError if present but not a list of values drawn from
+    ``TEACHER_VALIDATION_OBJECTIVES``."""
+    if not isinstance(profile_cfg, dict):
+        raise ValueError("validation_profile must be a mapping")
+    objectives = profile_cfg.get("teacher_validation_objectives")
+    if objectives is None:
+        return []
+    if (not isinstance(objectives, list) or
+            any(not isinstance(item, str) or item not in TEACHER_VALIDATION_OBJECTIVES
+                for item in objectives)):
+        raise ValueError(
+            "validation_profile.teacher_validation_objectives must be a list drawn from: "
+            + ", ".join(TEACHER_VALIDATION_OBJECTIVES)
+        )
+    return list(objectives)
+
 
 def _resolve(value, base):
     path = Path(value).expanduser()

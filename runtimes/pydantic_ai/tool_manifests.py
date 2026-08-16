@@ -40,6 +40,7 @@ ORCHESTRATOR_BRIDGE_ACTIONS = (
     "collect_agent_result", "propose_stage_action", "propose_gate_record",
     "request_human_approval", "read_human_decision", "propose_recovery",
     "verify_recovery_status", "get_active_configs", "get_artifact_inventory",
+    "commit_teacher_validation_plan",
 )
 
 # The typed literature source backends the Literature role may use (Phase 3/E4).

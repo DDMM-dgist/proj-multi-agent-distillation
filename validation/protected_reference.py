@@ -72,13 +72,34 @@ def load_protected_indices(path):
 
 
 def validate_reference_config(reference_yaml):
-    """Validate the frozen R2 reference.yaml and protected-reference package."""
+    """Validate a Teacher-vs-DFT reference.yaml, dispatched by its declared ``kind``.
 
+    Generic entry point: every caller (``_exec_validate_teacher_reference``,
+    ``validate_reference_validation_report``) calls this one function regardless of which
+    reference population backs it. Each ``kind`` has its own validator function, registered in
+    ``_REFERENCE_KIND_VALIDATORS`` below; a new reference population class (e.g. a recovered
+    original held-out test partition, as opposed to a physically-recovered historical artifact)
+    registers a new validator here rather than growing new branches inside one function.
+    """
     reference_yaml = Path(reference_yaml).resolve()
     cfg = yaml.safe_load(reference_yaml.read_text()) or {}
+    kind = cfg.get("kind")
+    validator = _REFERENCE_KIND_VALIDATORS.get(kind)
+    if validator is None:
+        raise ValueError(
+            f"reference.kind {kind!r} is not a recognized Teacher-vs-DFT reference kind "
+            f"(known kinds: {sorted(_REFERENCE_KIND_VALIDATORS)})"
+        )
+    return validator(reference_yaml, cfg)
 
-    if cfg.get("kind") != "protected-existing-dft":
-        raise ValueError("reference.kind must be 'protected-existing-dft'")
+
+def _validate_protected_existing_dft_reference(reference_yaml, cfg):
+    """Validate the frozen R2 reference.yaml and protected-reference package
+    (``kind: protected-existing-dft``) -- a physically-recovered historical artifact whose own
+    original-selection provenance may be unresolved (see
+    local_inputs/sio2_fresh/protected_reference/protected_reference_manifest.json's
+    ``reference_class``/``evaluation_role`` for its current, honest scientific-role
+    description)."""
 
     if cfg.get("reference_class") != EXPECTED_REFERENCE_CLASS:
         raise ValueError(
@@ -218,6 +239,139 @@ def validate_reference_config(reference_yaml):
         "reference_fingerprints": set(fingerprints),
         "reference_path": ref_path,
     }
+
+
+RECOVERED_HOLDOUT_REFERENCE_CLASS = "RECOVERED_ORIGINAL_HELDOUT_TEST_PARTITION"
+
+RECOVERED_HOLDOUT_REQUIRED_PROHIBITIONS = {
+    "student_training",
+    "student_validation_tuning",
+    "acquisition_seed",
+    "augmentation_parent",
+    "recovery_training",
+}
+
+
+def _validate_recovered_holdout_reference_config(reference_yaml, cfg):
+    """Validate a ``kind: recovered-original-holdout`` reference.yaml: an algorithmically
+    RECONSTRUCTED partition of a Teacher's own original training pool (e.g. the genuine
+    train/validation/test split membership reproduced from a recovered seed/fractions/order --
+    see configs/provenance/teacher_training_split_manifest.json for the reference demonstration
+    of this class), as opposed to ``protected-existing-dft``'s physically-recovered historical
+    artifact.
+
+    Never hardcodes a frame count, split name, or campaign identity: ``target_split``,
+    ``frame_count``, and the split-source manifest are all read from ``cfg`` and cross-checked
+    against each other and against the structures file itself. Every frame in the structures
+    file must (a) join the declared split-source manifest via ``(source_category,
+    source_local_index)`` to EXACTLY ``target_split`` -- ambiguous, unjoined, or
+    wrong-partition frames fail closed rather than being silently included -- and (b) already
+    carry finite ``dft_energy``/``dft_forces`` labels, since this reference class must never
+    require a fresh DFT calculation.
+    """
+    from runtimes.pydantic_ai.bounded_evidence import (
+        _is_split_membership_manifest, build_split_crosswalk,
+    )
+
+    if cfg.get("reference_class") != RECOVERED_HOLDOUT_REFERENCE_CLASS:
+        raise ValueError(f"reference_class must be {RECOVERED_HOLDOUT_REFERENCE_CLASS!r}")
+
+    if cfg.get("status") != "AVAILABLE_AND_VERIFIED":
+        raise ValueError("recovered-holdout reference is not marked AVAILABLE_AND_VERIFIED")
+
+    target_split = cfg.get("target_split")
+    if not isinstance(target_split, str) or not target_split.strip():
+        raise ValueError("recovered-holdout reference must declare a non-empty target_split")
+
+    structures = cfg.get("structures")
+    if not isinstance(structures, dict):
+        raise ValueError("reference.structures must be a mapping")
+    ref_path = Path(structures["path"]).resolve()
+    if not ref_path.is_file():
+        raise FileNotFoundError(ref_path)
+    expected_sha = structures.get("sha256")
+    observed_sha = sha256_file(ref_path)
+    if expected_sha != observed_sha:
+        raise RuntimeError(
+            f"recovered-holdout structures SHA-256 mismatch: {observed_sha} != {expected_sha}"
+        )
+
+    manifest_path = Path(cfg["split_source_manifest"]).resolve()
+    if not manifest_path.is_file():
+        raise FileNotFoundError(manifest_path)
+    observed_manifest_sha = sha256_file(manifest_path)
+    if observed_manifest_sha != cfg.get("split_source_manifest_sha256"):
+        raise RuntimeError(
+            "split_source_manifest SHA-256 mismatch: "
+            f"{observed_manifest_sha} != {cfg.get('split_source_manifest_sha256')}"
+        )
+    manifest_payload = json.loads(manifest_path.read_text())
+    if not _is_split_membership_manifest(manifest_payload):
+        raise ValueError("split_source_manifest does not match the split-membership shape")
+
+    frames = read(str(ref_path), index=":")
+    expected_count = int(cfg["frame_count"])
+    if len(frames) != expected_count:
+        raise RuntimeError(f"recovered-holdout frame-count mismatch: {len(frames)} != {expected_count}")
+    if int(structures.get("logical_frames", -1)) != expected_count:
+        raise ValueError("structures.logical_frames does not match frame_count")
+
+    crosswalk = build_split_crosswalk([manifest_path])
+    resolved = crosswalk["resolved"]
+    ambiguous = crosswalk["ambiguous"]
+    resolved_keys = set()
+    for index, atoms in enumerate(frames):
+        cat = atoms.info.get("source_category")
+        local_index = atoms.info.get("source_local_index")
+        if cat is None or local_index is None:
+            raise ValueError(f"frame {index} is missing source_category/source_local_index")
+        key = (str(cat), int(local_index))
+        if key in ambiguous:
+            raise ValueError(f"frame {index} ({key!r}) is ambiguous in the split-source manifest")
+        if key not in resolved:
+            raise ValueError(f"frame {index} ({key!r}) does not join the split-source manifest")
+        if resolved[key] != target_split:
+            raise ValueError(
+                f"frame {index} ({key!r}) belongs to split {resolved[key]!r}, not "
+                f"target_split {target_split!r} -- this reference must contain ONLY "
+                "target_split members"
+            )
+        if key in resolved_keys:
+            raise ValueError(f"duplicate source key {key!r} in recovered-holdout structures")
+        resolved_keys.add(key)
+        for label_key in ("dft_energy",):
+            value = atoms.info.get(label_key)
+            if not isinstance(value, (int, float)) or not np.isfinite(float(value)):
+                raise ValueError(f"frame {index} is missing a finite {label_key}")
+        forces = atoms.arrays.get("dft_forces")
+        if forces is None or not np.all(np.isfinite(np.asarray(forces, dtype=float))):
+            raise ValueError(f"frame {index} is missing finite dft_forces")
+
+    prohibited = set(cfg.get("prohibited_uses", []))
+    missing = RECOVERED_HOLDOUT_REQUIRED_PROHIBITIONS - prohibited
+    if missing:
+        raise ValueError(
+            "recovered-holdout reference is missing prohibited uses: " + ", ".join(sorted(missing))
+        )
+
+    fingerprints = [_structure_fingerprint(a) for a in frames]
+    if len(fingerprints) != len(set(fingerprints)):
+        raise ValueError("recovered-holdout reference contains duplicate geometries")
+
+    return {
+        "reference_id": cfg["reference_id"],
+        "logical_frames": len(frames),
+        "protected_source_rows": len(resolved_keys),
+        "protected_source_indices": resolved_keys,
+        "reference_fingerprints": set(fingerprints),
+        "reference_path": ref_path,
+    }
+
+
+_REFERENCE_KIND_VALIDATORS = {
+    "protected-existing-dft": _validate_protected_existing_dft_reference,
+    "recovered-original-holdout": _validate_recovered_holdout_reference_config,
+}
 
 
 def assert_source_indices_allowed(selected_indices, protected_indices):

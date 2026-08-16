@@ -65,6 +65,12 @@ v20 (R19 forensic-defect corrections: idempotent dispatch + partial-Judge-resume
 persistence) deliberately re-froze orchestration/exchange.py, runtimes/pydantic_ai/driver.py, and
 runtimes/pydantic_ai/production_router.py again for the same reason as v10-v19 — see
 FREEZE_REVISION below for exactly what changed and what deliberately did not.
+
+v21 (autonomous, evidence-driven Teacher-validation planning) deliberately re-froze
+workflow/controller.py (schema_version bumped 9->10), runtimes/pydantic_ai/actions.py (one new
+backed data-curator action_type, build_split_membership_population), and
+runtimes/pydantic_ai/role_outputs.py (registers the new TeacherValidationPlanProposal reasoning
+output model) — see FREEZE_REVISION below for exactly what changed and what deliberately did not.
 """
 from __future__ import annotations
 
@@ -466,7 +472,48 @@ FREEZE_REVISION = (
     "aggregation was never partially recorded). No stage, contract, recovery-taxonomy, "
     "capability-routing, protected-reference, schema_version, role/action-set, or Judge-vote "
     "SEMANTIC change (the Judge lens/criteria/verdict contract is identical); every other "
-    "frozen file, and every other field of the three re-frozen files, is untouched."
+    "frozen file, and every other field of the three re-frozen files, is untouched. "
+    "v21 (autonomous, evidence-driven Teacher-validation planning) replaces the old SiO2/"
+    "Allegro-specific Teacher-validation branch with a generic, additive, evidence-driven "
+    "component model (validation/teacher_evidence_profile.py, NOT a frozen file) plus an "
+    "autonomous PydanticAI planning pipeline that decides WHICH admissible component(s) a "
+    "campaign actually uses. workflow/controller.py (schema_version bumped 9->10) gains three "
+    "new additive, all-optional state keys -- teacher_evidence_sources (a run's OPTIONAL frozen "
+    "evidence-source paths, resolved/validated at initialize() but not copy-snapshotted), "
+    "teacher_validation_plan (None until commit_teacher_validation_plan(), the sole "
+    "authoritative validator, independently RE-RUNS inspect_teacher_evidence against this run's "
+    "own frozen sources and re-derives the admissible decision space rather than trusting a "
+    "submitted draft's embedded profile; write-once/idempotent-on-identical-content exactly "
+    "like establish_validation_contract), and stage_applicability (populated only by the new "
+    "mark_stage_not_applicable method) -- and one new gate value, NOT_APPLICABLE, for a stage "
+    "whose own run evidence establishes it does not apply at all; NOT_APPLICABLE deliberately "
+    "bypasses record_gate entirely (a new, separate method) because record_gate's non-PASS "
+    "branch invalidates downstream stages and opens a pending recovery, semantics that are "
+    "correct for a stage that ran and failed but wrong for one that never applied; "
+    "_previous_passed/verify_stage_artifacts treat NOT_APPLICABLE identically to PASS for "
+    "upstream gating while skipping artifact verification (a NOT_APPLICABLE stage registers "
+    "zero artifacts by construction). A new authorize_downstream_teacher_reliance method gates "
+    "-- separately from commit_teacher_validation_plan, which never accepts an evidence-"
+    "unsupported claim regardless of any approval -- ONLY costly downstream reliance (Teacher "
+    "labeling / Student training) on a plan that is itself valid but lacks predictive-fidelity "
+    "evidence (ORIGINAL_HELDOUT_FIDELITY/INDEPENDENT_REFERENCE_FIDELITY), requiring an "
+    "authorized human actor exactly like approve_recovery; it is a no-op for a plan that already "
+    "includes fidelity evidence. runtimes/pydantic_ai/actions.py re-freezes to add ONE new "
+    "backed data-curator action_type, build_split_membership_population (DATA_CURATOR_ACTIONS), "
+    "additive exactly like v19's four executor-closure entries. runtimes/pydantic_ai/"
+    "role_outputs.py re-freezes to register ONE new typed reasoning-output model, "
+    "TeacherValidationPlanProposal (runtimes/pydantic_ai/teacher_validation_plan.py, NOT a "
+    "frozen file), via the existing register_reasoning_output_model path -- the same "
+    "propose/validate/commit pattern recovery_bridge.py already established for RecoveryPlan, "
+    "not a new mechanism. cli.py/orchestrator_bridge.py/tool_manifests.py/workflow/contracts.py "
+    "(none frozen) wire automatic pre-Stage-1 planning into run-campaign, a manual "
+    "plan-teacher-validation subcommand, an authorize-downstream-teacher-reliance subcommand, "
+    "and an OPTIONAL teacher_validation_objectives key in validation_profile.yaml -- the whole "
+    "pipeline is opt-in (a workflow that declares no teacher_evidence_sources is entirely "
+    "unaffected; teacher_validation_plan stays None exactly as before). No existing stage, "
+    "gate verdict other than the new additive NOT_APPLICABLE, recovery-taxonomy, capability-"
+    "routing, protected-reference, role/action-set entry, or Judge change; every other field of "
+    "every re-frozen file is untouched."
 )
 FROZEN_MODEL = "qwen2.5-7b-instruct"
 
@@ -484,19 +531,19 @@ FROZEN = {
     "runtimes/pydantic_ai/pydantic_ai_runtime.py":
         "81679cccd610f56cb07fb1f70b388286bd456cf96da2c1a2cdb48d4eed25aa62",
     "runtimes/pydantic_ai/role_outputs.py":
-        "2ca372aea8a105504fa8ed08c9e2fe47b04733564046b788b92d586139e4708a",
+        "a1d5ba42801907e621efcba70d5dba4b93b659aa87e0dd4224acfcd69e00d6db",
     "runtimes/pydantic_ai/production_router.py":
         "ff8d2f36d453775a46de25d85f9464c20fa8831bf68f5124f2c8c58b2079ac0f",
     "runtimes/pydantic_ai/driver.py":
         "db480c20d126b7511e8bbaa4fc2018adb56aa789fabe496ba4f08313379f5939",
     "runtimes/pydantic_ai/actions.py":
-        "72e2877c9ae73fb9914c6c6f991afbd7ddb2bd61d796f35c920a8072106a8088",
+        "3cc2ef66675818222b1e19f0696eaa4a1563679503f0b152475aff5cb7919838",
     "runtimes/pydantic_ai/controller_bridge.py":
         "b046922cd32620cd5dbe1c2dc7b4390a2eb67b4201e473d9b6062c68f8bd869d",
     "orchestration/specs.py":
         "4b6dc829fe2b6b594cc87e8a62bd944ea9df181cd7f420ae3732c861ce8e43cb",
     "workflow/controller.py":
-        "ecfa32fcf1743a65dc3c35f77fff9aa7f3880da183d843efa9cfd90b211e194c",
+        "422b98c4d6a1ce2c8c3fb9911cc40d54f27eae368218a07934b7223529863d24",
     "orchestration/schema/agent_result.schema.json":
         "a38afea9c06c21e647376efd835dec32a16b2f247583a090560cb1843e0eda31",
     "orchestration/schema/agent_spec.schema.json":

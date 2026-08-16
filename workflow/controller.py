@@ -17,9 +17,25 @@ from workflow import recovery_taxonomy
 from workflow.actor_identity import normalize_actor_identity, same_actor
 from workflow.integrity import artifact_digest, sha256_file, verify_artifact
 from workflow.contracts import (
-    build_validation_contract_components, validate_md_manifest, validate_validation_manifest,
+    build_validation_contract_components, parse_teacher_validation_objectives,
+    validate_md_manifest, validate_validation_manifest,
 )
 from workflow.review_lenses import normalize_review_lenses
+
+# Path-valued vs. pass-through-valued keys a workflow's OPTIONAL `teacher_evidence_sources` block
+# may declare -- see RunController.initialize's handling and
+# validation.teacher_evidence_profile.inspect_teacher_evidence, whose keyword arguments these
+# mirror exactly (this dict is intentionally NOT a copy of that function's signature via
+# introspection: an unrelated future kwarg added there should never silently become acceptable
+# here without this list being reviewed too).
+TEACHER_EVIDENCE_SOURCE_PATH_KEYS = (
+    "teacher_model_path", "operational_evaluation_population_path", "original_training_db_path",
+    "independent_external_reference_path", "deployment_domain_population_path",
+)
+TEACHER_EVIDENCE_SOURCE_PASSTHROUGH_KEYS = (
+    "target_split", "deployment_domain_matches_original_test_distribution",
+    "original_split_confidence", "label_energy_key", "label_forces_key",
+)
 
 
 # RECOVERY_CATEGORIES is DERIVED from the shared workflow.recovery_taxonomy registry (see that
@@ -165,7 +181,28 @@ def git_revision(project_dir):
 # under materially unchanged evidence/diagnosis/return-stage/corrective-action can be detected
 # for the (opt-in) stagnation-escalation policy. No stage/gate/adjudication semantics changed;
 # schema_version bumped 8->9 because the recovery-record shape gained new fields.
-SCHEMA_VERSION = 9
+#
+# v10 replaces the old SiO2/Allegro-specific validation branch with a generic, evidence-driven,
+# additive component-based Teacher-validation decision model (validation.teacher_evidence_profile)
+# plus an autonomous PydanticAI-driven Teacher-validation planning pipeline
+# (runtimes.pydantic_ai.teacher_validation_plan). Three new additive top-level state keys, every
+# one defaulting to None/{} exactly like v8/v9's pattern -- a workflow that declares none of them
+# gets byte-for-byte v9 behavior: teacher_evidence_sources (this run's OPTIONAL frozen evidence
+# input paths, validated/resolved at initialize() time; None unless a workflow declares
+# teacher_evidence_sources), teacher_validation_plan (the write-once committed
+# TeacherValidationPlan record; None until commit_teacher_validation_plan succeeds -- see that
+# method's docstring for its independent-re-derivation, fail-closed-on-unsupported-claim
+# semantics), stage_applicability ({} unless mark_stage_not_applicable is ever called for this
+# run). record_gate's verdict whitelist gained "NOT_APPLICABLE" as a fourth resolved-but-distinct
+# gate state (a stage whose evidence makes it genuinely inapplicable, e.g. no admissible
+# Teacher-validation component under this run's evidence -- never a substitute for PASS or a way
+# to silently skip a stage the workflow otherwise requires); every existing PASS-only consumer
+# (_previous_passed, run summary "all stages passed" check, stage_progress_fields) was audited and
+# updated to treat PASS and NOT_APPLICABLE as equally "resolved, may proceed downstream". No
+# existing stage/gate/recovery semantics changed for a workflow that never declares
+# teacher_evidence_sources or calls mark_stage_not_applicable; schema_version bumped 9->10 because
+# the manifest shape gained new top-level keys.
+SCHEMA_VERSION = 10
 
 
 class RunController:
@@ -245,6 +282,46 @@ class RunController:
                     any(not isinstance(role, str) or not role.strip()
                         for role in protected_reference_roles_spec)):
                 raise ValueError("protected_reference_roles must be a list of non-empty strings")
+        teacher_evidence_sources_spec = cfg.get("teacher_evidence_sources")
+        prepared_teacher_evidence_sources = None
+        if teacher_evidence_sources_spec is not None:
+            if not isinstance(teacher_evidence_sources_spec, dict):
+                raise ValueError("teacher_evidence_sources must be a mapping")
+            known_keys = (set(TEACHER_EVIDENCE_SOURCE_PATH_KEYS) |
+                         set(TEACHER_EVIDENCE_SOURCE_PASSTHROUGH_KEYS) |
+                         {"split_source_manifest_paths"})
+            unknown_keys = set(teacher_evidence_sources_spec) - known_keys
+            if unknown_keys:
+                raise ValueError(
+                    "teacher_evidence_sources has unknown key(s): " + ", ".join(sorted(unknown_keys))
+                )
+
+            def _resolve_declared_path(raw_value, *, label):
+                candidate = Path(str(raw_value).format(project_dir=str(project_dir)))
+                if not candidate.is_absolute():
+                    candidate = (workflow_config.parent / candidate).resolve()
+                if not candidate.exists():
+                    raise FileNotFoundError(f"teacher_evidence_sources.{label} is missing: {candidate}")
+                return str(candidate)
+
+            prepared_teacher_evidence_sources = {}
+            for key in TEACHER_EVIDENCE_SOURCE_PATH_KEYS:
+                raw_value = teacher_evidence_sources_spec.get(key)
+                prepared_teacher_evidence_sources[key] = (
+                    _resolve_declared_path(raw_value, label=key) if raw_value is not None else None
+                )
+            manifests_spec = teacher_evidence_sources_spec.get("split_source_manifest_paths", [])
+            if not isinstance(manifests_spec, list):
+                raise ValueError(
+                    "teacher_evidence_sources.split_source_manifest_paths must be a list"
+                )
+            prepared_teacher_evidence_sources["split_source_manifest_paths"] = [
+                _resolve_declared_path(value, label="split_source_manifest_paths")
+                for value in manifests_spec
+            ]
+            for key in TEACHER_EVIDENCE_SOURCE_PASSTHROUGH_KEYS:
+                if key in teacher_evidence_sources_spec:
+                    prepared_teacher_evidence_sources[key] = teacher_evidence_sources_spec[key]
         stages = []
         raw_stages = cfg.get("stages", [])
         if not isinstance(raw_stages, list) or any(not isinstance(item, dict)
@@ -409,7 +486,15 @@ class RunController:
                      # tries to route one into a training/acquisition input or output role.
                      "recovery_capability_roster": recovery_capability_roster_spec,
                      "recovery_policy": recovery_policy_spec,
-                     "protected_reference_roles": protected_reference_roles_spec or []}
+                     "protected_reference_roles": protected_reference_roles_spec or [],
+                     # v10 additive (None/{} unless the workflow opts in / a method is called):
+                     # teacher_evidence_sources freezes this run's OPTIONAL Teacher-evidence input
+                     # paths (resolved/validated above); teacher_validation_plan is set only by
+                     # commit_teacher_validation_plan; stage_applicability is populated only by
+                     # mark_stage_not_applicable.
+                     "teacher_evidence_sources": prepared_teacher_evidence_sources,
+                     "teacher_validation_plan": None,
+                     "stage_applicability": {}}
             if validation_contract_record is not None:
                 state["events"].append({
                     "at": validation_contract_record["established_at"],
@@ -613,9 +698,14 @@ class RunController:
         for stage in self.state["stages"]:
             if stage["name"] == name:
                 return
-            if stage["gate"] != "PASS" and not self._stage_has_accepted_adjudication(stage["name"]):
+            if (stage["gate"] not in {"PASS", "NOT_APPLICABLE"} and
+                    not self._stage_has_accepted_adjudication(stage["name"])):
                 raise RuntimeError(f"stage {name!r} blocked: {stage['name']!r} gate is {stage['gate']}")
-            self.verify_stage_artifacts(stage["name"])
+            # A NOT_APPLICABLE stage was never executed and so registers no artifacts (see
+            # mark_stage_not_applicable) -- verify_stage_artifacts would otherwise raise on the
+            # zero-record case it is designed to reject for every OTHER gate outcome.
+            if stage["gate"] != "NOT_APPLICABLE":
+                self.verify_stage_artifacts(stage["name"])
 
     def _stage_has_accepted_adjudication(self, name):
         resolution = self.stage(name).get("effective_resolution")
@@ -816,6 +906,43 @@ class RunController:
             contract = self.state.get("validation_contract")
             if contract is not None:
                 contract["student_stage_ever_completed"] = True
+
+    # --- v10: NOT_APPLICABLE stage lifecycle -------------------------------------------------
+
+    def mark_stage_not_applicable(self, name, *, reason=""):
+        """Resolve ``name`` as genuinely NOT_APPLICABLE instead of running it: the caller's own
+        evidence establishes there is nothing for this stage to do at all (e.g. no admissible
+        Teacher-validation component this run's committed teacher_validation_plan selected
+        requires it) -- categorically different from PASS (something ran and satisfied its
+        criteria), REVISE/FAIL (something ran and did not), or leaving the stage pending
+        (nothing has been decided yet). Never a substitute for actually running a stage the
+        workflow genuinely requires; this controller never decides applicability itself -- it
+        only records a caller-supplied decision, fail-closed on the same preconditions
+        ``run_stage`` enforces.
+
+        Deliberately bypasses ``record_gate`` entirely (rather than being a new accepted verdict
+        there): record_gate's non-PASS branch invalidates downstream stages and opens a pending
+        recovery, semantics that make sense for a stage that ran and failed its criteria but
+        would be actively wrong for a stage that never ran because it does not apply. Setting
+        ``gate`` directly here is the one and only path that ever produces the NOT_APPLICABLE
+        gate value.
+        """
+        self._ensure_no_pending_recovery()
+        self._previous_passed(name)
+        stage = self.stage(name)
+        if stage["status"] != "pending":
+            raise RuntimeError(
+                f"stage {name!r} cannot be marked NOT_APPLICABLE: status is "
+                f"{stage['status']!r}, not pending"
+            )
+        marked_at = now()
+        stage.update(status="not_applicable", gate="NOT_APPLICABLE",
+                    started_at=marked_at, completed_at=marked_at)
+        self.state["stage_applicability"][name] = {"decided_at": marked_at, "reason": reason or ""}
+        self.state["events"].append({"at": marked_at, "type": "stage_marked_not_applicable",
+                                     "stage": name, "reason": reason or ""})
+        self.save()
+        return stage
 
     def run_stage(self, name):
         self._ensure_no_pending_recovery()
@@ -1995,6 +2122,230 @@ class RunController:
                 continue
             return envelope["envelope_sha256"]
         return None
+
+    # --- v10: autonomous Teacher-validation planning -----------------------------------------
+
+    def _teacher_validation_objectives(self):
+        """Best-effort read of this run's OPTIONAL ``teacher_validation_objectives`` declaration
+        from its own frozen ``validation_profile`` source (established via
+        ``validation_contract_sources`` at initialize, or via ``establish_validation_contract``'s
+        ``source_files``). Returns ``[]`` whenever this run has no validation contract, or its
+        validation_profile source is unavailable/unparseable -- objectives are always optional
+        (see ``workflow.contracts.parse_teacher_validation_objectives``); this never hard-fails a
+        plan commit on a merely-missing or legacy (non-run-bound) validation_profile source.
+        """
+        contract = self.state.get("validation_contract")
+        if not contract:
+            return []
+        entry = (contract.get("source_files") or {}).get("validation_profile")
+        if not isinstance(entry, dict):
+            return []
+        raw_path = entry.get("snapshot") or entry.get("path")
+        if not raw_path or not Path(raw_path).is_file():
+            return []
+        try:
+            profile_cfg = yaml.safe_load(Path(raw_path).read_text())
+            return parse_teacher_validation_objectives(profile_cfg)
+        except (ValueError, yaml.YAMLError, OSError):
+            return []
+
+    def commit_teacher_validation_plan(self, plan_path, *, proposer=None):
+        """Write-once commit of a TeacherValidationPlanDraft (see
+        ``runtimes.pydantic_ai.teacher_validation_plan.TeacherValidationPlanDraft``) to this run.
+
+        Sole authoritative validator: independently RE-RUNS
+        ``validation.teacher_evidence_profile.inspect_teacher_evidence`` against this run's own
+        frozen ``teacher_evidence_sources`` (never trusts the draft's own embedded
+        ``evidence_profile``/``admissible_components``, which could be stale, hand-edited, or
+        produced by a differently-configured planner) and re-derives the admissible decision
+        space from that FRESH profile before accepting ``selected_components`` as a genuine,
+        evidence-backed subset of it -- an unsupported claim is rejected unconditionally, never
+        overridable by human approval (see ``authorize_downstream_teacher_reliance`` for the
+        distinct, narrower approval this framework DOES support: approving costly downstream
+        reliance on a plan that is itself valid but lacks predictive-fidelity evidence).
+
+        Write-once: an identical re-commit (same canonical plan content) is an idempotent no-op;
+        any differing content is a hard failure -- a genuine change in evidence or selection
+        requires a new run, mirroring ``establish_validation_contract``'s write-once policy.
+
+        ``proposer`` trust boundary is identical to ``propose_recovery``'s: a trusted caller
+        identity (e.g. the orchestrator bridge's own ``requested_by_role``) is always
+        authoritative over the draft's own ``proposed_by`` field; a mismatch fails closed. When
+        ``proposer`` is omitted, the draft's own ``proposed_by`` is trusted outright (the manual/
+        human-operated call shape).
+        """
+        from dataclasses import asdict
+
+        from validation.teacher_evidence_profile import (
+            derive_admissible_decision_space, inspect_teacher_evidence,
+        )
+
+        sources = self.state.get("teacher_evidence_sources")
+        if sources is None:
+            raise RuntimeError(
+                "this run did not declare teacher_evidence_sources at initialization -- there "
+                "is no frozen evidence this controller can independently re-derive a Teacher "
+                "validation plan against"
+            )
+        source = Path(plan_path).resolve()
+        draft = json.loads(source.read_text())
+        if draft.get("schema_version") != 1:
+            raise ValueError("teacher validation plan requires schema_version=1")
+        if draft.get("run_id") != self.state["run_id"]:
+            raise ValueError("teacher validation plan run_id does not match this run")
+
+        profile, evidence_profile_sha256 = inspect_teacher_evidence(**sources)
+        if draft.get("evidence_profile_sha256") != evidence_profile_sha256:
+            raise ValueError(
+                "teacher validation plan's evidence_profile_sha256 does not match this run's "
+                "independently re-derived evidence profile -- refusing to commit a plan bound "
+                "to stale or different evidence"
+            )
+        decision_space = derive_admissible_decision_space(profile)
+        admissible = set(decision_space["admissible_components"])
+        selected = draft.get("selected_components")
+        if not isinstance(selected, list) or not selected:
+            raise ValueError("teacher validation plan requires a non-empty selected_components list")
+        unsupported = sorted(set(selected) - admissible)
+        if unsupported:
+            raise ValueError(
+                "teacher validation plan selects component(s) not admissible under this run's "
+                f"independently re-derived evidence: {unsupported} -- admissible: "
+                f"{sorted(admissible)}"
+            )
+        objectives = self._teacher_validation_objectives()
+        if "require_predictive_fidelity_when_evidence_supports_it" in objectives:
+            fidelity = {"ORIGINAL_HELDOUT_FIDELITY", "INDEPENDENT_REFERENCE_FIDELITY"}
+            if (fidelity & admissible) and not (fidelity & set(selected)):
+                raise ValueError(
+                    "validation_profile objective 'require_predictive_fidelity_when_evidence_"
+                    "supports_it' requires selecting ORIGINAL_HELDOUT_FIDELITY or "
+                    "INDEPENDENT_REFERENCE_FIDELITY -- the independently re-derived evidence "
+                    "admits at least one of them but the plan selected neither"
+                )
+        if "assess_deployment_applicability_when_domain_evidence_exists" in objectives:
+            if "DEPLOYMENT_APPLICABILITY" in admissible and "DEPLOYMENT_APPLICABILITY" not in selected:
+                raise ValueError(
+                    "validation_profile objective 'assess_deployment_applicability_when_domain_"
+                    "evidence_exists' requires selecting DEPLOYMENT_APPLICABILITY -- the "
+                    "independently re-derived evidence admits it but the plan did not select it"
+                )
+
+        payload_proposed_by = draft.get("proposed_by")
+        if proposer is not None:
+            trusted = normalize_actor_identity(proposer, field_name="proposer")
+            if payload_proposed_by is not None:
+                payload_identity = normalize_actor_identity(payload_proposed_by,
+                                                             field_name="proposed_by")
+                if (payload_identity.actor_kind != trusted.actor_kind or
+                        payload_identity.canonical_id != trusted.canonical_id):
+                    raise ValueError(
+                        "teacher validation plan payload's proposed_by conflicts with the "
+                        "trusted caller-supplied proposer identity -- an untrusted plan payload "
+                        "field can never override or impersonate a trusted caller identity"
+                    )
+            proposer = trusted
+        else:
+            proposer = normalize_actor_identity(payload_proposed_by, field_name="proposed_by")
+
+        canonical_content = {
+            "run_id": self.state["run_id"],
+            "evidence_profile_sha256": evidence_profile_sha256,
+            "selected_components": sorted(set(selected)),
+            "reference_kind": draft.get("reference_kind"),
+            "target_split": draft.get("target_split"),
+            "source_dataset_role": draft.get("source_dataset_role"),
+            "rationale": draft.get("rationale"),
+            "validation_objectives": sorted(objectives),
+        }
+        content_sha256 = hashlib.sha256(
+            json.dumps(canonical_content, sort_keys=True, default=str).encode()
+        ).hexdigest()
+        existing = self.state.get("teacher_validation_plan")
+        if existing is not None:
+            if existing.get("content_sha256") == content_sha256:
+                return existing
+            raise RuntimeError(
+                "a Teacher validation plan is already committed for this run with different "
+                "content; a genuine change requires a new run, not a mutation of this one"
+            )
+
+        record = {
+            "schema_version": 1, "run_id": self.state["run_id"], "committed_at": now(),
+            "source": str(source), "content_sha256": content_sha256,
+            "evidence_profile_sha256": evidence_profile_sha256,
+            "evidence_profile": asdict(profile),
+            "admissible_components": decision_space["admissible_components"],
+            "selected_components": list(selected),
+            "components": decision_space["components"],
+            "protected_data_restrictions": decision_space["protected_data_restrictions"],
+            "approval_conditions": decision_space["approval_conditions"],
+            "reference_kind": draft.get("reference_kind"),
+            "target_split": draft.get("target_split"),
+            "source_dataset_role": draft.get("source_dataset_role"),
+            "rationale": draft.get("rationale"),
+            "proposed_by": proposer.as_dict(),
+            "validation_objectives": objectives,
+            "status": "committed",
+            "downstream_reliance_approval": None,
+        }
+        plan_dir = self.run_dir / "teacher_validation"
+        plan_dir.mkdir(exist_ok=True)
+        destination = plan_dir / "plan.json"
+        destination.write_text(json.dumps(record, indent=2) + "\n")
+        record["path"] = str(destination)
+        record["integrity"] = artifact_digest(destination)
+        self.state["teacher_validation_plan"] = record
+        self.state["events"].append({
+            "at": now(), "type": "teacher_validation_plan_committed",
+            "evidence_profile_sha256": evidence_profile_sha256,
+            "selected_components": list(selected), "path": str(destination),
+            "integrity": record["integrity"],
+        })
+        self.save()
+        return record
+
+    def authorize_downstream_teacher_reliance(self, authorized_by, *, note=None):
+        """Record explicit human approval for COSTLY downstream reliance (Teacher labeling /
+        Student training) on a committed Teacher validation plan that does NOT include
+        ``ORIGINAL_HELDOUT_FIDELITY`` or ``INDEPENDENT_REFERENCE_FIDELITY`` -- see
+        ``validation.teacher_evidence_profile.APPROVAL_CONDITIONS``. This is a DISTINCT approval
+        from committing the plan itself: ``commit_teacher_validation_plan`` never accepts an
+        evidence-unsupported claim regardless of any human approval, but a plan that is itself
+        entirely valid (only weaker components, e.g. just OPERATIONAL_ROBUSTNESS, were admissible
+        and selected) may still be knowingly relied upon downstream -- that reliance decision, and
+        only that decision, is what this method gates.
+
+        A plan that already includes ORIGINAL_HELDOUT_FIDELITY or INDEPENDENT_REFERENCE_FIDELITY
+        needs no such approval (there is no missing-predictive-fidelity condition to authorize);
+        calling this method for such a plan is a no-op returning the existing plan record
+        unchanged. Requires an authorized human actor exactly like ``approve_recovery`` --
+        ``actor_kind`` must resolve to ``"human"``.
+        """
+        plan = self.state.get("teacher_validation_plan")
+        if plan is None:
+            raise RuntimeError("no Teacher validation plan is committed for this run yet")
+        fidelity = {"ORIGINAL_HELDOUT_FIDELITY", "INDEPENDENT_REFERENCE_FIDELITY"}
+        if fidelity & set(plan.get("selected_components", [])):
+            return plan
+        approver = normalize_actor_identity(authorized_by, field_name="authorized_by")
+        if approver.actor_kind != "human":
+            raise ValueError(
+                "downstream Teacher-reliance authorization requires an authorized human "
+                f"actor; got actor_kind={approver.actor_kind!r} -- an automated Agent/System "
+                "actor can never satisfy this human-approval requirement"
+            )
+        approval = {"authorized_at": now(), "authorized_by": approver.as_dict(),
+                    "note": note or ""}
+        plan["downstream_reliance_approval"] = approval
+        destination = Path(plan["path"])
+        on_disk = {k: v for k, v in plan.items() if k not in ("path", "integrity")}
+        destination.write_text(json.dumps(on_disk, indent=2) + "\n")
+        plan["integrity"] = artifact_digest(destination)
+        self.state["events"].append({"at": now(), "type": "downstream_teacher_reliance_authorized",
+                                     **approval})
+        self.save()
+        return plan
 
     def summary(self):
         return [(s["name"], s["status"], s["gate"], s["attempts"]) for s in self.state["stages"]]

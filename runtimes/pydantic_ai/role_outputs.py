@@ -154,6 +154,8 @@ def select_output_model(spec, task: Optional[dict] = None):
 # cycle.
 from .root_cause import RootCauseClassification  # noqa: E402
 from .recovery_bridge import RecoveryPlanProposal  # noqa: E402
+from .teacher_validation_plan import TeacherValidationPlanProposal  # noqa: E402
 
 register_reasoning_output_model("RootCauseClassification", RootCauseClassification)
 register_reasoning_output_model("RecoveryPlanProposal", RecoveryPlanProposal)
+register_reasoning_output_model("TeacherValidationPlanProposal", TeacherValidationPlanProposal)

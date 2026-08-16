@@ -11,12 +11,13 @@ the 4 producer/analyst roles -- see
 ``tests/test_architecture_freeze.py::test_production_wiring_keeps_frozen_architecture_dimensions``,
 which pins that boundary.
 
-This module wires exactly ONE bridge action -- ``propose_recovery`` -- to a real controller call.
-Every other name in ``ORCHESTRATOR_BRIDGE_ACTIONS`` is a real, declared bridge action (present in
-the orchestrator's manifest, cross-checked by tests) but intentionally NOT_IMPLEMENTED here: it
-fails closed with ``BLOCKED_CAPABILITY`` rather than silently no-oping as if it succeeded. Wiring
-one of them up means adding it to ``_BRIDGE_EXECUTORS`` alongside its own executor -- never
-widening what ``propose_recovery`` itself is allowed to do.
+This module wires two bridge actions -- ``propose_recovery`` and ``commit_teacher_validation_plan``
+-- to real controller calls. Every other name in ``ORCHESTRATOR_BRIDGE_ACTIONS`` is a real,
+declared bridge action (present in the orchestrator's manifest, cross-checked by tests) but
+intentionally NOT_IMPLEMENTED here: it fails closed with ``BLOCKED_CAPABILITY`` rather than
+silently no-oping as if it succeeded. Wiring one of them up means adding it to
+``_BRIDGE_EXECUTORS`` alongside its own executor -- never widening what an existing wired action
+itself is allowed to do.
 
 Calling ``propose_recovery`` through this bridge is still just a PROPOSAL:
 ``RunController.propose_recovery`` remains the sole authoritative validator and fails closed
@@ -63,10 +64,25 @@ def _exec_propose_recovery(proposal: "OrchestratorActionProposal", *, controller
             "path": recovery["path"], "integrity": recovery["integrity"]}
 
 
+def _exec_commit_teacher_validation_plan(proposal: "OrchestratorActionProposal", *, controller) -> dict:
+    plan_path = proposal.parameters.get("plan_path")
+    if not plan_path:
+        raise ValueError("commit_teacher_validation_plan requires parameters.plan_path")
+    # Same trust boundary as _exec_propose_recovery: the recorded proposer identity comes from
+    # this proposal's own Pydantic Literal-typed `requested_by_role`, never from whatever
+    # `proposed_by` the plan payload itself may contain.
+    trusted_proposer = {"actor_kind": "system", "canonical_id": proposal.requested_by_role}
+    record = controller.commit_teacher_validation_plan(plan_path, proposer=trusted_proposer)
+    return {"status": record["status"], "path": record.get("path"),
+            "evidence_profile_sha256": record.get("evidence_profile_sha256"),
+            "selected_components": record.get("selected_components")}
+
+
 # Bridge actions with a real, wired controller call. Every other declared bridge action fails
 # closed as BLOCKED_CAPABILITY below -- adding support means adding an entry here, not weakening
 # the allowlist check.
-_BRIDGE_EXECUTORS = {"propose_recovery": _exec_propose_recovery}
+_BRIDGE_EXECUTORS = {"propose_recovery": _exec_propose_recovery,
+                     "commit_teacher_validation_plan": _exec_commit_teacher_validation_plan}
 
 
 def dispatch_orchestrator_action(proposal: OrchestratorActionProposal, *, controller,

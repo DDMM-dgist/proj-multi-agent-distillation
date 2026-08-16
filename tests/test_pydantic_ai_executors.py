@@ -298,7 +298,9 @@ class BackingMatrixTests(unittest.TestCase):
         from collections import Counter
         from runtimes.pydantic_ai.executors import BINDINGS
         counts = Counter(b.status for b in BINDINGS.values())
-        self.assertEqual(counts["READY_EXECUTOR"], 32)
+        # 33: includes build_split_membership_population (data-curator), added alongside the
+        # v21 autonomous Teacher-validation-planning revision (see test_architecture_freeze.py).
+        self.assertEqual(counts["READY_EXECUTOR"], 33)
         self.assertEqual(counts["READY_HPC_APPROVAL_GATED"], 8)
         self.assertEqual(counts["READY_INTERFACE_BACKEND_NOT_CONFIGURED"], 3)
         self.assertEqual(counts["READY_REASONING_OUTPUT"], 1)
