@@ -271,7 +271,8 @@ def valid_corrective_actions_by_capability(capability_roster: dict) -> dict[str,
 def validate_recovery_plan_proposal(proposal: RecoveryPlanProposal, *, expected_failed_stage: str,
                                     expected_diagnosis_sha256: str, capability_roster: dict,
                                     valid_stage_names,
-                                    dft_comparison_evidence_present: bool = True
+                                    dft_comparison_evidence_present: bool = True,
+                                    gate_alleges_accuracy_disagreement: bool = True
                                     ) -> RecoveryPlanProposal:
     """Contextual, fail-closed validation beyond Pydantic shape (mirrors
     ``root_cause.validate_root_cause_classification``'s role for ``RootCauseClassification``).
@@ -295,6 +296,18 @@ def validate_recovery_plan_proposal(proposal: RecoveryPlanProposal, *, expected_
     more evidence (e.g. "validate_teacher_reference" / extracting failing frames): only the three
     named authorizations above are gated, since those are the ones a genuine evidence gap can never
     itself justify.
+
+    ``gate_alleges_accuracy_disagreement``: a second, independent signal
+    (``cli._gate_alleges_accuracy_disagreement``), computed from the actual Judge vote bundle's
+    ``rationale``/``required_fix`` text for THIS gate failure -- never inferred from the mere
+    presence of a DFT comparison in the failed stage's evidence. A ``reference_validation``
+    failure ALWAYS structurally contains a DFT comparison (it's the stage's whole purpose), so
+    ``dft_comparison_evidence_present`` alone cannot catch a proposal that authorizes fresh DFT/
+    teacher relabeling/retraining when no Judge actually alleged a Teacher-vs-DFT accuracy problem
+    (R26 forensic finding: a REVISE driven entirely by evidence-exposure/lineage-mapping rationale
+    was used to justify inferring "Teacher disagreement" and thus new DFT/retraining). When False,
+    the same three actions are rejected here too, independently of
+    ``dft_comparison_evidence_present``.
     """
     if proposal.failed_stage != expected_failed_stage:
         raise RecoveryPlanValidationError(
@@ -316,7 +329,7 @@ def validate_recovery_plan_proposal(proposal: RecoveryPlanProposal, *, expected_
                 f"corrective_action.action_type {proposal.corrective_action.action_type!r} is not "
                 f"an action {role!r} (the role responsible for capability {proposal.capability!r}) "
                 f"may dispatch -- allowed: {sorted(allowed)}")
-    if not dft_comparison_evidence_present:
+    if not (dft_comparison_evidence_present and gate_alleges_accuracy_disagreement):
         unsupported = []
         if proposal.labeling.new_dft:
             unsupported.append("labeling.new_dft")
@@ -325,13 +338,19 @@ def validate_recovery_plan_proposal(proposal: RecoveryPlanProposal, *, expected_
         if proposal.student_training.retrain:
             unsupported.append("student_training.retrain")
         if unsupported:
+            if not dft_comparison_evidence_present:
+                reason = "the failed stage's own evidence contains no Teacher-vs-DFT comparison"
+            else:
+                reason = ("no Judge's required_fix/rationale for this gate failure actually "
+                          "alleges a Teacher-vs-DFT accuracy/disagreement problem -- the stage's "
+                          "own evidence containing a DFT comparison is not itself proof of a "
+                          "disagreement")
             raise RecoveryPlanValidationError(
-                f"proposal authorizes {unsupported} but the failed stage's own evidence contains "
-                "no Teacher-vs-DFT comparison -- fresh DFT, teacher relabeling, and Student "
-                "retraining are not justified by an evidence/provenance gap alone; propose an "
+                f"proposal authorizes {unsupported} but {reason} -- fresh DFT, teacher relabeling, "
+                "and Student retraining are not justified without it; propose an "
                 "evidence-gathering corrective_action instead (e.g. extract failing frames / "
-                "validate_teacher_reference) and re-diagnose once real Teacher-vs-DFT evidence "
-                "exists")
+                "validate_teacher_reference) and re-diagnose once real Teacher-vs-DFT accuracy "
+                "evidence exists")
     return proposal
 
 

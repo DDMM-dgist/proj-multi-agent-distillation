@@ -474,9 +474,19 @@ def _resolve_physical_validation_species_mapping(controller, params):
 
 
 def _protected_reference_from_inputs(controller):
+    """All controller-bound Teacher-vs-DFT reference configs, keyed by their declared ``kind``
+    (``validation.protected_reference._REFERENCE_KIND_VALIDATORS``) -- e.g.
+    ``protected-existing-dft`` (the physically-recovered historical artifact, unresolved original-
+    selection provenance, permanently protected from Student use) and ``recovered-original-
+    holdout`` (an algorithmically-reconstructed partition of the Teacher's own original train/
+    validation/test split membership). A run may bind at most one reference config PER kind -- the
+    two kinds serve distinct, non-substitutable scientific roles and a run may legitimately bind
+    both at once (see ``_proposal_from_stage``, which selects between them by the stage's own
+    action and, for ``validate_teacher_reference``, the run's committed ``teacher_validation_plan``
+    -- never by which one happens to be bound)."""
     import yaml
-    from validation.protected_reference import validate_reference_config
-    found = []
+    from validation.protected_reference import _REFERENCE_KIND_VALIDATORS, validate_reference_config
+    found: dict[str, str] = {}
     for record in controller.state.get("inputs", []):
         raw = record.get("snapshot") or record.get("source")
         if not raw or Path(raw).suffix.lower() not in {".yaml", ".yml"}:
@@ -485,16 +495,59 @@ def _protected_reference_from_inputs(controller):
             payload = yaml.safe_load(Path(raw).read_text()) or {}
         except Exception:
             continue
-        if isinstance(payload, dict) and payload.get("kind") == "protected-existing-dft":
-            validate_reference_config(raw)
-            found.append(str(Path(raw).resolve()))
-    if len(found) > 1:
-        raise ValueError("multiple protected reference configs are bound to this run")
-    return found[0] if found else None
+        kind = payload.get("kind") if isinstance(payload, dict) else None
+        if kind not in _REFERENCE_KIND_VALIDATORS:
+            continue
+        validate_reference_config(raw)
+        resolved = str(Path(raw).resolve())
+        if kind in found and found[kind] != resolved:
+            raise ValueError(f"multiple {kind!r} reference configs are bound to this run")
+        found[kind] = resolved
+    return found
 
 
 def _protection_consuming_action(action):
     return action in {"acquire_structures", "label_with_teacher", "train_committee"}
+
+
+def _resolve_teacher_reference_binding(controller, protected_references):
+    """Which controller-bound reference config ``validate_teacher_reference`` must execute
+    against, resolved from the run's own committed ``teacher_validation_plan`` -- never from
+    whichever reference kind simply happens to be bound (R26 forensic finding: with only a
+    ``protected-existing-dft`` reference bound, that historical artifact was silently substituted
+    for a plan that had selected ``ORIGINAL_HELDOUT_FIDELITY``, whose required evidence is the
+    recovered original Teacher held-out split, not the historical population).
+
+    When the committed plan selects ``ORIGINAL_HELDOUT_FIDELITY``, a ``recovered-original-
+    holdout`` reference MUST be bound and its own declared ``target_split`` must match the plan's
+    ``target_split`` exactly -- fail closed on either gap; the historical ``protected-existing-
+    dft`` reference is never substituted, even if it is the only one bound. Outside that
+    component selection (no plan committed yet, or a plan that selects it), the existing
+    ``protected-existing-dft`` behavior is unchanged.
+    """
+    import yaml
+
+    plan = controller.state.get("teacher_validation_plan")
+    selected = set((plan or {}).get("selected_components") or [])
+    if "ORIGINAL_HELDOUT_FIDELITY" in selected:
+        recovered = protected_references.get("recovered-original-holdout")
+        if not recovered:
+            raise ValueError(
+                "teacher_validation_plan selects ORIGINAL_HELDOUT_FIDELITY but no "
+                "recovered-original-holdout reference is bound to this run -- the historical "
+                "protected-existing-dft reference (if bound) can never substitute for it")
+        plan_target_split = plan.get("target_split")
+        cfg = yaml.safe_load(Path(recovered).read_text()) or {}
+        if plan_target_split and cfg.get("target_split") != plan_target_split:
+            raise ValueError(
+                "bound recovered-original-holdout reference target_split "
+                f"{cfg.get('target_split')!r} does not match the committed "
+                f"teacher_validation_plan's target_split {plan_target_split!r}")
+        return recovered
+    protected_reference = protected_references.get("protected-existing-dft")
+    if not protected_reference:
+        raise ValueError("reference_validation requires a controller-bound protected reference")
+    return protected_reference
 
 
 def _proposal_from_stage(controller, stage_name, stage_cfg):
@@ -522,19 +575,20 @@ def _proposal_from_stage(controller, stage_name, stage_cfg):
             return {k: fmt(v) for k, v in value.items()}
         return value
     params = fmt(_fill_default_parameters(controller, stage_name, params, route=route))
-    protected_reference = _protected_reference_from_inputs(controller)
+    protected_references = _protected_reference_from_inputs(controller)
     if action == "validate_teacher_reference":
-        if not protected_reference:
-            raise ValueError("reference_validation requires a controller-bound protected reference")
+        reference_path = _resolve_teacher_reference_binding(controller, protected_references)
         existing = params.get("reference_yaml")
-        if existing is not None and str(Path(existing).resolve()) != protected_reference:
-            raise ValueError("stage proposal reference_yaml does not match the controller-bound protected reference")
-        params["reference_yaml"] = protected_reference
-    elif protected_reference and _protection_consuming_action(action):
-        existing = params.get("reference_yaml")
-        if existing is not None and str(Path(existing).resolve()) != protected_reference:
-            raise ValueError("stage proposal reference_yaml does not match the controller-bound protected reference")
-        params["reference_yaml"] = protected_reference
+        if existing is not None and str(Path(existing).resolve()) != reference_path:
+            raise ValueError("stage proposal reference_yaml does not match the required reference config")
+        params["reference_yaml"] = reference_path
+    elif _protection_consuming_action(action):
+        protected_reference = protected_references.get("protected-existing-dft")
+        if protected_reference:
+            existing = params.get("reference_yaml")
+            if existing is not None and str(Path(existing).resolve()) != protected_reference:
+                raise ValueError("stage proposal reference_yaml does not match the controller-bound protected reference")
+            params["reference_yaml"] = protected_reference
     if action == "generate_run_summary":
         # The state snapshot is ALWAYS freshly assembled from the current Controller state right
         # before dispatch -- never taken from a config-supplied path -- so the Analyst can never
@@ -1818,6 +1872,60 @@ def _stage_evidence_reveals_dft_comparison(artifact_paths) -> bool:
     return False
 
 
+def _pending_gate_vote_bundle(controller, pending):
+    """The full validated Judge vote bundle (each vote's own ``rationale``/``required_fix``) for
+    the CURRENT ``pending_recovery`` gate failure -- matched by stage name AND
+    ``gate_recorded_at`` (not just stage name) so a stage that has failed more than once across
+    iterations never picks up a stale vote bundle from an earlier gate failure. Returns None if
+    the gate was recorded with no ``--votes`` bundle (a bare PASS-less verdict has no per-judge
+    rationale to ground a recovery diagnosis in)."""
+    failed_stage = pending["failed_stage"]
+    gate_recorded_at = pending["gate_recorded_at"]
+    for event in reversed(controller.state.get("events", [])):
+        if (event.get("type") == "gate" and event.get("stage") == failed_stage
+                and event.get("at") == gate_recorded_at):
+            return event.get("vote_bundle")
+    return None
+
+
+# Free-text markers loosely indicating a judge's required_fix/rationale actually alleges a
+# Teacher-vs-DFT accuracy/disagreement problem (as opposed to an evidence-exposure, provenance,
+# or lineage/mapping-completeness gap) -- same "matched loosely" precedent as root_cause.py's
+# _DFT_CHANNEL_MARKERS, and used for exactly the sibling defect class: R26 forensic finding, a
+# REVISE whose every judge asked only for exposing counts/manifests/policy text (never for the
+# underlying comparison, which was itself reported ok/passing) was still misclassified as a
+# teacher-vs-DFT disagreement merely because DFT-comparison evidence was structurally present.
+_ACCURACY_DISAGREEMENT_MARKERS = (
+    "disagreement", "diverg", "inaccura", "systematic bias", "exceeds the gate threshold",
+    "exceeds threshold", "exceeded the threshold", "exceeds the threshold",
+)
+
+
+def _gate_alleges_accuracy_disagreement(vote_bundle) -> bool:
+    """Deterministic, text-shape-based check over the ACTUAL validated Judge vote bundle for the
+    pending gate failure (see ``_pending_gate_vote_bundle`` -- never trusted from the Analyst's/
+    Orchestrator's own claims): does any non-PASS judge's own ``rationale``/``required_fix``
+    actually allege a Teacher-vs-DFT accuracy/disagreement problem? Threaded into both
+    ``root_cause.validate_root_cause_classification`` and
+    ``recovery_bridge.validate_recovery_plan_proposal`` as ``gate_alleges_accuracy_disagreement``,
+    alongside (never instead of) ``_stage_evidence_reveals_dft_comparison``: that check answers
+    "does the stage's evidence contain a DFT comparison at all", this one answers "did a judge
+    actually say that comparison disagreed" -- a REVISE can satisfy the former and still fail the
+    latter, exactly as demonstrated in R26 (a reference_validation REVISE whose own accuracy-
+    computation criterion every judge marked ``ok: true``).
+
+    No vote bundle at all (bare verdict, no ``--votes``) conservatively returns False: there is no
+    judge rationale to ground a disagreement claim in.
+    """
+    for vote in (vote_bundle or {}).get("votes", []):
+        if vote.get("verdict") == "PASS":
+            continue
+        text = f"{vote.get('rationale', '')} {vote.get('required_fix', '')}".lower()
+        if any(marker in text for marker in _ACCURACY_DISAGREEMENT_MARKERS):
+            return True
+    return False
+
+
 def _propose_recovery_via_reasoning_roles(controller, *, runtime, agent_specs_dir, exchange_dir,
                                           repo_root, mock_analyst_response,
                                           mock_orchestrator_response,
@@ -1857,6 +1965,11 @@ def _propose_recovery_via_reasoning_roles(controller, *, runtime, agent_specs_di
     # validators below (so a model that ignores the context still fails closed).
     dft_comparison_evidence_present = _stage_evidence_reveals_dft_comparison(
         pending["artifact_sha256"])
+    # Deterministically computed from the ACTUAL Judge vote bundle for this gate failure -- never
+    # trusted from the Analyst's/Orchestrator's own claims. See _gate_alleges_accuracy_disagreement's
+    # docstring for why this is a distinct, narrower signal than dft_comparison_evidence_present.
+    gate_vote_bundle = _pending_gate_vote_bundle(c, pending)
+    gate_alleges_accuracy_disagreement = _gate_alleges_accuracy_disagreement(gate_vote_bundle)
     available_artifacts = {a["path"] for a in c.state["artifacts"]}
     roster = c.state.get("recovery_capability_roster") or DEFAULT_RECOVERY_CAPABILITY_ROSTER
     exchange = Path(exchange_dir) if exchange_dir else c.run_dir / "exchange"
@@ -1885,7 +1998,17 @@ def _propose_recovery_via_reasoning_roles(controller, *, runtime, agent_specs_di
                        "the failed stage's own evidence contains no Teacher-vs-DFT comparison -- "
                        "do not name a 'dft' affected_channel or choose failure_category "
                        "reference_disagreement; classify as an evidence/provenance gap instead "
-                       "(e.g. evidence_gap or lineage_or_leakage)"],
+                       "(e.g. evidence_gap or lineage_or_leakage)",
+                       "context.recovery_evidence.gate_votes lists every judge's ACTUAL rationale "
+                       "and required_fix for this gate failure -- ground the diagnosis in what "
+                       "they actually wrote, never in an inference from evidence shape alone. If "
+                       "context.recovery_evidence.gate_alleges_accuracy_disagreement is false, no "
+                       "judge's required_fix/rationale alleges a Teacher-vs-DFT accuracy/"
+                       "disagreement problem (their concerns are evidence-exposure, provenance, "
+                       "or lineage/mapping-completeness gaps only) -- do not name a 'dft' "
+                       "affected_channel or choose failure_category reference_disagreement merely "
+                       "because DFT-comparison evidence exists in the stage's artifacts; classify "
+                       "as the evidence/provenance gap the judges actually described instead"],
         "context": {"expected_output_model": "RootCauseClassification", "stage": failed_stage,
                    "recovery_evidence": {
                        "failed_stage": failed_stage, "verdict": pending["verdict"],
@@ -1894,6 +2017,13 @@ def _propose_recovery_via_reasoning_roles(controller, *, runtime, agent_specs_di
                        "available_artifacts": sorted(available_artifacts),
                        "valid_recovery_targets": sorted(stage_names),
                        "dft_comparison_evidence_present": dft_comparison_evidence_present,
+                       "gate_alleges_accuracy_disagreement": gate_alleges_accuracy_disagreement,
+                       "gate_votes": [
+                           {"review_lens": vote.get("review_lens"), "verdict": vote.get("verdict"),
+                            "rationale": vote.get("rationale"),
+                            "required_fix": vote.get("required_fix")}
+                           for vote in (gate_vote_bundle or {}).get("votes", [])
+                       ],
                    }},
     }
     if runtime == "mock":
@@ -1918,7 +2048,8 @@ def _propose_recovery_via_reasoning_roles(controller, *, runtime, agent_specs_di
         return validate_root_cause_classification(
             classification, available_artifacts=available_artifacts,
             valid_recovery_targets=stage_names,
-            dft_comparison_evidence_present=dft_comparison_evidence_present)
+            dft_comparison_evidence_present=dft_comparison_evidence_present,
+            gate_alleges_accuracy_disagreement=gate_alleges_accuracy_disagreement)
 
     emitter.emit("role_invocation_started", stage=failed_stage, role="analyst",
                 action="recovery_diagnosis")
@@ -1956,13 +2087,25 @@ def _propose_recovery_via_reasoning_roles(controller, *, runtime, agent_specs_di
                        "labeling.new_dft, labeling.teacher_relabel, or student_training.retrain -- "
                        "the failed stage's own evidence contains no Teacher-vs-DFT comparison, so "
                        "none of those costly actions is evidence-justified; propose an "
-                       "evidence-gathering corrective_action instead"],
+                       "evidence-gathering corrective_action instead",
+                       "if context.gate_alleges_accuracy_disagreement is false, do not set "
+                       "labeling.new_dft, labeling.teacher_relabel, or student_training.retrain -- "
+                       "no judge's required_fix/rationale (context.gate_votes) alleges a "
+                       "Teacher-vs-DFT accuracy/disagreement problem, so none of those costly "
+                       "actions is justified merely because DFT-comparison evidence exists; "
+                       "propose an evidence-gathering corrective_action instead"],
         "context": {"expected_output_model": "RecoveryPlanProposal", "stage": failed_stage,
                    "diagnosis": json.loads(classification.model_dump_json()),
                    "diagnosis_artifact_sha256": diagnosis_sha256,
                    "valid_capabilities": sorted(roster), "valid_stage_names": sorted(stage_names),
                    "valid_actions_by_capability": valid_corrective_actions_by_capability(roster),
-                   "dft_comparison_evidence_present": dft_comparison_evidence_present},
+                   "dft_comparison_evidence_present": dft_comparison_evidence_present,
+                   "gate_alleges_accuracy_disagreement": gate_alleges_accuracy_disagreement,
+                   "gate_votes": [
+                       {"review_lens": vote.get("review_lens"), "verdict": vote.get("verdict"),
+                        "rationale": vote.get("rationale"), "required_fix": vote.get("required_fix")}
+                       for vote in (gate_vote_bundle or {}).get("votes", [])
+                   ]},
     }
     if runtime == "mock":
         if not mock_orchestrator_response:
@@ -1987,7 +2130,8 @@ def _propose_recovery_via_reasoning_roles(controller, *, runtime, agent_specs_di
         return validate_recovery_plan_proposal(
             proposal, expected_failed_stage=failed_stage, expected_diagnosis_sha256=diagnosis_sha256,
             capability_roster=roster, valid_stage_names=stage_names,
-            dft_comparison_evidence_present=dft_comparison_evidence_present)
+            dft_comparison_evidence_present=dft_comparison_evidence_present,
+            gate_alleges_accuracy_disagreement=gate_alleges_accuracy_disagreement)
 
     emitter.emit("role_invocation_started", stage=failed_stage, role="orchestrator",
                 action="recovery_plan_proposal")

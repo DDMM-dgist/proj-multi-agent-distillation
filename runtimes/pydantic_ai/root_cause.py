@@ -126,7 +126,8 @@ def _asserts_dft_comparison(classification: "RootCauseClassification") -> bool:
 
 def validate_root_cause_classification(classification: RootCauseClassification, *,
                                        available_artifacts, valid_recovery_targets,
-                                       dft_comparison_evidence_present: bool = True):
+                                       dft_comparison_evidence_present: bool = True,
+                                       gate_alleges_accuracy_disagreement: bool = True):
     """Evidence-bind a classification. Raises if it cites a nonexistent artifact, has no
     evidence, or targets an unknown recovery stage. (failure_category is enforced by the model.)
 
@@ -139,6 +140,18 @@ def validate_root_cause_classification(classification: RootCauseClassification, 
     was misclassified as a ``reference_disagreement``/``teacher_vs_dft`` failure although it uses
     no DFT labels at all). This does not block genuine Teacher-vs-DFT diagnoses where the evidence
     actually contains one (e.g. a reference_validation gate failure) -- only an unsupported one.
+
+    ``gate_alleges_accuracy_disagreement``: a second, independent signal (see
+    ``cli._gate_alleges_accuracy_disagreement``), computed from the actual Judge vote bundle's
+    ``rationale``/``required_fix`` text for THIS gate failure -- never inferred from the mere
+    presence of a DFT comparison in the stage's evidence. A ``reference_validation`` failure
+    ALWAYS structurally contains a DFT comparison (it's the stage's whole purpose), so
+    ``dft_comparison_evidence_present`` alone cannot catch a classification that asserts Teacher-
+    vs-DFT disagreement when no Judge actually alleged one (R26 forensic finding: a REVISE driven
+    entirely by evidence-exposure/lineage-mapping rationale was misclassified as
+    ``reference_disagreement`` merely because DFT-comparison evidence existed). When False, the
+    same Teacher-vs-DFT assertion is rejected here too, independently of
+    ``dft_comparison_evidence_present``.
     """
     available = set(available_artifacts)
     cited = [r.path for r in classification.evidence_refs] + \
@@ -159,6 +172,15 @@ def validate_root_cause_classification(classification: RootCauseClassification, 
             "no Teacher-vs-DFT comparison (no dft-labeled energy/forces, and no protected-"
             "reference/DFT usage recorded) -- this is unsupported by evidence; classify as an "
             "evidence/provenance gap instead (e.g. 'evidence_gap' or 'lineage_or_leakage')")
+    if not gate_alleges_accuracy_disagreement and _asserts_dft_comparison(classification):
+        raise RootCauseValidationError(
+            "classification asserts a Teacher-vs-DFT channel/disagreement (affected_channel="
+            f"{classification.affected_channel!r}, failure_category="
+            f"{classification.failure_category!r}), but no Judge's required_fix/rationale for this "
+            "gate failure actually alleges a Teacher-vs-DFT accuracy/disagreement problem -- the "
+            "stage's own evidence containing a DFT comparison is not itself proof of a "
+            "disagreement; classify as the evidence/provenance gap the judges actually described "
+            "instead (e.g. 'evidence_gap' or 'lineage_or_leakage')")
     return classification
 
 
