@@ -126,7 +126,9 @@ def _build_parser() -> argparse.ArgumentParser:
     plan_teacher_validation.add_argument("--repo-root", default=".")
     plan_teacher_validation.add_argument(
         "--mock-orchestrator-response", default=None,
-        help="test-only: canned TeacherValidationPlanProposal JSON (required with --runtime mock)")
+        help="test-only: canned TeacherValidationPlanProposal JSON (required with --runtime "
+             "mock); a comma-separated list simulates the bounded semantic-correction retry, one "
+             "file per attempt, holding on the last file once exhausted")
     authorize_downstream_reliance = sub.add_parser(
         "authorize-downstream-teacher-reliance",
         help="record explicit human approval for costly downstream reliance (Teacher labeling / "
@@ -2095,6 +2097,7 @@ def _commit_teacher_validation_plan_via_reasoning_roles(
     from .orchestrator_bridge import OrchestratorActionProposal, dispatch_orchestrator_action
     from .production_router import run_role
     from .teacher_validation_plan import (
+        TEACHER_VALIDATION_OBJECTIVE_SEMANTICS,
         build_teacher_validation_plan_draft_from_proposal,
         validate_teacher_validation_plan_proposal,
     )
@@ -2123,33 +2126,68 @@ def _commit_teacher_validation_plan_via_reasoning_roles(
                               provider=provider_name, model_id=model_id,
                               read_allow_prefixes=[], tools_enabled=False)
 
-    task = {
-        "schema_version": 1, "task_id": f"{c.state['run_id']}-teacher-validation-plan",
-        "agent": "orchestrator", "run_id": c.state["run_id"], "created_at": "run-campaign",
-        "instruction": ("Decide WHICH admissible Teacher-validation component(s) this campaign "
-                       "will actually use, from context.admissible_decision_space -- the "
-                       "evidence only establishes what is POSSIBLE, never which of it to use."),
-        "inputs": [],
-        "criteria": ["selected_components is a non-empty subset of admissible_components",
-                    "rationale is evidence-bound"],
-        "constraints": [
-            "selected_components must be drawn only from context.admissible_decision_space."
-            "admissible_components -- never a component this evidence does not support",
-            "evidence_profile_sha256 must equal context.evidence_profile_sha256",
-        ],
-        "context": {"expected_output_model": "TeacherValidationPlanProposal",
-                   "evidence_profile_sha256": evidence_profile_sha256,
-                   "admissible_decision_space": decision_space,
-                   "validation_objectives": objectives},
-    }
+    # Generic (never SiO2/run-specific) per-objective rule text -- the SAME dict
+    # ``validate_teacher_validation_plan_proposal`` is implemented against, so the task a planner
+    # is given can never omit a contract dimension the authoritative validator actually enforces.
+    objective_semantics = {obj: TEACHER_VALIDATION_OBJECTIVE_SEMANTICS[obj]
+                           for obj in objectives if obj in TEACHER_VALIDATION_OBJECTIVE_SEMANTICS}
+
+    def build_task(prior_rejection=None):
+        context = {"expected_output_model": "TeacherValidationPlanProposal",
+                  "evidence_profile_sha256": evidence_profile_sha256,
+                  "admissible_decision_space": decision_space,
+                  "validation_objectives": objectives,
+                  "validation_objective_semantics": objective_semantics}
+        instruction = ("Decide WHICH admissible Teacher-validation component(s) this campaign "
+                      "will actually use, from context.admissible_decision_space -- the evidence "
+                      "only establishes what is POSSIBLE, never which of it to use.")
+        if prior_rejection is not None:
+            context["prior_attempt_rejection"] = prior_rejection
+            instruction += (" This is a correction of a prior proposal the authoritative "
+                            "validator rejected for the exact reason recorded in "
+                            "context.prior_attempt_rejection -- do not repeat it.")
+        return {
+            "schema_version": 1, "task_id": f"{c.state['run_id']}-teacher-validation-plan",
+            "agent": "orchestrator", "run_id": c.state["run_id"], "created_at": "run-campaign",
+            "instruction": instruction,
+            "inputs": [],
+            "criteria": ["selected_components is a non-empty subset of admissible_components",
+                        "selected_components jointly satisfies every objective in "
+                        "context.validation_objectives that this evidence profile triggers -- "
+                        "see context.validation_objective_semantics for each declared "
+                        "objective's exact, evidence-conditional rule",
+                        "rationale is evidence-bound"],
+            "constraints": [
+                "selected_components must be drawn only from context.admissible_decision_space."
+                "admissible_components -- never a component this evidence does not support",
+                "evidence_profile_sha256 must equal context.evidence_profile_sha256",
+                "every objective in context.validation_objectives that context.validation_"
+                "objective_semantics marks as triggered by this evidence profile must be "
+                "satisfied by selected_components -- an admissible-but-objective-violating "
+                "selection is rejected exactly like an inadmissible one, never overridable",
+            ],
+            "context": context,
+        }
+
+    task = build_task()
     if runtime == "mock":
         if not mock_orchestrator_response:
             raise ValueError(
                 "--mock-orchestrator-response is required: teacher_evidence_sources are "
                 "declared for this run and --runtime mock cannot self-generate a "
                 "TeacherValidationPlanProposal")
-        orchestrator_runtime = MockAgentRuntime(
-            lambda t, s, ts: (Path(mock_orchestrator_response).read_text(), (0, 0)))
+        # Comma-separated list of response files is accepted so a test can simulate the bounded
+        # semantic-correction retry below (attempt N reads the Nth path, holding on the last path
+        # once exhausted); a single path (the common case) behaves exactly as before.
+        mock_response_paths = [Path(p) for p in str(mock_orchestrator_response).split(",")]
+        mock_attempt_counter = {"n": 0}
+
+        def _next_mock_response(_t, _s, _ts):
+            idx = min(mock_attempt_counter["n"], len(mock_response_paths) - 1)
+            mock_attempt_counter["n"] += 1
+            return mock_response_paths[idx].read_text(), (0, 0)
+
+        orchestrator_runtime = MockAgentRuntime(_next_mock_response)
         orchestrator_provider, orchestrator_model = "mock", "mock"
     else:
         try:
@@ -2169,17 +2207,32 @@ def _commit_teacher_validation_plan_via_reasoning_roles(
             admissible_components=decision_space["admissible_components"],
             validation_objectives=objectives)
 
-    emitter.emit("role_invocation_started", role="orchestrator",
-                action="teacher_validation_plan_proposal")
-    res = run_role(orchestrator_runtime, task, specs["orchestrator"],
-                   ctx_factory(orchestrator_provider, orchestrator_model), mode="primary",
-                   reasoning_validator=proposal_validator)
-    emitter.emit("role_invocation_completed", role="orchestrator",
-                action="teacher_validation_plan_proposal", detail={"accepted": res.accepted})
+    # Bounded semantic-correction retry: an admissible-but-objective-violating (or otherwise
+    # contextually rejected) proposal is not an immediate campaign failure -- the planner gets the
+    # exact deterministic rejection reason fed back, under the SAME frozen evidence_profile_sha256
+    # / admissible_decision_space / validation_objectives, for up to two corrective attempts.
+    # Every attempt is separately provenance-recorded (run_role/_write_provenance already gives
+    # each dispatch its own attempt id); only FAILED after the bound is exhausted.
+    max_attempts = 3  # initial attempt + at most 2 semantic-correction retries
+    res = None
+    for attempt_number in range(1, max_attempts + 1):
+        attempt_task = task if attempt_number == 1 else build_task(
+            prior_rejection={"attempt": attempt_number - 1, "validation_error": res.error})
+        emitter.emit("role_invocation_started", role="orchestrator",
+                    action="teacher_validation_plan_proposal", detail={"attempt": attempt_number})
+        res = run_role(orchestrator_runtime, attempt_task, specs["orchestrator"],
+                       ctx_factory(orchestrator_provider, orchestrator_model), mode="primary",
+                       reasoning_validator=proposal_validator)
+        emitter.emit("role_invocation_completed", role="orchestrator",
+                    action="teacher_validation_plan_proposal",
+                    detail={"accepted": res.accepted, "attempt": attempt_number})
+        if res.accepted:
+            break
     if not res.accepted:
         return CampaignRunResult(
             CAMPAIGN_FAILED, EXIT_VALIDATION_REJECTED,
-            f"teacher validation plan proposal rejected: {res.error}")
+            f"teacher validation plan proposal rejected after {attempt_number} attempt(s) "
+            f"(initial + up to {max_attempts - 1} semantic-correction retries): {res.error}")
     proposal = res.detail.instance
 
     draft = build_teacher_validation_plan_draft_from_proposal(

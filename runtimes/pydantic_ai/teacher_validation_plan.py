@@ -37,6 +37,25 @@ class TeacherValidationPlanValidationError(ValueError):
     pass
 
 
+TEACHER_VALIDATION_OBJECTIVE_SEMANTICS: dict[str, str] = {
+    "require_predictive_fidelity_when_evidence_supports_it": (
+        "if ORIGINAL_HELDOUT_FIDELITY or INDEPENDENT_REFERENCE_FIDELITY is in "
+        "admissible_components, selected_components must include at least one of them"),
+    "assess_deployment_applicability_when_domain_evidence_exists": (
+        "if DEPLOYMENT_APPLICABILITY is in admissible_components, selected_components must "
+        "include it"),
+    "prohibit_unsupported_generalization_claims": (
+        "selected_components must never include a component outside admissible_components -- "
+        "already enforced unconditionally regardless of whether this objective is declared"),
+}
+"""Generic, evidence-conditional semantics for each ``workflow.contracts.
+TEACHER_VALIDATION_OBJECTIVES`` value -- the single source both
+``validate_teacher_validation_plan_proposal`` (below) and the Orchestrator's planning task
+context/criteria (``runtimes.pydantic_ai.cli._commit_teacher_validation_plan_via_reasoning_roles``)
+draw from, so the task a planner is given and the contract that actually judges it can never drift
+apart. Domain-generic: no run/material-specific name ever appears here."""
+
+
 class TeacherValidationPlanProposal(BaseModel):
     """The Orchestrator's typed reasoning output proposing WHICH admissible Teacher-validation
     component(s) this campaign will actually use, and (when relevant) which reference kind /

@@ -81,11 +81,39 @@ def _dummy_teacher_model(root: Path) -> Path:
     return path
 
 
-def _write_workflow(root: Path, *, teacher_evidence_sources: dict, stage_b_component=None) -> Path:
+def _write_validation_contract_sources(root: Path, *, objectives) -> dict:
+    """Minimal, generic three-file ``validation_contract_sources`` bundle (distillation_scope /
+    validation_profile / dataset_policy) -- just enough to satisfy
+    ``workflow.contracts.build_validation_contract_components`` -- with ``objectives`` written
+    into ``validation_profile.yaml``'s OPTIONAL ``teacher_validation_objectives`` key, so a test
+    can exercise run-declared objective enforcement without any material-specific content."""
+    domain = {"system": "generic-test-domain"}
+    scope_path = root / "distillation_scope.yaml"
+    scope_path.write_text(yaml.safe_dump({"deployment_domain": domain}, sort_keys=False))
+    profile_path = root / "validation_profile.yaml"
+    profile_path.write_text(yaml.safe_dump({
+        "deployment_domain": domain,
+        "checks": [{"name": "generic_check", "category": "structure",
+                   "purpose": "student_teacher_fidelity", "reference_source": "teacher",
+                   "protocol": "generic test protocol", "required": True, "threshold": None}],
+        "teacher_validation_objectives": list(objectives),
+    }, sort_keys=False))
+    policy_path = root / "dataset_policy.yaml"
+    policy_path.write_text(yaml.safe_dump({
+        "split_policy": {"train_fraction": 0.8},
+    }, sort_keys=False))
+    return {"distillation_scope": str(scope_path), "validation_profile": str(profile_path),
+           "dataset_policy": str(policy_path)}
+
+
+def _write_workflow(root: Path, *, teacher_evidence_sources: dict, stage_b_component=None,
+                    validation_contract_sources=None) -> Path:
     """Generic two-stage workflow (mirrors tests/test_run_campaign.py's fixture) plus an OPTIONAL
     ``teacher_evidence_sources`` block and an OPTIONAL ``teacher_validation_component`` declared on
     stage_b -- both new, additive, opt-in workflow-config keys; no stage name/count/domain concept
-    is assumed anywhere in the production code that reads them."""
+    is assumed anywhere in the production code that reads them. ``validation_contract_sources``,
+    if given (see ``_write_validation_contract_sources``), is wired in unchanged so a test can
+    exercise run-declared ``teacher_validation_objectives``."""
     dataset = root / "train.extxyz"
     write(str(dataset), [_frame(i) for i in range(3)])
     student_cfg = root / "student.yaml"
@@ -118,6 +146,8 @@ def _write_workflow(root: Path, *, teacher_evidence_sources: dict, stage_b_compo
         "run_id": "teacher-validation-autonomy",
         "inputs": [str(student_cfg), str(dataset)],
         "teacher_evidence_sources": teacher_evidence_sources,
+        **({"validation_contract_sources": validation_contract_sources}
+           if validation_contract_sources is not None else {}),
         "stages": [
             {
                 "name": "stage_a",
@@ -148,8 +178,8 @@ def _write_workflow(root: Path, *, teacher_evidence_sources: dict, stage_b_compo
 def _mock_orchestrator_response(root: Path, *, run_id, evidence_profile_sha256,
                                 selected_components, rationale="autonomous selection",
                                 reference_kind=None, target_split=None,
-                                source_dataset_role=None) -> Path:
-    path = root / "mock_orchestrator_response.json"
+                                source_dataset_role=None, name="mock_orchestrator_response.json") -> Path:
+    path = root / name
     path.write_text(json.dumps({
         "run_id": run_id, "evidence_profile_sha256": evidence_profile_sha256,
         "selected_components": selected_components, "rationale": rationale,
@@ -714,6 +744,208 @@ class CaseG_StaticStageCapabilityDoesNotPreselectStrategy(unittest.TestCase):
             c = RunController(run_dir)
             self.assertEqual(c.stage("stage_b")["status"], "completed")
             self.assertNotEqual(c.stage("stage_b")["status"], "not_applicable")
+
+
+class CaseH_ObjectiveDrivenSemanticCorrectionRetry(unittest.TestCase):
+    """Case H: the planner task now explicitly states this run's declared
+    ``teacher_validation_objectives`` (not merely admissibility) -- a first proposal that is a
+    valid, admissible SUBSET but violates a declared objective is rejected and fed back to the
+    planner (not an immediate campaign failure); a corrected second proposal that also satisfies
+    the objective is accepted. Mirrors the real regression this fix addresses: OPERATIONAL_
+    ROBUSTNESS + TRAINING_CORPUS_CONSISTENCY are both admissible and mutually consistent, but
+    ``require_predictive_fidelity_when_evidence_supports_it`` also requires selecting
+    ORIGINAL_HELDOUT_FIDELITY (or INDEPENDENT_REFERENCE_FIDELITY) once it is admissible."""
+
+    def _evidence_and_workflow(self, root):
+        teacher_model = _dummy_teacher_model(root)
+        db_path, manifest_path = _write_training_db_and_manifest(root)
+        sources = {"teacher_model_path": str(teacher_model),
+                   "original_training_db_path": str(db_path),
+                   "split_source_manifest_paths": [str(manifest_path)],
+                   "target_split": "test"}
+        contract_sources = _write_validation_contract_sources(
+            root, objectives=["require_predictive_fidelity_when_evidence_supports_it"])
+        workflow = _write_workflow(root, teacher_evidence_sources=sources,
+                                   validation_contract_sources=contract_sources)
+        return sources, workflow
+
+    def _events(self, run_dir):
+        path = run_dir / "campaign_events.jsonl"
+        if not path.is_file():
+            return []
+        return [json.loads(line) for line in path.read_text().splitlines() if line.strip()]
+
+    def test_objective_violating_first_proposal_is_corrected_on_retry(self):
+        from runtimes.pydantic_ai import cli
+        from workflow.controller import RunController
+        from validation.teacher_evidence_profile import (
+            derive_admissible_decision_space, inspect_teacher_evidence,
+        )
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            sources, workflow = self._evidence_and_workflow(root)
+            run_dir = root / "run"
+            RunController.initialize(workflow, run_dir)
+            c = RunController(run_dir)
+            self.assertEqual(c._teacher_validation_objectives(),
+                             ["require_predictive_fidelity_when_evidence_supports_it"])
+            profile, evidence_profile_sha256 = inspect_teacher_evidence(**sources)
+            admissible = set(derive_admissible_decision_space(profile)["admissible_components"])
+            self.assertIn("ORIGINAL_HELDOUT_FIDELITY", admissible,
+                          "fixture must genuinely admit fidelity evidence for this case to be "
+                          "meaningful")
+
+            rejected_response = _mock_orchestrator_response(
+                root, run_id=c.state["run_id"], evidence_profile_sha256=evidence_profile_sha256,
+                selected_components=["OPERATIONAL_ROBUSTNESS", "TRAINING_CORPUS_CONSISTENCY"],
+                rationale="admissible subset that omits fidelity evidence",
+                name="attempt_1_rejected.json")
+            corrected_response = _mock_orchestrator_response(
+                root, run_id=c.state["run_id"], evidence_profile_sha256=evidence_profile_sha256,
+                selected_components=["OPERATIONAL_ROBUSTNESS", "ORIGINAL_HELDOUT_FIDELITY"],
+                rationale="corrected to also satisfy the declared fidelity objective",
+                name="attempt_2_accepted.json")
+
+            code = cli.main([
+                "run-campaign", "--runtime", "mock", "--run-dir", str(run_dir),
+                "--auto-mock-judges", "--mock-orchestrator-response",
+                f"{rejected_response},{corrected_response}"])
+            # Planning itself succeeds (committed); the campaign then pauses at stage_a's own
+            # costly_training approval boundary, exactly like every other case in this file.
+            self.assertEqual(code, cli.EXIT_APPROVAL_REQUIRED)
+
+            c = RunController(run_dir)
+            plan = c.state["teacher_validation_plan"]
+            self.assertIsNotNone(plan, "the corrected second proposal must have committed a plan")
+            self.assertEqual(set(plan["selected_components"]),
+                             {"OPERATIONAL_ROBUSTNESS", "ORIGINAL_HELDOUT_FIDELITY"})
+
+            # Exactly two attempts: the first rejected, the second accepted -- never silently
+            # retried past what actually happened, never collapsed into a single event.
+            completed = [e for e in self._events(run_dir)
+                        if e["event"] == "role_invocation_completed"
+                        and e.get("action") == "teacher_validation_plan_proposal"]
+            self.assertEqual([e["detail"]["accepted"] for e in completed], [False, True])
+
+            # The rejected first attempt never left behind an accepted reasoning-output artifact
+            # that anything could mistake for the committed plan.
+            reasoning_dir = run_dir / "exchange" / "reasoning_outputs"
+            if reasoning_dir.is_dir():
+                for artifact_path in reasoning_dir.glob("*.json"):
+                    payload = json.loads(artifact_path.read_text())
+                    self.assertEqual(set(payload.get("selected_components", [])),
+                                     {"OPERATIONAL_ROBUSTNESS", "ORIGINAL_HELDOUT_FIDELITY"},
+                                     "only the accepted proposal may ever be persisted as a "
+                                     "reasoning-output artifact")
+
+    def test_objective_violation_that_is_never_corrected_fails_closed_within_the_bound(self):
+        from runtimes.pydantic_ai import cli
+        from workflow.controller import RunController
+        from validation.teacher_evidence_profile import inspect_teacher_evidence
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            sources, workflow = self._evidence_and_workflow(root)
+            run_dir = root / "run"
+            RunController.initialize(workflow, run_dir)
+            c = RunController(run_dir)
+            _, evidence_profile_sha256 = inspect_teacher_evidence(**sources)
+
+            # This same objective-violating proposal is repeated for every attempt -- the planner
+            # never corrects itself, so the bounded retry must still terminate, never loop
+            # unboundedly, and never commit a plan.
+            always_rejected = _mock_orchestrator_response(
+                root, run_id=c.state["run_id"], evidence_profile_sha256=evidence_profile_sha256,
+                selected_components=["OPERATIONAL_ROBUSTNESS", "TRAINING_CORPUS_CONSISTENCY"],
+                rationale="never corrects the omitted fidelity objective",
+                name="always_rejected.json")
+
+            code = cli.main([
+                "run-campaign", "--runtime", "mock", "--run-dir", str(run_dir),
+                "--auto-mock-judges", "--mock-orchestrator-response", str(always_rejected)])
+            self.assertEqual(code, cli.EXIT_VALIDATION_REJECTED)
+            c = RunController(run_dir)
+            self.assertIsNone(c.state["teacher_validation_plan"])
+
+            completed = [e for e in self._events(run_dir)
+                        if e["event"] == "role_invocation_completed"
+                        and e.get("action") == "teacher_validation_plan_proposal"]
+            self.assertEqual(len(completed), 3,
+                             "initial attempt + at most 2 semantic-correction retries, then FAILED")
+            self.assertEqual([e["detail"]["accepted"] for e in completed], [False, False, False])
+
+    def test_already_valid_first_proposal_incurs_no_additional_llm_call(self):
+        from runtimes.pydantic_ai import cli
+        from workflow.controller import RunController
+        from validation.teacher_evidence_profile import inspect_teacher_evidence
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            sources, workflow = self._evidence_and_workflow(root)
+            run_dir = root / "run"
+            RunController.initialize(workflow, run_dir)
+            c = RunController(run_dir)
+            _, evidence_profile_sha256 = inspect_teacher_evidence(**sources)
+
+            already_valid = _mock_orchestrator_response(
+                root, run_id=c.state["run_id"], evidence_profile_sha256=evidence_profile_sha256,
+                selected_components=["OPERATIONAL_ROBUSTNESS", "ORIGINAL_HELDOUT_FIDELITY"],
+                rationale="already satisfies the declared fidelity objective on the first try",
+                name="already_valid.json")
+
+            code = cli.main([
+                "run-campaign", "--runtime", "mock", "--run-dir", str(run_dir),
+                "--auto-mock-judges", "--mock-orchestrator-response", str(already_valid)])
+            self.assertEqual(code, cli.EXIT_APPROVAL_REQUIRED)
+            c = RunController(run_dir)
+            self.assertIsNotNone(c.state["teacher_validation_plan"])
+
+            completed = [e for e in self._events(run_dir)
+                        if e["event"] == "role_invocation_completed"
+                        and e.get("action") == "teacher_validation_plan_proposal"]
+            self.assertEqual(len(completed), 1,
+                             "a proposal that is valid on the first attempt must incur exactly "
+                             "one LLM call, never a speculative retry")
+            self.assertTrue(completed[0]["detail"]["accepted"])
+
+
+class CaseC1b_UnsupportedComponentIsNeverAcceptedAcrossRetries(unittest.TestCase):
+    """The bounded semantic-correction retry (Case H) must never blur into overriding Case C1's
+    unconditional rule: a proposal claiming a component the evidence does not admit is rejected
+    on every attempt (there is nothing an evidence-bound correction could legitimately change it
+    to), and the campaign still fails closed within the same bound -- never accepted merely
+    because it was retried."""
+
+    def test_inadmissible_component_repeated_across_every_attempt_is_never_accepted(self):
+        from runtimes.pydantic_ai import cli
+        from workflow.controller import RunController
+        from validation.teacher_evidence_profile import inspect_teacher_evidence
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            teacher_model = _dummy_teacher_model(root)
+            population = root / "operational_population.extxyz"
+            _write_operational_population(population)
+            sources = {"teacher_model_path": str(teacher_model),
+                       "operational_evaluation_population_path": str(population)}
+            workflow = _write_workflow(root, teacher_evidence_sources=sources)
+            run_dir = root / "run"
+            RunController.initialize(workflow, run_dir)
+            c = RunController(run_dir)
+            _, evidence_profile_sha256 = inspect_teacher_evidence(**sources)
+            # ORIGINAL_HELDOUT_FIDELITY is never admissible under this evidence -- unconditional,
+            # not merely objective-conditional -- rejection.
+            inadmissible = _mock_orchestrator_response(
+                root, run_id=c.state["run_id"], evidence_profile_sha256=evidence_profile_sha256,
+                selected_components=["ORIGINAL_HELDOUT_FIDELITY"], name="inadmissible.json")
+
+            code = cli.main([
+                "run-campaign", "--runtime", "mock", "--run-dir", str(run_dir),
+                "--auto-mock-judges", "--mock-orchestrator-response", str(inadmissible)])
+            self.assertEqual(code, cli.EXIT_VALIDATION_REJECTED)
+            c = RunController(run_dir)
+            self.assertIsNone(c.state["teacher_validation_plan"])
 
 
 # --------------------------------------------------------------------------------------------
