@@ -68592,5 +68592,10 @@
   },
   "known_non_identity": {
     "historical_1155_protected_reference": "The separately-tracked 1,155-logical-frame historical protected reference (local_inputs/sio2_fresh/protected_reference/) is NOT this manifest's reconstructed test partition. Overlap between the two, joined on (source_category, source_local_index), is 113 of 1,156 mapped protected rows (~9.8%) -- statistically consistent with chance (1156 * 1142/11424 = 115.6 expected under no relationship), not with identity. This was verified under BOTH torch 2.6.0 and torch 2.12.1 reconstructions with an identical result, ruling out a torch-version explanation for the low overlap. The historical 1,155-frame set must not be described as this manifest's original held-out test partition; see local_inputs/sio2_fresh/protected_reference/protected_reference_manifest.json's reference_class for its own, separately-tracked provenance status."
+  },
+  "split_roles": {
+    "train": "training",
+    "val": "validation",
+    "test": "heldout_evaluation"
   }
 }

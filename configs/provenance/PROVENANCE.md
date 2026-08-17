@@ -147,6 +147,18 @@ carry no generalization-evidence value at all.
 | validation | 1,142 | 202 | direct (`monitored_metric`) | No |
 | test | 1,142 | 208 | none (evaluated once, post-hoc) | Yes |
 
+This semantic mapping — `train` → generic role `training`, `val` → generic role
+`validation`, `test` → generic role `heldout_evaluation` — is now persisted
+directly in `teacher_training_split_manifest.json`'s top-level `split_roles`
+declaration, using the exact `SPLIT_ROLES` vocabulary consumed by
+`validation.teacher_evidence_profile._load_split_roles`/
+`_resolve_unique_heldout_role_split`. It is a restatement, in the framework's
+generic role vocabulary, of the evidence already established above (the
+`monitored_metric`/`EarlyStopping`/`ModelCheckpoint`/LR-scheduler reading and
+the single post-hoc `trainer.test()` call) — no new evidence, and no
+run-specific decision. This lets any future run resolve its held-out split
+autonomously from provenance alone, without any run supplying `target_split`.
+
 ## Positional-index join representation (second, opt-in join key)
 
 `teacher_training_split_manifest.json` now also carries `source_dataset_sha256`
