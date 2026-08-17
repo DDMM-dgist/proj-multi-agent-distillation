@@ -71,6 +71,21 @@ workflow/controller.py (schema_version bumped 9->10), runtimes/pydantic_ai/actio
 backed data-curator action_type, build_split_membership_population), and
 runtimes/pydantic_ai/role_outputs.py (registers the new TeacherValidationPlanProposal reasoning
 output model) — see FREEZE_REVISION below for exactly what changed and what deliberately did not.
+
+v22 (provenance-derived held-out-role resolution; no target_split autonomy defect) closes a
+scientific-planning autonomy defect the v21 mechanism left open: ORIGINAL_HELDOUT_FIDELITY's
+evidence was only computable if a caller pre-supplied the literal split name (``target_split=
+"test"``), which meant an autonomous campaign author had to hardcode a scientific decision (which
+split, and its name) before planning could even begin. workflow/controller.py (schema_version
+UNCHANGED at 10 — no new state key, no new field shape; only which value populates the existing
+``target_split`` field on an ORIGINAL_HELDOUT_FIDELITY plan) is re-frozen because
+commit_teacher_validation_plan now resolves that field from this run's own independently
+re-derived TeacherEvidenceProfile.resolved_heldout_split rather than trusting draft.get
+("target_split") whenever ORIGINAL_HELDOUT_FIDELITY is selected — see FREEZE_REVISION below for
+exactly what changed and what deliberately did not. runtimes/pydantic_ai/cli.py and validation/
+teacher_evidence_profile.py (neither frozen) gained the companion split_roles provenance model and
+the static-capability/agent-decision stage-routing split; no role/action-set, schema_version,
+recovery-taxonomy, protected-reference, or Judge change.
 """
 from __future__ import annotations
 
@@ -513,7 +528,48 @@ FREEZE_REVISION = (
     "unaffected; teacher_validation_plan stays None exactly as before). No existing stage, "
     "gate verdict other than the new additive NOT_APPLICABLE, recovery-taxonomy, capability-"
     "routing, protected-reference, role/action-set entry, or Judge change; every other field of "
-    "every re-frozen file is untouched."
+    "every re-frozen file is untouched. "
+    "v22 (provenance-derived held-out-role resolution) closes the target_split autonomy defect: "
+    "validation/teacher_evidence_profile.py (not frozen) adds a generic split_roles vocabulary "
+    "(SPLIT_ROLE_TRAINING/VALIDATION/HELDOUT_EVALUATION) a split manifest MAY declare -- a "
+    "{<split name>: role} mapping, merged across every split_source_manifest_paths entry with "
+    "fail-closed behavior on any cross-manifest role conflict for the same split name -- and "
+    "inspect_teacher_evidence now resolves genuine_holdout_test_available/"
+    "genuine_holdout_test_frame_count from EITHER a caller-supplied target_split override, OR "
+    "provenance alone (exactly one split name uniquely carrying the heldout_evaluation role "
+    "among this training DB's actually-resolved splits), and fails closed (treats no held-out "
+    "split as resolved) if zero or multiple such roles are found, or if an explicit override and "
+    "the provenance-resolved role disagree. The resolved name (whichever source produced it) is "
+    "exposed on the profile as the new resolved_heldout_split field. workflow/controller.py's "
+    "commit_teacher_validation_plan is where this changes observable behavior and is why it is "
+    "re-frozen: when a committed plan's selected_components includes ORIGINAL_HELDOUT_FIDELITY, "
+    "the persisted target_split field is now ALWAYS resolved_target_split -- this run's own "
+    "freshly-recomputed profile.resolved_heldout_split -- never draft.get('target_split'), so no "
+    "proposer (human or agent) can steer which literal split gets bound merely by writing a "
+    "different value into a draft/proposal; a plan selecting ORIGINAL_HELDOUT_FIDELITY with no "
+    "resolvable held-out split is unreachable by construction (admissibility itself already "
+    "requires genuine_holdout_test_available, which only becomes true alongside a resolved "
+    "split name) and raises RuntimeError defensively if it were ever hit. For every OTHER "
+    "selected-components combination (i.e. without ORIGINAL_HELDOUT_FIDELITY), target_split "
+    "resolution is completely unchanged (still draft.get('target_split'), typically None). "
+    "runtimes/pydantic_ai/cli.py (not frozen) separately generalizes "
+    "_teacher_validation_not_applicable_reason so a stage's teacher_validation_component MAY "
+    "declare a LIST of statically-capable components (STATIC CAPABILITY, a workflow-authoring-"
+    "time fact) instead of only a single one; applicability is now the intersection of that "
+    "declared capable set with the committed plan's selected_components (the separate, later "
+    "AGENT DECISION) -- a single-string declaration continues to work identically to before "
+    "(treated as a one-element set). This lets a stage declare it can execute under more than "
+    "one admissible component without the workflow author having to guess in advance which one "
+    "a given campaign's plan will select; the plan (never the workflow config, never a Judge/LLM "
+    "self-routing at dispatch) is still what narrows applicability, so no self-skip/self-route "
+    "capability was introduced. configs/templates/workflow.yaml (not frozen, not code) separately "
+    "gains a pydantic_ai block for the teacher_baseline stage (role/action + the frozen, bounded "
+    "teacher_md_sanity catastrophic-sanity protocol values already used unchanged since R21) so "
+    "future new-run authoring does not silently lose it to executor defaults that differ from "
+    "the established protocol (timestep_fs, seed) -- template/config only, no executor semantics "
+    "changed. No new state key, no schema_version change, no new stage, no gate-verdict change, "
+    "no recovery-taxonomy change, no protected-reference change, no role/action-set entry "
+    "change, no Judge change; every other field of every re-frozen file is untouched."
 )
 FROZEN_MODEL = "qwen2.5-7b-instruct"
 
@@ -543,7 +599,7 @@ FROZEN = {
     "orchestration/specs.py":
         "4b6dc829fe2b6b594cc87e8a62bd944ea9df181cd7f420ae3732c861ce8e43cb",
     "workflow/controller.py":
-        "422b98c4d6a1ce2c8c3fb9911cc40d54f27eae368218a07934b7223529863d24",
+        "a7c12e845116998f3b8f0219e25dc5a7d08a5a98802d1cd3d54831192a429cea",
     "orchestration/schema/agent_result.schema.json":
         "a38afea9c06c21e647376efd835dec32a16b2f247583a090560cb1843e0eda31",
     "orchestration/schema/agent_spec.schema.json":

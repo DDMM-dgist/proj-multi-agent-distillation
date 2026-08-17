@@ -31,6 +31,17 @@ VALIDATION_COMPONENTS = (
     INDEPENDENT_REFERENCE_FIDELITY, DEPLOYMENT_APPLICABILITY,
 )
 
+# Generic split-provenance ROLE vocabulary -- a split manifest MAY declare, per split NAME (e.g.
+# "test", "val0", whatever the original training run actually called it), which of these three
+# generic roles that split member served. This is what lets ``inspect_teacher_evidence``
+# determine "is there a genuine held-out split" from provenance alone, without any caller ever
+# supplying the literal split name: the literal name is a fact discovered from the manifest, never
+# a framework constant. See ``_resolve_unique_heldout_role_split``.
+SPLIT_ROLE_TRAINING = "training"
+SPLIT_ROLE_VALIDATION = "validation"
+SPLIT_ROLE_HELDOUT_EVALUATION = "heldout_evaluation"
+SPLIT_ROLES = (SPLIT_ROLE_TRAINING, SPLIT_ROLE_VALIDATION, SPLIT_ROLE_HELDOUT_EVALUATION)
+
 # The floor: no component's evidence requirement is satisfied at all -- there is nothing
 # admissible to plan around (this is distinct from, and strictly rarer than, "only
 # OPERATIONAL_ROBUSTNESS is admissible", which is a perfectly plannable, non-empty outcome).
@@ -108,6 +119,14 @@ class TeacherEvidenceProfile:
     never satisfied merely because ``teacher_model_available`` is True: a Teacher with nothing
     to evaluate against has no operational-robustness evidence, regardless of the model itself
     being loadable.
+
+    ``resolved_heldout_split`` is the actual split NAME (e.g. "test") that
+    ``genuine_holdout_test_available``/``genuine_holdout_test_frame_count`` were computed
+    against -- a DISCOVERED fact (from a caller-supplied ``target_split`` override, from
+    provenance ``split_roles``, or from both agreeing), never a framework default. A caller
+    that later needs to actually execute against this split (see
+    ``workflow.controller.RunController.commit_teacher_validation_plan``) reads this field
+    instead of re-guessing or hardcoding a name.
     """
 
     teacher_model_available: bool
@@ -121,6 +140,7 @@ class TeacherEvidenceProfile:
     original_split_confidence: str = "NOT_AVAILABLE"
     genuine_holdout_test_frame_count: Optional[int] = None
     deployment_domain_matches_original_test_distribution: Optional[bool] = None
+    resolved_heldout_split: Optional[str] = None
 
 
 def _component_evidence_satisfied(component: str, profile: TeacherEvidenceProfile) -> bool:
@@ -308,6 +328,76 @@ def _load_positional_split_manifest(path: Union[str, Path]):
     }
 
 
+def _load_split_roles(path: Union[str, Path]):
+    """Load one manifest's OPTIONAL top-level ``split_roles`` declaration -- a generic
+    ``{<split name>: <role>}`` mapping where every value is drawn from ``SPLIT_ROLES``. This is
+    read independently of, and applies to EITHER, the category or positional join representation
+    (both ultimately resolve each training-DB frame to a split NAME; ``split_roles`` labels those
+    names, not either join mechanism specifically).
+
+    Returns ``None`` if ``path`` is not a JSON file, does not parse, is not a dict, declares no
+    ``split_roles`` key, or the declaration is malformed (not a ``{str: str}`` mapping, or any
+    value outside ``SPLIT_ROLES``) -- malformed is treated identically to absent, never a hard
+    error, since this is an optional, additive declaration.
+    """
+    p = Path(path)
+    if p.suffix.lower() != ".json" or not p.exists():
+        return None
+    try:
+        payload = json.loads(p.read_text(encoding="utf-8"))
+    except Exception:
+        return None
+    if not isinstance(payload, dict):
+        return None
+    roles = payload.get("split_roles")
+    if roles is None or not isinstance(roles, dict):
+        return None
+    for name, role in roles.items():
+        if not isinstance(name, str) or not isinstance(role, str) or role not in SPLIT_ROLES:
+            return None
+    return dict(roles)
+
+
+def _merged_split_roles(manifest_paths: Sequence[Union[str, Path]]):
+    """Merge every manifest's ``split_roles`` (see ``_load_split_roles``) across
+    ``manifest_paths``. Two manifests agreeing on the same split name's role merge trivially;
+    two manifests declaring DIFFERENT roles for the SAME split name is a conflict -- fails closed
+    (returns ``None`` entirely, not a partial/best-effort merge) rather than silently preferring
+    either declaration.
+    """
+    merged: dict = {}
+    conflict = False
+    for manifest_path in manifest_paths:
+        roles = _load_split_roles(manifest_path)
+        if not roles:
+            continue
+        for name, role in roles.items():
+            if name in merged and merged[name] != role:
+                conflict = True
+            merged[name] = role
+    if conflict or not merged:
+        return None
+    return merged
+
+
+def _resolve_unique_heldout_role_split(merged_roles, effective_splits):
+    """Given a merged ``{split name: role}`` mapping and the actual per-frame resolved split
+    names present in this training DB, return the single split name whose role is
+    ``SPLIT_ROLE_HELDOUT_EVALUATION`` -- but ONLY if exactly one such name is both declared AND
+    actually present among ``effective_splits``. Zero matches (no held-out role declared, or the
+    declared name never actually appears) or multiple conflicting matches both fail closed
+    (return ``None``) -- this is deliberately never a guess between candidates.
+    """
+    if not merged_roles or not effective_splits:
+        return None
+    present = set(effective_splits)
+    heldout_names = {name for name, role in merged_roles.items()
+                     if role == SPLIT_ROLE_HELDOUT_EVALUATION and name in present}
+    if len(heldout_names) != 1:
+        return None
+    return next(iter(heldout_names))
+
+
 def _verified_positional_split_join(manifest_data: dict, *, dataset_path, db_frames):
     """Fail-closed verification gate for a loaded positional-split manifest (see
     ``_load_positional_split_manifest``) against the REAL training-DB file: returns the
@@ -368,13 +458,22 @@ def inspect_teacher_evidence(
     RunController.commit_teacher_validation_plan``, which re-derives evidence independently rather
     than trusting a stored profile).
 
-    ``target_split`` is a declared/configured split NAME to check membership against -- an
-    ordinary, non-shortcut input (see this module's own docstring and
-    ``validation.protected_reference._validate_recovered_holdout_reference_config``, which takes
-    the identical parameter for the same reason). What is never accepted as an input is the
-    RESULT of that membership check (an asserted frame count, or a list of which frames belong):
+    ``target_split`` is an OPTIONAL, caller-supplied split NAME override -- never REQUIRED for
+    ``genuine_holdout_test_available``/ORIGINAL_HELDOUT_FIDELITY to become available. The
+    autonomous path instead reads an OPTIONAL ``split_roles`` declaration (see
+    ``SPLIT_ROLES``/``_load_split_roles``/``_merged_split_roles``) from ``split_source_manifest_
+    paths`` -- a generic ``{<split name>: training|validation|heldout_evaluation}`` mapping a
+    split manifest may carry -- and determines from PROVENANCE ALONE whether exactly one split
+    name in this training DB carries the ``heldout_evaluation`` role (see
+    ``_resolve_unique_heldout_role_split``): zero or multiple such names fails closed, never
+    guesses. If a caller supplies ``target_split`` AND provenance independently resolves a
+    held-out role, the two must AGREE (same fail-closed-on-disagreement policy as the category/
+    positional join check) -- an explicit override never silently pre-empts or is silently
+    overridden by provenance. What is never accepted as an input, either way, is the RESULT of
+    that membership check (an asserted frame count, or a list of which frames belong):
     ``genuine_holdout_test_frame_count`` below is always computed here, from the real join, never
-    passed in.
+    passed in. The split NAME actually used (whichever source resolved it) is exposed on the
+    returned profile as ``resolved_heldout_split``.
 
     Every boolean fact is derived from real files:
       * ``teacher_model_available``: ``teacher_model_path`` is given and exists.
@@ -399,8 +498,9 @@ def inspect_teacher_evidence(
         representation(s) are in play) fails the whole check closed.
       * ``genuine_holdout_test_available``/``genuine_holdout_test_frame_count``: computed from
         that SAME join -- the count of training-DB frames whose resolved split equals
-        ``target_split`` -- only when ``original_split_recovered`` holds and ``target_split`` is
-        given.
+        ``resolved_heldout_split`` (the caller's ``target_split``, provenance's uniquely-resolved
+        ``heldout_evaluation``-role split name, or their agreement) -- only when
+        ``original_split_recovered`` holds and a split name resolves.
       * ``operational_evaluation_population_available``: a real, provenance-bound population
         exists to run the Teacher against -- ``operational_evaluation_population_path``, the
         original training DB itself, or ``deployment_domain_population_path`` (mirrors this
@@ -437,6 +537,7 @@ def inspect_teacher_evidence(
     original_split_recovered = False
     genuine_holdout_test_available = False
     genuine_holdout_test_frame_count = None
+    resolved_heldout_split = None
     if original_training_db_available and split_source_manifest_paths:
         crosswalk = build_split_crosswalk(split_source_manifest_paths)
         resolved = crosswalk["resolved"]
@@ -475,12 +576,24 @@ def inspect_teacher_evidence(
             effective_splits = None
 
         original_split_recovered = effective_splits is not None
-        if original_split_recovered and target_split:
-            genuine_holdout_test_frame_count = sum(
-                1 for split in effective_splits if split == target_split)
-            genuine_holdout_test_available = genuine_holdout_test_frame_count > 0
-            if not genuine_holdout_test_available:
-                genuine_holdout_test_frame_count = None
+        resolved_heldout_split = None
+        if original_split_recovered:
+            merged_roles = _merged_split_roles(split_source_manifest_paths)
+            role_resolved_split = _resolve_unique_heldout_role_split(merged_roles, effective_splits)
+            if target_split and role_resolved_split and target_split != role_resolved_split:
+                # An explicit caller override conflicts with the provenance-declared held-out
+                # role -- fail closed rather than silently preferring either one (same policy as
+                # the category/positional join-agreement check above).
+                resolved_heldout_split = None
+            else:
+                resolved_heldout_split = target_split or role_resolved_split
+            if resolved_heldout_split:
+                genuine_holdout_test_frame_count = sum(
+                    1 for split in effective_splits if split == resolved_heldout_split)
+                genuine_holdout_test_available = genuine_holdout_test_frame_count > 0
+                if not genuine_holdout_test_available:
+                    genuine_holdout_test_frame_count = None
+                    resolved_heldout_split = None
 
     operational_evaluation_population_available = False
     if operational_evaluation_population_path is not None:
@@ -524,5 +637,6 @@ def inspect_teacher_evidence(
         genuine_holdout_test_frame_count=genuine_holdout_test_frame_count,
         deployment_domain_matches_original_test_distribution=(
             deployment_domain_matches_original_test_distribution),
+        resolved_heldout_split=resolved_heldout_split,
     )
     return profile, _profile_sha256(profile)

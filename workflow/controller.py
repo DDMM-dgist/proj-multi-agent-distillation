@@ -2248,12 +2248,31 @@ class RunController:
         else:
             proposer = normalize_actor_identity(payload_proposed_by, field_name="proposed_by")
 
+        # target_split for ORIGINAL_HELDOUT_FIDELITY is resolved HERE, from this run's own
+        # independently re-derived evidence profile, never trusted from the draft/proposal: the
+        # planner selects the COMPONENT (an evidence-driven decision); which literal split NAME
+        # backs it is a provenance fact this Controller looks up only after that selection is
+        # validated (see TeacherEvidenceProfile.resolved_heldout_split / SPLIT_ROLES). A draft-
+        # supplied target_split is never used for a committed ORIGINAL_HELDOUT_FIDELITY plan, even
+        # if present, so no proposer can steer which split gets bound.
+        resolved_target_split = draft.get("target_split")
+        if "ORIGINAL_HELDOUT_FIDELITY" in selected:
+            resolved_target_split = profile.resolved_heldout_split
+            if not resolved_target_split:
+                raise RuntimeError(
+                    "ORIGINAL_HELDOUT_FIDELITY is admissible and selected but this run's "
+                    "independently re-derived evidence profile has no resolved_heldout_split -- "
+                    "this should be unreachable, since admissibility itself requires "
+                    "genuine_holdout_test_available, which only becomes true alongside a "
+                    "resolved split name"
+                )
+
         canonical_content = {
             "run_id": self.state["run_id"],
             "evidence_profile_sha256": evidence_profile_sha256,
             "selected_components": sorted(set(selected)),
             "reference_kind": draft.get("reference_kind"),
-            "target_split": draft.get("target_split"),
+            "target_split": resolved_target_split,
             "source_dataset_role": draft.get("source_dataset_role"),
             "rationale": draft.get("rationale"),
             "validation_objectives": sorted(objectives),
@@ -2281,7 +2300,7 @@ class RunController:
             "protected_data_restrictions": decision_space["protected_data_restrictions"],
             "approval_conditions": decision_space["approval_conditions"],
             "reference_kind": draft.get("reference_kind"),
-            "target_split": draft.get("target_split"),
+            "target_split": resolved_target_split,
             "source_dataset_role": draft.get("source_dataset_role"),
             "rationale": draft.get("rationale"),
             "proposed_by": proposer.as_dict(),

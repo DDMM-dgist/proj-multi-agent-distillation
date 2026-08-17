@@ -220,27 +220,38 @@ def _selective_provenance_inputs(controller, stage_name):
 
 def _teacher_validation_not_applicable_reason(controller, stage_name, stage_cfg):
     """Return a non-empty reason string iff ``stage_name`` declares an OPTIONAL
-    ``teacher_validation_component`` (a single ``validation.teacher_evidence_profile.
-    VALIDATION_COMPONENTS`` name) and this run's own COMMITTED ``teacher_validation_plan`` did
-    not select it -- meaning this stage's work does not apply to this run at all. Returns None
-    (stage IS applicable / dispatch proceeds normally) whenever the stage declares no such
-    component, or the component IS among the plan's ``selected_components``.
+    ``teacher_validation_component`` -- this stage/executor's STATIC CAPABILITY: which generic
+    ``validation.teacher_evidence_profile.VALIDATION_COMPONENTS`` name(s) it is able to execute,
+    a single string or a list of them -- and NONE of those capable component(s) intersect this
+    run's own COMMITTED ``teacher_validation_plan``'s ``selected_components`` (the separate AGENT
+    DECISION of which admissible component(s) this campaign actually uses). Returns None (stage
+    IS applicable / dispatch proceeds normally) whenever the stage declares no capability, or the
+    intersection of capability and selection is non-empty.
 
-    A stage that declares this key but has no committed plan yet is left to whatever normal
+    This is a static-capability/agent-decision split, not a preselection mechanism: a stage may
+    declare it is capable of MULTIPLE components (e.g. a reference-validation-style stage capable
+    of either ``ORIGINAL_HELDOUT_FIDELITY`` or ``INDEPENDENT_REFERENCE_FIDELITY``) without the
+    workflow author having to guess, in advance, which one the plan will actually select -- the
+    plan (never the workflow config, never a Judge/LLM self-routing at dispatch time) is what
+    narrows the intersection down to what actually applies.
+
+    A stage that declares a capability but has no committed plan yet is left to whatever normal
     dispatch failure follows (never silently marked not-applicable for a merely-not-yet-planned
     run) -- the automatic pre-campaign planning step is expected to have already committed a plan
     before any stage reaches this check when a workflow declares ``teacher_evidence_sources``."""
-    component = stage_cfg.get("teacher_validation_component")
-    if not component:
+    declared = stage_cfg.get("teacher_validation_component")
+    if not declared:
         return None
+    capable = {declared} if isinstance(declared, str) else set(declared)
     plan = controller.state.get("teacher_validation_plan")
     if plan is None:
         return None
-    if component in (plan.get("selected_components") or []):
+    selected = set(plan.get("selected_components") or [])
+    if capable & selected:
         return None
-    return (f"stage {stage_name!r} requires Teacher-validation component {component!r}, which "
-           f"this run's committed Teacher validation plan (selected_components="
-           f"{plan.get('selected_components')!r}) does not select")
+    return (f"stage {stage_name!r} is capable of Teacher-validation component(s) "
+           f"{sorted(capable)!r}, none of which this run's committed Teacher validation plan "
+           f"(selected_components={sorted(selected)!r}) selects")
 
 
 def _teacher_validation_downstream_reliance_gap(controller, stage_name, stage_cfg):

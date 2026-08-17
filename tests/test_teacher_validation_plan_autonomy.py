@@ -46,10 +46,15 @@ def _write_operational_population(path: Path, n=2) -> None:
     write(str(path), [_frame(i) for i in range(n)])
 
 
-def _write_training_db_and_manifest(root: Path, *, n_train=3, n_test=1):
+def _write_training_db_and_manifest(root: Path, *, n_train=3, n_test=1,
+                                    heldout_split_name="test", split_roles=None):
     """A fully-labeled training DB whose frames genuinely cross-walk against a split manifest --
-    admits OPERATIONAL_ROBUSTNESS, TRAINING_CORPUS_CONSISTENCY, and (with ``target_split='test'``)
-    ORIGINAL_HELDOUT_FIDELITY."""
+    admits OPERATIONAL_ROBUSTNESS, TRAINING_CORPUS_CONSISTENCY, and ORIGINAL_HELDOUT_FIDELITY
+    (either via a caller-supplied ``target_split`` override, or -- if ``split_roles`` is given --
+    from provenance alone). ``heldout_split_name`` is deliberately overridable so tests can prove
+    the mechanism does not assume the literal name "test"; ``split_roles`` is an OPTIONAL generic
+    ``{<split name>: training|validation|heldout_evaluation}`` declaration written into the same
+    manifest (see ``validation.teacher_evidence_profile.SPLIT_ROLES``)."""
     frames = []
     records = []
     for i in range(n_train):
@@ -58,11 +63,15 @@ def _write_training_db_and_manifest(root: Path, *, n_train=3, n_test=1):
     for j in range(n_test):
         idx = n_train + j
         frames.append(_frame(idx))
-        records.append({"source_category": "bulk", "source_local_index": idx, "split": "test"})
+        records.append({"source_category": "bulk", "source_local_index": idx,
+                        "split": heldout_split_name})
     db_path = root / "train_db.extxyz"
     write(str(db_path), frames)
     manifest_path = root / "split_manifest.json"
-    manifest_path.write_text(json.dumps({"records": records}))
+    payload = {"records": records}
+    if split_roles is not None:
+        payload["split_roles"] = split_roles
+    manifest_path.write_text(json.dumps(payload))
     return db_path, manifest_path
 
 
@@ -504,6 +513,207 @@ class CaseE_DownstreamRelianceApprovalIsASeparateHumanGate(unittest.TestCase):
                               "a plan that already includes fidelity evidence needs no approval "
                               "at all, so even a non-human caller must get a no-op, not a "
                               "rejection")
+
+
+class CaseF_ProvenanceOnlyHeldoutRoleNeedsNoTargetSplitInput(unittest.TestCase):
+    """Case F (Issue 1): a genuine held-out split is discoverable from provenance
+    (``split_roles``) alone -- ``teacher_evidence_sources`` never supplies ``target_split``, the
+    Orchestrator's proposal never supplies ``target_split``, and the actual split label is
+    deliberately NOT "test" -- yet ORIGINAL_HELDOUT_FIDELITY is admissible, selectable, and
+    committable, and the Controller resolves the correct provenance-bound split name into the
+    committed plan's ``target_split`` field entirely on its own."""
+
+    def _evidence_sources(self, root):
+        teacher_model = _dummy_teacher_model(root)
+        db_path, manifest_path = _write_training_db_and_manifest(
+            root, heldout_split_name="holdout_eval",
+            split_roles={"train": "training", "holdout_eval": "heldout_evaluation"})
+        # Deliberately NO "target_split" key anywhere in this run's evidence sources.
+        return {"teacher_model_path": str(teacher_model),
+                "original_training_db_path": str(db_path),
+                "split_source_manifest_paths": [str(manifest_path)]}
+
+    def test_holdout_fidelity_admissible_and_committable_without_target_split(self):
+        from workflow.controller import RunController
+        from validation.teacher_evidence_profile import (
+            derive_admissible_decision_space, inspect_teacher_evidence,
+        )
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            sources = self._evidence_sources(root)
+            profile, evidence_profile_sha256 = inspect_teacher_evidence(**sources)
+            self.assertIsNone(sources.get("target_split"))
+            self.assertTrue(profile.genuine_holdout_test_available)
+            self.assertEqual(profile.resolved_heldout_split, "holdout_eval")
+            admissible = set(derive_admissible_decision_space(profile)["admissible_components"])
+            self.assertIn("ORIGINAL_HELDOUT_FIDELITY", admissible)
+
+            workflow = _write_workflow(root, teacher_evidence_sources=sources)
+            run_dir = root / "run"
+            RunController.initialize(workflow, run_dir)
+            c = RunController(run_dir)
+
+            # The Orchestrator proposal/draft also never supplies target_split -- the planner
+            # selects the COMPONENT only.
+            draft = _hand_crafted_draft(
+                root, run_id=c.state["run_id"], evidence_profile_sha256=evidence_profile_sha256,
+                selected_components=["ORIGINAL_HELDOUT_FIDELITY"])
+            draft_payload = json.loads(draft.read_text())
+            self.assertIsNone(draft_payload["target_split"])
+
+            c.commit_teacher_validation_plan(draft)
+            c = RunController(run_dir)
+            plan = c.state["teacher_validation_plan"]
+            self.assertEqual(plan["selected_components"], ["ORIGINAL_HELDOUT_FIDELITY"])
+            # Execution-time resolution: the Controller -- not the draft -- bound the real,
+            # provenance-declared, non-"test"-named split.
+            self.assertEqual(plan["target_split"], "holdout_eval")
+
+    def test_no_heldout_role_and_no_target_split_leaves_fidelity_inadmissible(self):
+        from validation.teacher_evidence_profile import (
+            derive_admissible_decision_space, inspect_teacher_evidence,
+        )
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            teacher_model = _dummy_teacher_model(root)
+            # split_roles declares only training/validation roles -- no heldout_evaluation
+            # anywhere -- and no target_split override either.
+            db_path, manifest_path = _write_training_db_and_manifest(
+                root, heldout_split_name="val0",
+                split_roles={"train": "training", "val0": "validation"})
+            sources = {"teacher_model_path": str(teacher_model),
+                      "original_training_db_path": str(db_path),
+                      "split_source_manifest_paths": [str(manifest_path)]}
+            profile, _ = inspect_teacher_evidence(**sources)
+            self.assertFalse(profile.genuine_holdout_test_available)
+            self.assertIsNone(profile.resolved_heldout_split)
+            admissible = set(derive_admissible_decision_space(profile)["admissible_components"])
+            self.assertNotIn("ORIGINAL_HELDOUT_FIDELITY", admissible)
+
+    def test_conflicting_heldout_roles_fail_closed_to_inadmissible(self):
+        from validation.teacher_evidence_profile import (
+            derive_admissible_decision_space, inspect_teacher_evidence,
+        )
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            teacher_model = _dummy_teacher_model(root)
+            db_path, m1 = _write_training_db_and_manifest(
+                root, heldout_split_name="holdout_eval",
+                split_roles={"train": "training", "holdout_eval": "heldout_evaluation"})
+            # A second manifest, over the SAME training DB, declares a DIFFERENT split ALSO
+            # heldout -- two conflicting held-out candidates must fail closed, never guess.
+            m2 = root / "second_manifest.json"
+            m2.write_text(json.dumps({
+                "records": [{"source_category": "bulk", "source_local_index": i,
+                            "split": "train" if i < 3 else "another_holdout"}
+                           for i in range(4)],
+                "split_roles": {"train": "training", "another_holdout": "heldout_evaluation"},
+            }))
+            sources = {"teacher_model_path": str(teacher_model),
+                      "original_training_db_path": str(db_path),
+                      "split_source_manifest_paths": [str(m1), str(m2)]}
+            profile, _ = inspect_teacher_evidence(**sources)
+            self.assertFalse(profile.genuine_holdout_test_available)
+            self.assertIsNone(profile.resolved_heldout_split)
+            admissible = set(derive_admissible_decision_space(profile)["admissible_components"])
+            self.assertNotIn("ORIGINAL_HELDOUT_FIDELITY", admissible)
+
+
+class CaseG_StaticStageCapabilityDoesNotPreselectStrategy(unittest.TestCase):
+    """Case G (Issue 2): a stage may declare it is STATICALLY CAPABLE of more than one
+    validation component without that list preselecting which one a campaign uses -- the
+    committed plan's ``selected_components`` (an AGENT DECISION) is what narrows the
+    intersection, and a Judge/LLM never self-routes or self-skips at dispatch time."""
+
+    def test_stage_capable_of_either_component_is_applicable_when_plan_selects_either(self):
+        from runtimes.pydantic_ai.cli import _teacher_validation_not_applicable_reason
+
+        class _FakeController:
+            def __init__(self, selected):
+                self.state = {"teacher_validation_plan": {"selected_components": selected}}
+
+        stage_cfg = {"teacher_validation_component":
+                     ["ORIGINAL_HELDOUT_FIDELITY", "INDEPENDENT_REFERENCE_FIDELITY"]}
+
+        for selected in (["ORIGINAL_HELDOUT_FIDELITY"], ["INDEPENDENT_REFERENCE_FIDELITY"],
+                         ["ORIGINAL_HELDOUT_FIDELITY", "OPERATIONAL_ROBUSTNESS"]):
+            reason = _teacher_validation_not_applicable_reason(
+                _FakeController(selected), "stage_b", stage_cfg)
+            self.assertIsNone(reason, f"expected applicable for selected={selected}")
+
+    def test_stage_capable_of_either_component_is_not_applicable_when_plan_selects_neither(self):
+        from runtimes.pydantic_ai.cli import _teacher_validation_not_applicable_reason
+
+        class _FakeController:
+            def __init__(self, selected):
+                self.state = {"teacher_validation_plan": {"selected_components": selected}}
+
+        stage_cfg = {"teacher_validation_component":
+                     ["ORIGINAL_HELDOUT_FIDELITY", "INDEPENDENT_REFERENCE_FIDELITY"]}
+        reason = _teacher_validation_not_applicable_reason(
+            _FakeController(["OPERATIONAL_ROBUSTNESS"]), "stage_b", stage_cfg)
+        self.assertIsNotNone(reason)
+        self.assertIn("ORIGINAL_HELDOUT_FIDELITY", reason)
+        self.assertIn("INDEPENDENT_REFERENCE_FIDELITY", reason)
+
+    def test_single_string_capability_still_works_unchanged(self):
+        from runtimes.pydantic_ai.cli import _teacher_validation_not_applicable_reason
+
+        class _FakeController:
+            def __init__(self, selected):
+                self.state = {"teacher_validation_plan": {"selected_components": selected}}
+
+        stage_cfg = {"teacher_validation_component": "OPERATIONAL_ROBUSTNESS"}
+        self.assertIsNone(_teacher_validation_not_applicable_reason(
+            _FakeController(["OPERATIONAL_ROBUSTNESS"]), "stage_b", stage_cfg))
+        self.assertIsNotNone(_teacher_validation_not_applicable_reason(
+            _FakeController(["ORIGINAL_HELDOUT_FIDELITY"]), "stage_b", stage_cfg))
+
+    def test_list_valued_capability_end_to_end_stage_lifecycle(self):
+        # End-to-end: a real committed plan selecting only ONE of stage_b's two capable
+        # components leaves stage_b applicable (never not_applicable), proving the workflow
+        # author did not have to guess which one the plan would pick.
+        from runtimes.pydantic_ai import cli
+        from workflow.controller import RunController
+        from validation.teacher_evidence_profile import inspect_teacher_evidence
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            teacher_model = _dummy_teacher_model(root)
+            db_path, manifest_path = _write_training_db_and_manifest(root)  # default "test" name
+            sources = {"teacher_model_path": str(teacher_model),
+                      "original_training_db_path": str(db_path),
+                      "split_source_manifest_paths": [str(manifest_path)],
+                      "target_split": "test"}
+            workflow = _write_workflow(
+                root, teacher_evidence_sources=sources,
+                stage_b_component=["ORIGINAL_HELDOUT_FIDELITY", "INDEPENDENT_REFERENCE_FIDELITY"])
+            run_dir = root / "run"
+            RunController.initialize(workflow, run_dir)
+            c = RunController(run_dir)
+            _, evidence_profile_sha256 = inspect_teacher_evidence(**sources)
+            mock_response = _mock_orchestrator_response(
+                root, run_id=c.state["run_id"], evidence_profile_sha256=evidence_profile_sha256,
+                selected_components=["ORIGINAL_HELDOUT_FIDELITY"])
+
+            code = cli.main(["run-campaign", "--runtime", "mock", "--run-dir", str(run_dir),
+                             "--auto-mock-judges",
+                             "--mock-orchestrator-response", str(mock_response)])
+            self.assertEqual(code, cli.EXIT_APPROVAL_REQUIRED)
+            self.assertEqual(cli.main(["approve", "--run-dir", str(run_dir),
+                                       "--boundary", "costly_training",
+                                       "--note", "test approval"]), cli.EXIT_SUCCESS)
+
+            code = cli.main(["run-campaign", "--runtime", "mock", "--run-dir", str(run_dir),
+                             "--auto-mock-judges",
+                             "--mock-orchestrator-response", str(mock_response)])
+            self.assertEqual(code, cli.EXIT_SUCCESS)
+            c = RunController(run_dir)
+            self.assertEqual(c.stage("stage_b")["status"], "completed")
+            self.assertNotEqual(c.stage("stage_b")["status"], "not_applicable")
 
 
 # --------------------------------------------------------------------------------------------

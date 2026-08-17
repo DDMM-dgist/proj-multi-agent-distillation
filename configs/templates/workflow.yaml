@@ -14,6 +14,39 @@ stages:
       validator: validation.teacher_baseline.validate_teacher_baseline_report
       options:
         validation_contract_path: "{run_dir}/validation_contract.json"
+    # role/action are canonical (registered in runtimes/pydantic_ai/actions.py +
+    # executors.py::BINDINGS); do not rename or invent a different action for this stage.
+    # parameters.teacher_md_sanity is this stage's bounded, catastrophic-failure-only Teacher-MD
+    # sanity protocol (see _teacher_md_sanity_checks/run_teacher_md in executors.py /
+    # adapters/acquisition.py) -- it is a DIFFERENT config object than validation_profile.yaml's
+    # shared_md_protocol (a longer NVT equilibration/production protocol used by
+    # reference_validation's Teacher/Student fidelity checks); do not conflate the two or assume
+    # one supplies the other's values. The values below are not a literature-derived or
+    # material-optimized physical parameter set -- they are a short, bounded, reusable
+    # instability-screening precedent (carried forward unchanged since R21) and should not be
+    # silently dropped: 3 of these 9 keys (temperature_K, n_steps, friction_per_fs) have no
+    # executor default and hard-fail if omitted, but the other 6 (including timestep_fs and seed)
+    # DO have executor defaults that silently DIFFER from the values below (timestep_fs defaults
+    # to 1.0 fs, seed defaults to 0) if left unset -- so every key must be filled explicitly to
+    # avoid a silent protocol drift. All other parameters (teacher_config, distillation_scope,
+    # validation_profile, deployment_domain, applicability_status, applicability_limitations,
+    # dataset paths, report_path, ...) remain run-specific and must be filled before
+    # initialization -- see _exec_build_teacher_baseline for the full required-key list.
+    pydantic_ai:
+      role: simulation
+      action: build_teacher_baseline
+      approval_boundary: costly_teacher_labeling
+      parameters:
+        teacher_md_sanity:
+          n_structures: 3
+          temperature_K: 300.0
+          timestep_fs: 0.5
+          friction_per_fs: 0.01
+          n_steps: 2000
+          snapshot_interval: 100
+          force_spike_threshold_eV_per_angstrom: 50.0
+          min_distance_threshold_angstrom: 0.5
+          seed: 2026
     gate:
       criteria: []  # bind applicability and target criteria before initialization
   - name: acquisition

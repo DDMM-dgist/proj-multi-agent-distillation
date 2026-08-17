@@ -25,10 +25,16 @@ from validation.teacher_evidence_profile import (
     OPERATIONAL_ROBUSTNESS,
     ORIGINAL_HELDOUT_FIDELITY,
     PROTECTED_DATA_RESTRICTIONS,
+    SPLIT_ROLE_HELDOUT_EVALUATION,
+    SPLIT_ROLE_TRAINING,
+    SPLIT_ROLE_VALIDATION,
     TRAINING_CORPUS_CONSISTENCY,
     TeacherEvidenceProfile,
     _frame_has_finite_labels,
     _load_positional_split_manifest,
+    _load_split_roles,
+    _merged_split_roles,
+    _resolve_unique_heldout_role_split,
     _verified_positional_split_join,
     derive_admissible_decision_space,
     inspect_teacher_evidence,
@@ -429,6 +435,156 @@ class InspectTeacherEvidenceJoinIntegrationTests(unittest.TestCase):
             self.assertFalse(profile.original_split_recovered)
             self.assertFalse(profile.genuine_holdout_test_available)
             self.assertIsNone(profile.genuine_holdout_test_frame_count)
+
+
+class SplitRoleProvenanceTests(unittest.TestCase):
+    """Issue 1: a genuine held-out split is discoverable from PROVENANCE ALONE (a generic
+    ``split_roles: {<split name>: training|validation|heldout_evaluation}`` declaration), never
+    requiring a caller to pre-supply the literal split name -- and the actual name need not be
+    "test"."""
+
+    def _write_db(self, root: Path, n=4):
+        frames = [_ase_calc_frame(i) for i in range(n)]
+        db_path = root / "db.extxyz"
+        write(str(db_path), frames)
+        import hashlib
+        sha256 = hashlib.sha256(db_path.read_bytes()).hexdigest()
+        return db_path, sha256
+
+    def _manifest(self, root, *, split_names, roles=None, name="manifest.json"):
+        records = [{"source_category": "bulk", "source_local_index": i, "split": split_names[i]}
+                   for i in range(len(split_names))]
+        payload = {"records": records}
+        if roles is not None:
+            payload["split_roles"] = roles
+        path = root / name
+        path.write_text(json.dumps(payload))
+        return path
+
+    def test_load_split_roles_accepts_a_well_formed_declaration(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            path = self._manifest(root, split_names=["train"] * 3 + ["holdout_eval"],
+                                  roles={"train": SPLIT_ROLE_TRAINING,
+                                         "holdout_eval": SPLIT_ROLE_HELDOUT_EVALUATION})
+            self.assertEqual(_load_split_roles(path),
+                             {"train": SPLIT_ROLE_TRAINING,
+                              "holdout_eval": SPLIT_ROLE_HELDOUT_EVALUATION})
+
+    def test_load_split_roles_rejects_an_unknown_role_value(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            path = self._manifest(root, split_names=["train"],
+                                  roles={"train": "not_a_real_role"})
+            self.assertIsNone(_load_split_roles(path))
+
+    def test_merged_split_roles_fails_closed_on_cross_manifest_conflict(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            m1 = self._manifest(root, split_names=["train", "test"],
+                                roles={"test": SPLIT_ROLE_HELDOUT_EVALUATION}, name="m1.json")
+            m2 = self._manifest(root, split_names=["train", "test"],
+                                roles={"test": SPLIT_ROLE_VALIDATION}, name="m2.json")
+            self.assertIsNone(_merged_split_roles([m1, m2]))
+
+    def test_resolve_unique_heldout_role_split_fails_closed_on_zero_matches(self):
+        merged = {"train": SPLIT_ROLE_TRAINING, "val": SPLIT_ROLE_VALIDATION}
+        self.assertIsNone(_resolve_unique_heldout_role_split(merged, ["train", "val"]))
+
+    def test_resolve_unique_heldout_role_split_fails_closed_on_multiple_matches(self):
+        merged = {"holdA": SPLIT_ROLE_HELDOUT_EVALUATION, "holdB": SPLIT_ROLE_HELDOUT_EVALUATION}
+        self.assertIsNone(
+            _resolve_unique_heldout_role_split(merged, ["holdA", "holdB", "train"]))
+
+    def test_resolve_unique_heldout_role_split_succeeds_with_a_non_test_name(self):
+        # The genuine held-out split need not be named "test" -- any single name uniquely
+        # carrying the heldout_evaluation role resolves.
+        merged = {"train": SPLIT_ROLE_TRAINING, "holdout_eval": SPLIT_ROLE_HELDOUT_EVALUATION}
+        self.assertEqual(
+            _resolve_unique_heldout_role_split(merged, ["train", "holdout_eval"]),
+            "holdout_eval")
+
+    def test_inspect_teacher_evidence_admits_holdout_from_provenance_alone(self):
+        # No target_split is ever passed -- ORIGINAL_HELDOUT_FIDELITY's evidence
+        # (genuine_holdout_test_available) must still become available, from split_roles alone,
+        # under a split name that is deliberately NOT "test".
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            db_path, _sha256 = self._write_db(root, n=4)
+            manifest_path = self._manifest(
+                root, split_names=["train", "train", "train", "holdout_eval"],
+                roles={"train": SPLIT_ROLE_TRAINING,
+                       "holdout_eval": SPLIT_ROLE_HELDOUT_EVALUATION})
+            profile, _ = inspect_teacher_evidence(
+                original_training_db_path=db_path,
+                split_source_manifest_paths=[manifest_path])
+            self.assertTrue(profile.original_split_recovered)
+            self.assertTrue(profile.genuine_holdout_test_available)
+            self.assertEqual(profile.genuine_holdout_test_frame_count, 1)
+            self.assertEqual(profile.resolved_heldout_split, "holdout_eval")
+
+    def test_inspect_teacher_evidence_without_any_heldout_role_is_inadmissible(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            db_path, _sha256 = self._write_db(root, n=4)
+            manifest_path = self._manifest(
+                root, split_names=["train", "train", "train", "val"],
+                roles={"train": SPLIT_ROLE_TRAINING, "val": SPLIT_ROLE_VALIDATION})
+            profile, _ = inspect_teacher_evidence(
+                original_training_db_path=db_path,
+                split_source_manifest_paths=[manifest_path])
+            self.assertTrue(profile.original_split_recovered)
+            self.assertFalse(profile.genuine_holdout_test_available)
+            self.assertIsNone(profile.genuine_holdout_test_frame_count)
+            self.assertIsNone(profile.resolved_heldout_split)
+
+    def test_inspect_teacher_evidence_with_no_split_roles_declared_needs_target_split(self):
+        # Backward-compatible path: no split_roles declared anywhere -> provenance alone cannot
+        # resolve a held-out split, so an explicit target_split override is still honored.
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            db_path, _sha256 = self._write_db(root, n=4)
+            manifest_path = self._manifest(
+                root, split_names=["train", "train", "train", "test"])
+            profile, _ = inspect_teacher_evidence(
+                original_training_db_path=db_path,
+                split_source_manifest_paths=[manifest_path])
+            self.assertFalse(profile.genuine_holdout_test_available)
+            profile, _ = inspect_teacher_evidence(
+                original_training_db_path=db_path,
+                split_source_manifest_paths=[manifest_path], target_split="test")
+            self.assertTrue(profile.genuine_holdout_test_available)
+            self.assertEqual(profile.resolved_heldout_split, "test")
+
+    def test_conflicting_target_split_and_provenance_role_fails_closed(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            db_path, _sha256 = self._write_db(root, n=4)
+            manifest_path = self._manifest(
+                root, split_names=["train", "train", "train", "holdout_eval"],
+                roles={"train": SPLIT_ROLE_TRAINING,
+                       "holdout_eval": SPLIT_ROLE_HELDOUT_EVALUATION})
+            profile, _ = inspect_teacher_evidence(
+                original_training_db_path=db_path,
+                split_source_manifest_paths=[manifest_path],
+                target_split="train")  # conflicts with the declared heldout_eval role
+            self.assertFalse(profile.genuine_holdout_test_available)
+            self.assertIsNone(profile.genuine_holdout_test_frame_count)
+            self.assertIsNone(profile.resolved_heldout_split)
+
+    def test_agreeing_target_split_and_provenance_role_succeeds(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            db_path, _sha256 = self._write_db(root, n=4)
+            manifest_path = self._manifest(
+                root, split_names=["train", "train", "train", "test"],
+                roles={"train": SPLIT_ROLE_TRAINING, "test": SPLIT_ROLE_HELDOUT_EVALUATION})
+            profile, _ = inspect_teacher_evidence(
+                original_training_db_path=db_path,
+                split_source_manifest_paths=[manifest_path],
+                target_split="test")
+            self.assertTrue(profile.genuine_holdout_test_available)
+            self.assertEqual(profile.resolved_heldout_split, "test")
 
 
 if __name__ == "__main__":  # pragma: no cover
