@@ -256,6 +256,47 @@ def _teacher_validation_not_applicable_reason(controller, stage_name, stage_cfg)
            f"(selected_components={sorted(selected)!r}) selects")
 
 
+def _teacher_validation_plan_coverage_gap(controller):
+    """Return a non-empty reason string iff this run has a COMMITTED ``teacher_validation_plan``
+    whose ``selected_components`` includes at least one component that NO declared stage's
+    ``teacher_validation_component`` capability (see ``_teacher_validation_not_applicable_reason``)
+    can execute anywhere in this workflow. Returns None when there is no committed plan yet, or
+    every selected component is covered by at least one stage's declared capability.
+
+    This is a WHOLE-WORKFLOW coverage invariant, distinct from (and checked before)
+    ``_teacher_validation_not_applicable_reason``'s per-stage check: that function only tells one
+    stage whether IT should run; it has no way to notice that a selected component is simply never
+    covered by ANY stage, in which case every stage capable of *some* component would be marked
+    NOT_APPLICABLE one at a time and the campaign would proceed toward acquisition having silently
+    never executed a component the committed plan actually selected. Fail-closed here catches that
+    fail-open planning/execution mismatch before any stage is marked NOT_APPLICABLE or acquisition
+    is dispatched.
+
+    Generic over ``stage_name``/component identity: never a hardcoded stage or material name,
+    only the workflow config's own declared ``teacher_validation_component`` values re-derived
+    fresh each call, exactly like ``_teacher_validation_not_applicable_reason`` and
+    ``_stage_config``."""
+    plan = controller.state.get("teacher_validation_plan")
+    if plan is None:
+        return None
+    import yaml
+    cfg = yaml.safe_load(Path(controller.state["workflow_config"]).read_text()) or {}
+    covered = set()
+    for stage in cfg.get("stages", []):
+        declared = stage.get("teacher_validation_component")
+        if not declared:
+            continue
+        covered |= {declared} if isinstance(declared, str) else set(declared)
+    selected = set(plan.get("selected_components") or [])
+    uncovered = sorted(selected - covered)
+    if not uncovered:
+        return None
+    return (f"committed Teacher validation plan selects component(s) {uncovered!r} that no "
+           f"declared stage's teacher_validation_component capability can execute in this "
+           f"workflow (covered: {sorted(covered)!r}) -- refusing to proceed with a committed "
+           f"validation component that would never actually run")
+
+
 def _teacher_validation_downstream_reliance_gap(controller, stage_name, stage_cfg):
     """Return a non-empty reason string iff ``stage_name`` is a COSTLY downstream-reliance stage
     (``approval_boundary`` in ``{"costly_teacher_labeling", "costly_training"}``) that would rely
@@ -1229,6 +1270,12 @@ def run_production_stage(controller, stage_name, *, runtime, agent_specs_dir="ag
     c.verify_inputs()
     emitter.emit("stage_selected", **stage_progress_fields(c, stage_name))
     stage_cfg = _stage_config(c, stage_name)
+    coverage_gap = _teacher_validation_plan_coverage_gap(c)
+    if coverage_gap is not None:
+        emitter.emit("campaign_blocked", stage=stage_name,
+                    detail={"reason": "TEACHER_VALIDATION_PLAN_COVERAGE_GAP"})
+        return StageRunResult("TEACHER_VALIDATION_PLAN_COVERAGE_GAP", EXIT_VALIDATION_REJECTED,
+                              f"FAILED: {coverage_gap}")
     not_applicable_reason = _teacher_validation_not_applicable_reason(c, stage_name, stage_cfg)
     if not_applicable_reason is not None:
         c.mark_stage_not_applicable(stage_name, reason=not_applicable_reason)

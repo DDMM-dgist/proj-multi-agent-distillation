@@ -106,14 +106,14 @@ def _write_validation_contract_sources(root: Path, *, objectives) -> dict:
            "dataset_policy": str(policy_path)}
 
 
-def _write_workflow(root: Path, *, teacher_evidence_sources: dict, stage_b_component=None,
-                    validation_contract_sources=None) -> Path:
+def _write_workflow(root: Path, *, teacher_evidence_sources: dict, stage_a_component=None,
+                    stage_b_component=None, validation_contract_sources=None) -> Path:
     """Generic two-stage workflow (mirrors tests/test_run_campaign.py's fixture) plus an OPTIONAL
     ``teacher_evidence_sources`` block and an OPTIONAL ``teacher_validation_component`` declared on
-    stage_b -- both new, additive, opt-in workflow-config keys; no stage name/count/domain concept
-    is assumed anywhere in the production code that reads them. ``validation_contract_sources``,
-    if given (see ``_write_validation_contract_sources``), is wired in unchanged so a test can
-    exercise run-declared ``teacher_validation_objectives``."""
+    stage_a and/or stage_b -- both new, additive, opt-in workflow-config keys; no stage
+    name/count/domain concept is assumed anywhere in the production code that reads them.
+    ``validation_contract_sources``, if given (see ``_write_validation_contract_sources``), is
+    wired in unchanged so a test can exercise run-declared ``teacher_validation_objectives``."""
     dataset = root / "train.extxyz"
     write(str(dataset), [_frame(i) for i in range(3)])
     student_cfg = root / "student.yaml"
@@ -121,6 +121,26 @@ def _write_workflow(root: Path, *, teacher_evidence_sources: dict, stage_b_compo
         "kind: mock\ncommittee:\n  seeds: [1, 2, 3]\n"
         "predict:\n  factory: adapters.mock_model.MockCheckpointCalculator\n"
         "  checkpoint_arg: checkpoint\n  kwargs: {}\n")
+    stage_a = {
+        "name": "stage_a",
+        "command": None,
+        "outputs": ["artifacts/student_committee.manifest.json", "artifacts/committee"],
+        "pydantic_ai": {
+            "role": "ml-trainer",
+            "action": "train_committee",
+            "approval_boundary": "costly_training",
+            "idempotency_key": "teacher-validation-autonomy-stage-a-001",
+            "parameters": {
+                "student_config": str(student_cfg),
+                "dataset": str(dataset),
+                "output_dir": "{artifacts_dir}/committee",
+                "manifest_path": "{artifacts_dir}/student_committee.manifest.json",
+            },
+        },
+        "gate": {"criteria": ["committee manifest is complete"]},
+    }
+    if stage_a_component is not None:
+        stage_a["teacher_validation_component"] = stage_a_component
     stage_b = {
         "name": "stage_b",
         "command": None,
@@ -149,24 +169,7 @@ def _write_workflow(root: Path, *, teacher_evidence_sources: dict, stage_b_compo
         **({"validation_contract_sources": validation_contract_sources}
            if validation_contract_sources is not None else {}),
         "stages": [
-            {
-                "name": "stage_a",
-                "command": None,
-                "outputs": ["artifacts/student_committee.manifest.json", "artifacts/committee"],
-                "pydantic_ai": {
-                    "role": "ml-trainer",
-                    "action": "train_committee",
-                    "approval_boundary": "costly_training",
-                    "idempotency_key": "teacher-validation-autonomy-stage-a-001",
-                    "parameters": {
-                        "student_config": str(student_cfg),
-                        "dataset": str(dataset),
-                        "output_dir": "{artifacts_dir}/committee",
-                        "manifest_path": "{artifacts_dir}/student_committee.manifest.json",
-                    },
-                },
-                "gate": {"criteria": ["committee manifest is complete"]},
-            },
+            stage_a,
             stage_b,
         ],
     }
@@ -418,8 +421,12 @@ class CaseD_NotApplicableStageLifecycle(unittest.TestCase):
                        "operational_evaluation_population_path": str(population)}
             # stage_b declares a component the evidence does NOT admit at all (DEPLOYMENT_
             # APPLICABILITY requires a deployment-domain population this run never declares) --
-            # so whatever the plan selects, stage_b can never require it.
+            # so whatever the plan selects, stage_b can never require it. stage_a declares the
+            # component the plan actually selects, so the whole-workflow coverage invariant
+            # (every selected component must be executable by SOME declared stage capability) is
+            # satisfied -- this fixture is about per-stage NOT_APPLICABLE governance, not coverage.
             workflow = _write_workflow(root, teacher_evidence_sources=sources,
+                                       stage_a_component="OPERATIONAL_ROBUSTNESS",
                                        stage_b_component="DEPLOYMENT_APPLICABILITY")
             run_dir = root / "run"
             RunController.initialize(workflow, run_dir)
@@ -765,7 +772,13 @@ class CaseH_ObjectiveDrivenSemanticCorrectionRetry(unittest.TestCase):
                    "target_split": "test"}
         contract_sources = _write_validation_contract_sources(
             root, objectives=["require_predictive_fidelity_when_evidence_supports_it"])
+        # Every component this case's proposals ever select (OPERATIONAL_ROBUSTNESS,
+        # ORIGINAL_HELDOUT_FIDELITY) has a declared executable stage, so the whole-workflow
+        # coverage invariant is satisfied -- this case is about objective-driven semantic
+        # correction, not stage coverage.
         workflow = _write_workflow(root, teacher_evidence_sources=sources,
+                                   stage_a_component="OPERATIONAL_ROBUSTNESS",
+                                   stage_b_component="ORIGINAL_HELDOUT_FIDELITY",
                                    validation_contract_sources=contract_sources)
         return sources, workflow
 
@@ -948,6 +961,162 @@ class CaseC1b_UnsupportedComponentIsNeverAcceptedAcrossRetries(unittest.TestCase
             self.assertIsNone(c.state["teacher_validation_plan"])
 
 
+class CaseI_TeacherValidationPlanCoverageGapFailsClosed(unittest.TestCase):
+    """Case I: a committed plan may legitimately select a component the evidence profile
+    genuinely admits, yet NO declared stage anywhere in the workflow is capable of executing it
+    -- e.g. every stage capable of *some* component would, one at a time, simply be marked
+    NOT_APPLICABLE, and the campaign would silently proceed past Teacher validation having never
+    executed the component it actually committed to. This is exactly the real
+    ``sio2-sox-allegro-simplenn-r24`` production defect (reproduced here with fully generic
+    stage/evidence names): the plan committed ``ORIGINAL_HELDOUT_FIDELITY``, but the workflow's
+    two Teacher-validation-capable stages only declared ``OPERATIONAL_ROBUSTNESS`` and
+    ``TRAINING_CORPUS_CONSISTENCY``. ``_teacher_validation_plan_coverage_gap`` must fail the
+    campaign closed BEFORE either stage is dispatched or marked NOT_APPLICABLE -- never merely
+    logged, never silently skipped."""
+
+    def _evidence_sources_and_workflow(self, root, *, stage_a_component, stage_b_component):
+        teacher_model = _dummy_teacher_model(root)
+        population = root / "operational_population.extxyz"
+        _write_operational_population(population)
+        db_path, manifest_path = _write_training_db_and_manifest(root, heldout_split_name="test")
+        sources = {"teacher_model_path": str(teacher_model),
+                   "operational_evaluation_population_path": str(population),
+                   "original_training_db_path": str(db_path),
+                   "split_source_manifest_paths": [str(manifest_path)],
+                   "target_split": "test"}
+        workflow = _write_workflow(root, teacher_evidence_sources=sources,
+                                   stage_a_component=stage_a_component,
+                                   stage_b_component=stage_b_component)
+        return sources, workflow
+
+    def test_reproduces_r24_defect_fails_closed_and_never_dispatches_a_stage(self):
+        from runtimes.pydantic_ai import cli
+        from workflow.controller import RunController
+        from validation.teacher_evidence_profile import inspect_teacher_evidence
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            # Neither stage declares ORIGINAL_HELDOUT_FIDELITY capability -- the exact R24 shape.
+            sources, workflow = self._evidence_sources_and_workflow(
+                root, stage_a_component="OPERATIONAL_ROBUSTNESS",
+                stage_b_component="TRAINING_CORPUS_CONSISTENCY")
+            run_dir = root / "run"
+            RunController.initialize(workflow, run_dir)
+            c = RunController(run_dir)
+            _, evidence_profile_sha256 = inspect_teacher_evidence(**sources)
+            mock_response = _mock_orchestrator_response(
+                root, run_id=c.state["run_id"], evidence_profile_sha256=evidence_profile_sha256,
+                selected_components=["ORIGINAL_HELDOUT_FIDELITY"])
+
+            code = cli.main(["run-campaign", "--runtime", "mock", "--run-dir", str(run_dir),
+                             "--auto-mock-judges",
+                             "--mock-orchestrator-response", str(mock_response)])
+            self.assertEqual(code, cli.EXIT_VALIDATION_REJECTED)
+            c = RunController(run_dir)
+            # The plan itself was legitimately committed -- the evidence genuinely admitted the
+            # selection; the defect is purely in EXECUTION coverage, not plan validity.
+            self.assertEqual(c.state["teacher_validation_plan"]["selected_components"],
+                             ["ORIGINAL_HELDOUT_FIDELITY"])
+            # Neither stage was ever dispatched OR marked not_applicable -- the campaign never
+            # advanced past the coverage-gap check to reach a per-stage decision at all.
+            self.assertEqual(c.stage("stage_a")["status"], "pending")
+            self.assertEqual(c.stage("stage_b")["status"], "pending")
+            self.assertFalse(any(e["type"] == "stage_marked_not_applicable"
+                                 for e in c.state["events"]))
+            events_log = (run_dir / "campaign_events.jsonl").read_text()
+            self.assertIn("TEACHER_VALIDATION_PLAN_COVERAGE_GAP", events_log)
+
+            # Deterministic: re-running without any config change fails closed identically again,
+            # rather than e.g. only failing once and then proceeding.
+            code_again = cli.main(["run-campaign", "--runtime", "mock", "--run-dir", str(run_dir),
+                                   "--auto-mock-judges",
+                                   "--mock-orchestrator-response", str(mock_response)])
+            self.assertEqual(code_again, cli.EXIT_VALIDATION_REJECTED)
+
+    def test_corrected_capability_makes_reference_validation_style_stage_applicable(self):
+        from runtimes.pydantic_ai import cli
+        from workflow.controller import RunController
+        from validation.teacher_evidence_profile import inspect_teacher_evidence
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            # The FIX: stage_b (the reference_validation-style stage) now also declares
+            # ORIGINAL_HELDOUT_FIDELITY capability alongside TRAINING_CORPUS_CONSISTENCY. stage_a
+            # declares no capability at all here (it is the ml-training stage stage_b's own
+            # action depends on, not a Teacher-validation execution stage), so it stays
+            # unconditionally applicable and produces the committee manifest stage_b consumes --
+            # coverage of the selected component is fully satisfied by stage_b alone.
+            sources, workflow = self._evidence_sources_and_workflow(
+                root, stage_a_component=None,
+                stage_b_component=["TRAINING_CORPUS_CONSISTENCY", "ORIGINAL_HELDOUT_FIDELITY"])
+            run_dir = root / "run"
+            RunController.initialize(workflow, run_dir)
+            c = RunController(run_dir)
+            _, evidence_profile_sha256 = inspect_teacher_evidence(**sources)
+            mock_response = _mock_orchestrator_response(
+                root, run_id=c.state["run_id"], evidence_profile_sha256=evidence_profile_sha256,
+                selected_components=["ORIGINAL_HELDOUT_FIDELITY"])
+
+            code = cli.main(["run-campaign", "--runtime", "mock", "--run-dir", str(run_dir),
+                             "--auto-mock-judges",
+                             "--mock-orchestrator-response", str(mock_response)])
+            self.assertEqual(code, cli.EXIT_APPROVAL_REQUIRED)
+            c = RunController(run_dir)
+            plan = c.state["teacher_validation_plan"]
+            self.assertEqual(plan["selected_components"], ["ORIGINAL_HELDOUT_FIDELITY"])
+            # The resolved split comes from the Controller's own evidence-profile resolution, not
+            # from any hardcoded value in production logic.
+            self.assertEqual(plan["target_split"], "test")
+
+            self.assertEqual(cli.main(["approve", "--run-dir", str(run_dir),
+                                       "--boundary", "costly_training",
+                                       "--note", "test approval"]), cli.EXIT_SUCCESS)
+
+            code = cli.main(["run-campaign", "--runtime", "mock", "--run-dir", str(run_dir),
+                             "--auto-mock-judges",
+                             "--mock-orchestrator-response", str(mock_response)])
+            self.assertEqual(code, cli.EXIT_SUCCESS)
+            c = RunController(run_dir)
+            # stage_a declares no capability at all, so it is unconditionally applicable
+            # regardless of what the plan selects (pre-existing governance, unchanged).
+            self.assertEqual(c.stage("stage_a")["status"], "completed")
+            # stage_b is now covered and actually executes the committed validation component.
+            self.assertEqual(c.stage("stage_b")["status"], "completed")
+            self.assertNotEqual(c.stage("stage_b")["status"], "not_applicable")
+
+    def test_applicability_matrix_across_component_selections(self):
+        from runtimes.pydantic_ai.cli import _teacher_validation_plan_coverage_gap
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            # Mirrors the real teacher_baseline/reference_validation capability shape.
+            _, workflow = self._evidence_sources_and_workflow(
+                root, stage_a_component=["OPERATIONAL_ROBUSTNESS", "DEPLOYMENT_APPLICABILITY"],
+                stage_b_component=["TRAINING_CORPUS_CONSISTENCY", "ORIGINAL_HELDOUT_FIDELITY"])
+
+            class _FakeController:
+                def __init__(self, selected):
+                    self.state = {"workflow_config": str(workflow),
+                                  "teacher_validation_plan": {"selected_components": selected}}
+
+            for selected in (["OPERATIONAL_ROBUSTNESS"],
+                            ["TRAINING_CORPUS_CONSISTENCY"],
+                            ["ORIGINAL_HELDOUT_FIDELITY"],
+                            ["OPERATIONAL_ROBUSTNESS", "TRAINING_CORPUS_CONSISTENCY"]):
+                gap = _teacher_validation_plan_coverage_gap(_FakeController(selected))
+                self.assertIsNone(gap, f"expected full coverage for selected={selected}")
+
+            uncovered = _teacher_validation_plan_coverage_gap(
+                _FakeController(["INDEPENDENT_REFERENCE_FIDELITY"]))
+            self.assertIsNotNone(uncovered)
+            self.assertIn("INDEPENDENT_REFERENCE_FIDELITY", uncovered)
+
+            # No committed plan yet -- never a coverage gap (nothing to check coverage of).
+            class _NoPlanController:
+                state = {"workflow_config": str(workflow), "teacher_validation_plan": None}
+            self.assertIsNone(_teacher_validation_plan_coverage_gap(_NoPlanController()))
+
+
 # --------------------------------------------------------------------------------------------
 # SiO2 no-hardcode proof
 # --------------------------------------------------------------------------------------------
@@ -1019,6 +1188,7 @@ class SiO2NoHardcodeProofTests(unittest.TestCase):
         source = (ROOT / "runtimes" / "pydantic_ai" / "cli.py").read_text()
         tree = ast.parse(source)
         target_names = {"_teacher_validation_not_applicable_reason",
+                        "_teacher_validation_plan_coverage_gap",
                         "_commit_teacher_validation_plan_via_reasoning_roles",
                         "_cmd_plan_teacher_validation",
                         "_cmd_authorize_downstream_teacher_reliance"}
