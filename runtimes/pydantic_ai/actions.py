@@ -122,6 +122,12 @@ ANALYST_ACTIONS = (
 )
 
 # Actions that always require explicit human approval before execution (costly/side-effecting).
+# This is a per-ACTION-TYPE DEFAULT boundary. For most actions the default is the whole story: an
+# action that actually creates new labels or launches new costly compute (``acquire_structures``,
+# ``label_with_teacher``, ``train_committee``, ...) keeps its boundary unconditionally, regardless
+# of parameters. ``build_teacher_baseline`` and ``validate_teacher_reference`` are the two
+# exceptions -- see ``resolve_action_approval_boundary`` below, which is what dispatch.py actually
+# consults; this dict alone is never sufficient to determine whether those two require approval.
 APPROVAL_GATED_ACTIONS = {
     "build_teacher_baseline": "costly_teacher_labeling",
     "validate_teacher_reference": "costly_teacher_labeling",
@@ -133,6 +139,54 @@ APPROVAL_GATED_ACTIONS = {
     "run_student_md": "production_md",
     "submit_scheduler_job": "scheduler_submission",
 }
+
+
+# Actions whose ``costly_teacher_labeling`` default boundary is conditional on the proposal's own
+# declared parameters, not unconditional like ``acquire_structures``/``label_with_teacher``: both
+# run existing-Teacher inference for REPORTING/VALIDATION purposes only (a teacher-baseline
+# operational-stability report, a Teacher-vs-DFT reference comparison), never to create new DFT
+# labels or new protected-reference labels that would grow the training corpus. The boundary exists
+# to gate label creation, not evidence-only inference over already-existing structures/labels.
+_CONDITIONALLY_GATED_VALIDATION_ACTIONS = frozenset({
+    "build_teacher_baseline", "validate_teacher_reference",
+})
+
+
+def _declared_label_provenance_flags(parameters: dict) -> tuple[Any, Any]:
+    """Read the proposal's own declared ``(dft_labels_used, protected_reference_labels_used)``
+    pair -- checked first under ``parameters['deployment_domain']`` (the existing convention
+    ``build_teacher_baseline`` already declares this evidence under -- see
+    ``bounded_evidence._teacher_baseline_report_summary``), then at the top level of
+    ``parameters`` itself, so any action can declare this evidence in whichever shape it already
+    carries. Absence at both locations is never treated as False -- only an explicit boolean
+    counts, so a proposal that omits this evidence is never mistaken for one that affirmatively
+    proves it uses no new labels."""
+    domain = parameters.get("deployment_domain")
+    source = domain if isinstance(domain, dict) else parameters
+    return source.get("dft_labels_used"), source.get("protected_reference_labels_used")
+
+
+def resolve_action_approval_boundary(action_type: str, default_boundary: Optional[str],
+                                     parameters: Optional[dict] = None) -> Optional[str]:
+    """The approval boundary an action ACTUALLY requires for THIS proposal, given not just its
+    action_type (``default_boundary``, normally ``APPROVAL_GATED_ACTIONS.get(action_type)`` as
+    resolved by the caller's registry entry) but -- for ``_CONDITIONALLY_GATED_VALIDATION_ACTIONS``
+    only -- its own declared parameters.
+
+    Fail-closed: unless the action is one of the two conditionally-gated validation actions AND its
+    default boundary is exactly ``costly_teacher_labeling`` AND the proposal's own parameters
+    affirmatively declare (never inferred, never defaulted) both ``dft_labels_used is False`` and
+    ``protected_reference_labels_used is False``, the default boundary is returned unchanged. Any
+    missing, non-boolean, or ``True`` value -- or any other action/boundary -- is unaffected by this
+    function and keeps its normal, unconditional default.
+    """
+    if (action_type not in _CONDITIONALLY_GATED_VALIDATION_ACTIONS
+            or default_boundary != "costly_teacher_labeling"):
+        return default_boundary
+    dft_used, protected_used = _declared_label_provenance_flags(parameters or {})
+    if dft_used is False and protected_used is False:
+        return None
+    return default_boundary
 
 
 # --- ActionProposal envelope (Phase F common fields) ----------------------------

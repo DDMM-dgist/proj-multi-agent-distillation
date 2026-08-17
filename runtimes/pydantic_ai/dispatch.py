@@ -22,7 +22,8 @@ from typing import Any, Callable, Optional
 
 from pydantic import BaseModel
 
-from .actions import APPROVAL_GATED_ACTIONS, ROLE_ALLOWED_ACTIONS, capability_status
+from .actions import (APPROVAL_GATED_ACTIONS, ROLE_ALLOWED_ACTIONS, capability_status,
+                     resolve_action_approval_boundary)
 from .tool_manifests import ROLE_TOOL_MANIFESTS, manifest_for
 
 # Capability statuses that are terminal (never proposable/executable in the current scope).
@@ -200,15 +201,17 @@ def authorize_and_execute(proposal, *, registry: dict, approvals, idempotency,
         except Exception as exc:  # noqa: BLE001 - fail closed before approval/idempotency/executor
             return out("INVALID", f"PLAN_INPUT_REQUIRED: {exc}")
     envelope_sha256 = None
-    if desc.approval_boundary and not approvals.has_approval(
-            run_id, desc.approval_boundary, key, plan_sha256=plan_sha256):
+    boundary = resolve_action_approval_boundary(
+        action, desc.approval_boundary, _get(proposal, "parameters", {}) or {})
+    if boundary and not approvals.has_approval(
+            run_id, boundary, key, plan_sha256=plan_sha256):
         if recovery_authorization is not None:
             envelope_sha256 = recovery_authorization.verify(
                 action_type=action, artifact_roles=_artifact_roles(proposal),
                 resource_usage=_resource_usage(proposal))
         if envelope_sha256 is None:
             suffix = f" plan_sha256={plan_sha256}" if plan_sha256 else ""
-            return out("APPROVAL_REQUIRED", f"action requires approval: {desc.approval_boundary}{suffix}")
+            return out("APPROVAL_REQUIRED", f"action requires approval: {boundary}{suffix}")
 
     # (5) typed parameter + artifact/hash check
     if desc.param_validator is not None:

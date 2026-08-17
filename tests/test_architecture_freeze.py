@@ -86,6 +86,24 @@ exactly what changed and what deliberately did not. runtimes/pydantic_ai/cli.py 
 teacher_evidence_profile.py (neither frozen) gained the companion split_roles provenance model and
 the static-capability/agent-decision stage-routing split; no role/action-set, schema_version,
 recovery-taxonomy, protected-reference, or Judge change.
+
+v23 (parameter-dependent validation-action approval; R25 forensic-defect correction) closes an
+authorization-routing defect confirmed in production run R25: ``build_teacher_baseline`` and
+``validate_teacher_reference`` -- actions that only run existing-Teacher inference for
+reporting/validation over already-existing structures/labels, never to create new DFT or
+protected-reference labels -- were unconditionally routed through the same ``costly_teacher_
+labeling`` boundary as genuinely corpus-growing actions (``acquire_structures``,
+``label_with_teacher``). actions.py re-freezes to add ``resolve_action_approval_boundary`` (and
+its ``_CONDITIONALLY_GATED_VALIDATION_ACTIONS``/``_declared_label_provenance_flags`` helpers),
+which dispatch.py (not frozen) now consults instead of reading ``APPROVAL_GATED_ACTIONS`` directly:
+for these two actions only, and only when their own proposal parameters explicitly and
+affirmatively declare both ``dft_labels_used`` and ``protected_reference_labels_used`` False (never
+inferred from absence), the ``costly_teacher_labeling`` boundary is waived; every other action, and
+either of these two with any missing/True/non-boolean declaration, is unaffected and keeps the
+unconditional default exactly as before. ``APPROVAL_GATED_ACTIONS``'s dict values are themselves
+unchanged. No role/action-set membership, schema_version, recovery-taxonomy, protected-reference,
+or Judge change; the separate ``_teacher_validation_downstream_reliance_gap`` policy (cli.py, not
+frozen) is untouched.
 """
 from __future__ import annotations
 
@@ -569,7 +587,19 @@ FREEZE_REVISION = (
     "the established protocol (timestep_fs, seed) -- template/config only, no executor semantics "
     "changed. No new state key, no schema_version change, no new stage, no gate-verdict change, "
     "no recovery-taxonomy change, no protected-reference change, no role/action-set entry "
-    "change, no Judge change; every other field of every re-frozen file is untouched."
+    "change, no Judge change; every other field of every re-frozen file is untouched. "
+    "v23 (parameter-dependent validation-action approval; R25 forensic-defect correction) "
+    "re-froze actions.py to add resolve_action_approval_boundary + "
+    "_CONDITIONALLY_GATED_VALIDATION_ACTIONS + _declared_label_provenance_flags: "
+    "build_teacher_baseline/validate_teacher_reference's default costly_teacher_labeling "
+    "boundary is waived only when the proposal's own parameters explicitly declare both "
+    "dft_labels_used and protected_reference_labels_used False (never inferred from absence); "
+    "every other action, and either of these two absent an explicit False/False declaration, "
+    "keeps the unconditional default. APPROVAL_GATED_ACTIONS's dict values are unchanged; "
+    "dispatch.py and cli.py (neither frozen) wire the new resolver in and supply the generic "
+    "reference_validation default parameters respectively. No role/action-set membership, "
+    "schema_version, recovery-taxonomy, protected-reference, or Judge change; "
+    "_teacher_validation_downstream_reliance_gap is untouched."
 )
 FROZEN_MODEL = "qwen2.5-7b-instruct"
 
@@ -593,7 +623,7 @@ FROZEN = {
     "runtimes/pydantic_ai/driver.py":
         "db480c20d126b7511e8bbaa4fc2018adb56aa789fabe496ba4f08313379f5939",
     "runtimes/pydantic_ai/actions.py":
-        "3cc2ef66675818222b1e19f0696eaa4a1563679503f0b152475aff5cb7919838",
+        "b514f17cb9870d790ae375ba2faac3375dc58e3bc139f52e6875fdf97dd80041",
     "runtimes/pydantic_ai/controller_bridge.py":
         "b046922cd32620cd5dbe1c2dc7b4390a2eb67b4201e473d9b6062c68f8bd869d",
     "orchestration/specs.py":

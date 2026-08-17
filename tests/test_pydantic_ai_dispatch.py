@@ -132,6 +132,93 @@ class DispatchEnforcementTests(unittest.TestCase):
         self.assertEqual(o.status, "DRY_RUN")
         self.assertEqual(calls, [])
 
+    # --- R25 forensic fix: parameter-dependent validation-action approval --------
+    # build_teacher_baseline/validate_teacher_reference only run existing-Teacher inference for
+    # reporting/validation over already-existing structures/labels; they must not require
+    # costly_teacher_labeling approval merely by action_type when their own declared parameters
+    # affirmatively prove no new labels are created. acquire_structures/label_with_teacher
+    # genuinely grow the training corpus and must keep the boundary unconditionally.
+    def test_build_teacher_baseline_with_declared_no_new_labels_needs_no_approval(self):
+        from runtimes.pydantic_ai.dispatch import ActionDescriptor
+        self.registry["build_teacher_baseline"] = ActionDescriptor(
+            action_type="build_teacher_baseline", role="simulation",
+            approval_boundary="costly_teacher_labeling",
+            executor=lambda p: {"path": "runs/x/teacher_baseline.json", "sha256": "z"})
+        o = self._run(_prop("simulation", "build_teacher_baseline",
+                            parameters={"deployment_domain": {
+                                "dft_labels_used": False,
+                                "protected_reference_labels_used": False}}),
+                      mode="primary")
+        self.assertEqual(o.status, "EXECUTED")
+        self.assertTrue(o.executed)
+
+    def test_validate_teacher_reference_with_declared_no_new_labels_needs_no_approval(self):
+        from runtimes.pydantic_ai.dispatch import ActionDescriptor
+        self.registry["validate_teacher_reference"] = ActionDescriptor(
+            action_type="validate_teacher_reference", role="simulation",
+            approval_boundary="costly_teacher_labeling",
+            executor=lambda p: {"path": "runs/x/reference_report.json", "sha256": "z"})
+        o = self._run(_prop("simulation", "validate_teacher_reference",
+                            parameters={"dft_labels_used": False,
+                                       "protected_reference_labels_used": False}),
+                      mode="primary")
+        self.assertEqual(o.status, "EXECUTED")
+        self.assertTrue(o.executed)
+
+    def test_build_teacher_baseline_without_declared_flags_still_requires_approval(self):
+        # Fail-closed: absence of the flags is never treated as proof of "no new labels".
+        o = self._run(_prop("simulation", "build_teacher_baseline"), mode="primary")
+        self.assertEqual(o.status, "APPROVAL_REQUIRED")
+        self.assertFalse(o.executed)
+
+    def test_build_teacher_baseline_with_true_flags_still_requires_approval(self):
+        o = self._run(_prop("simulation", "build_teacher_baseline",
+                            parameters={"deployment_domain": {
+                                "dft_labels_used": True,
+                                "protected_reference_labels_used": False}}),
+                      mode="primary")
+        self.assertEqual(o.status, "APPROVAL_REQUIRED")
+        self.assertFalse(o.executed)
+
+    def test_label_with_teacher_still_requires_approval_even_with_safe_looking_params(self):
+        # label_with_teacher genuinely creates new labels -- the exemption must never extend to
+        # it even if it happens to carry a similarly-shaped parameters dict.
+        o = self._run(_prop("data-curator", "label_with_teacher",
+                            parameters={"deployment_domain": {
+                                "dft_labels_used": False,
+                                "protected_reference_labels_used": False}}),
+                      mode="primary")
+        self.assertEqual(o.status, "APPROVAL_REQUIRED")
+        self.assertFalse(o.executed)
+
+    def test_acquire_structures_still_requires_approval_even_with_safe_looking_params(self):
+        o = self._run(_prop("data-curator", "acquire_structures",
+                            parameters={"dft_labels_used": False,
+                                       "protected_reference_labels_used": False}),
+                      mode="primary")
+        # acquire_structures fails closed on the missing AcquisitionPlan before the approval
+        # check is even reached (dispatch.py checks plan_sha256 first for this action).
+        self.assertEqual(o.status, "INVALID")
+        self.assertFalse(o.executed)
+
+    def test_resolve_action_approval_boundary_unit(self):
+        from runtimes.pydantic_ai.actions import resolve_action_approval_boundary
+        self.assertIsNone(resolve_action_approval_boundary(
+            "build_teacher_baseline", "costly_teacher_labeling",
+            {"deployment_domain": {"dft_labels_used": False,
+                                   "protected_reference_labels_used": False}}))
+        self.assertEqual(resolve_action_approval_boundary(
+            "build_teacher_baseline", "costly_teacher_labeling", {}),
+            "costly_teacher_labeling")
+        self.assertEqual(resolve_action_approval_boundary(
+            "label_with_teacher", "costly_teacher_labeling",
+            {"dft_labels_used": False, "protected_reference_labels_used": False}),
+            "costly_teacher_labeling")
+        self.assertEqual(resolve_action_approval_boundary(
+            "acquire_structures", "costly_teacher_labeling",
+            {"dft_labels_used": False, "protected_reference_labels_used": False}),
+            "costly_teacher_labeling")
+
 
 if __name__ == "__main__":  # pragma: no cover
     unittest.main()

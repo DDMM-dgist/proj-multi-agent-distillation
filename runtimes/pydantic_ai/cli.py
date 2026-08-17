@@ -409,6 +409,16 @@ def _fill_default_parameters(controller, stage_name, params, route=None):
             "report_path": str((controller.run_dir / outputs[0]).resolve()),
             "predictions_path": str((controller.run_dir / outputs[1]).resolve()),
             "domain_fields": ["structural_domain"],
+            # validate_teacher_reference's reference_yaml is always resolved (below, via
+            # _protected_reference_from_inputs) to a controller-bound protected reference whose
+            # kind validate_reference_config only ever accepts as an already-frozen, immutable
+            # DFT-labeled population (validation.protected_reference._REFERENCE_KIND_VALIDATORS) --
+            # this action structurally never creates new DFT or protected-reference labels, only
+            # fresh Teacher predictions for comparison against them. These two generic flags (the
+            # same ones build_teacher_baseline's deployment_domain already declares) let
+            # runtimes.pydantic_ai.actions.resolve_action_approval_boundary recognize that.
+            "dft_labels_used": False,
+            "protected_reference_labels_used": False,
         }
     if stage_name == "teacher_baseline" and "structures_path" not in params:
         raise ValueError("teacher_baseline requires explicit pydantic_ai.parameters.structures_path")

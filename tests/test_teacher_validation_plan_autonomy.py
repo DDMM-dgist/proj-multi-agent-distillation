@@ -551,6 +551,25 @@ class CaseE_DownstreamRelianceApprovalIsASeparateHumanGate(unittest.TestCase):
                               "at all, so even a non-human caller must get a no-op, not a "
                               "rejection")
 
+    def test_downstream_reliance_gap_is_untouched_by_action_approval_fix(self):
+        # R25 forensic fix (parameter-dependent build_teacher_baseline/validate_teacher_reference
+        # approval, see runtimes.pydantic_ai.actions.resolve_action_approval_boundary) answers a
+        # different question than this gate and must never substitute for it: a plan lacking
+        # predictive-fidelity evidence still blocks genuinely costly downstream Teacher labeling
+        # and Student training via _teacher_validation_downstream_reliance_gap, independent of
+        # whatever action-level approval those actions' own parameters might otherwise satisfy.
+        from runtimes.pydantic_ai import cli
+        with tempfile.TemporaryDirectory() as tmp:
+            c = self._committed_plan_missing_fidelity(Path(tmp))
+            for stage_name in ("teacher_labeling", "training"):
+                gap = cli._teacher_validation_downstream_reliance_gap(c, stage_name, {})
+                self.assertIsNotNone(gap, stage_name)
+                self.assertIn("committed Teacher validation plan", gap)
+            c.authorize_downstream_teacher_reliance("dr-human-approver", note="accepted risk")
+            for stage_name in ("teacher_labeling", "training"):
+                self.assertIsNone(
+                    cli._teacher_validation_downstream_reliance_gap(c, stage_name, {}), stage_name)
+
 
 class CaseF_ProvenanceOnlyHeldoutRoleNeedsNoTargetSplitInput(unittest.TestCase):
     """Case F (Issue 1): a genuine held-out split is discoverable from provenance
