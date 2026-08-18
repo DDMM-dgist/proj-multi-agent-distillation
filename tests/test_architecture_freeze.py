@@ -753,7 +753,7 @@ FROZEN = {
     "orchestration/specs.py":
         "4b6dc829fe2b6b594cc87e8a62bd944ea9df181cd7f420ae3732c861ce8e43cb",
     "workflow/controller.py":
-        "60d29fa7da76a07d9657a6b3e9ba3ddbb61c8cf96ccc23340ea035c1afe8f0c3",
+        "4140e74eddfdb8196e376e407b610573ab0413d44b000f477b822160841c1fdc",
     "orchestration/schema/agent_result.schema.json":
         "a38afea9c06c21e647376efd835dec32a16b2f247583a090560cb1843e0eda31",
     "orchestration/schema/agent_spec.schema.json":
