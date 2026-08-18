@@ -14,7 +14,7 @@ import yaml
 def load_config(path):
     """Load one of the configs/*.yaml files."""
     path = Path(path).resolve()
-    with path.open() as f:
+    with path.open(encoding="utf-8") as f:
         cfg = yaml.safe_load(f)
     if not isinstance(cfg, dict):
         raise ValueError(f"{path}: config must contain a YAML mapping")

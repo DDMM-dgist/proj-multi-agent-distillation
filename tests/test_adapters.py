@@ -1,4 +1,5 @@
 import json
+import os
 import subprocess
 import sys
 import tempfile
@@ -55,6 +56,25 @@ class AdapterContractTests(unittest.TestCase):
             path.write_text("- not\n- a\n- mapping\n")
             with self.assertRaisesRegex(ValueError, "YAML mapping"):
                 load_config(path)
+
+    def test_config_loader_reads_non_ascii_comments_regardless_of_locale(self):
+        # A hand-authored config with a non-ASCII comment (e.g. an em dash) must load
+        # correctly even in a subprocess whose ambient locale resolves to ASCII -- this
+        # reproduces the R29 reference_validation UnicodeDecodeError, which only surfaced
+        # inside a real dispatched-executor process, not an interactive one.
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "teacher.yaml"
+            path.write_bytes("# note — non-ascii comment\nkind: mock\n".encode("utf-8"))
+            env = dict(os.environ)
+            env.update({"LC_ALL": "C", "LANG": "C",
+                        "PYTHONCOERCECLOCALE": "0", "PYTHONUTF8": "0"})
+            result = subprocess.run(
+                [sys.executable, "-c",
+                 "from adapters import load_config; import sys; "
+                 "load_config(sys.argv[1]); print('OK')", str(path)],
+                cwd=ROOT, env=env, capture_output=True, text=True)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertIn("OK", result.stdout)
 
     def test_model_artifact_and_checkpoint_path_are_unambiguous(self):
         with tempfile.TemporaryDirectory() as tmp:

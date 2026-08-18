@@ -6,6 +6,9 @@ count, split name, and campaign identity."""
 from __future__ import annotations
 
 import json
+import os
+import subprocess
+import sys
 from pathlib import Path
 
 import numpy as np
@@ -19,6 +22,9 @@ from validation.protected_reference import (
     validate_reference_config,
 )
 from workflow.integrity import sha256_file
+
+
+ROOT = Path(__file__).resolve().parent.parent
 
 
 def _split_manifest(path: Path, records) -> None:
@@ -86,6 +92,25 @@ def test_valid_recovered_holdout_reference_passes(tmp_path):
     assert result["logical_frames"] == 2
     assert result["protected_source_rows"] == 2
     assert {"bulk", "bulk"} == {k[0] for k in result["protected_source_indices"]}
+
+
+def test_validate_reference_config_reads_non_ascii_comments_regardless_of_locale(tmp_path):
+    # A hand-authored reference.yaml with a non-ASCII comment (e.g. an em dash) must load
+    # correctly even in a subprocess whose ambient locale resolves to ASCII -- this
+    # reproduces the R29 reference_validation UnicodeDecodeError, which only surfaced
+    # inside a real dispatched-executor process, not an interactive one.
+    reference = _build(tmp_path)
+    body = reference.read_text()
+    reference.write_bytes(("# note — non-ascii comment\n" + body).encode("utf-8"))
+    env = dict(os.environ)
+    env.update({"LC_ALL": "C", "LANG": "C", "PYTHONCOERCECLOCALE": "0", "PYTHONUTF8": "0"})
+    result = subprocess.run(
+        [sys.executable, "-c",
+         "from validation.protected_reference import validate_reference_config; import sys; "
+         "validate_reference_config(sys.argv[1]); print('OK')", str(reference)],
+        cwd=ROOT, env=env, capture_output=True, text=True)
+    assert result.returncode == 0, result.stderr
+    assert "OK" in result.stdout
 
 
 def test_train_partition_frame_is_rejected(tmp_path):

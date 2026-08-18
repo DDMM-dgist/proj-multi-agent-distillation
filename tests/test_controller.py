@@ -1,4 +1,6 @@
 import json
+import os
+import subprocess
 import sys
 import tempfile
 import unittest
@@ -230,6 +232,28 @@ class RunControllerTests(unittest.TestCase):
 
             with self.assertRaisesRegex(ValueError, "mapping or None"):
                 controller.set_recovery_policy(["not", "a", "mapping"])
+
+    def test_initialize_reads_non_ascii_workflow_comments_regardless_of_locale(self):
+        # A hand-authored workflow.yaml with a non-ASCII comment (e.g. an em dash) must
+        # initialize correctly even in a subprocess whose ambient locale resolves to
+        # ASCII -- this reproduces the R29 reference_validation UnicodeDecodeError, which
+        # only surfaced inside a real dispatched-executor process, not an interactive one.
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            cfg = root / "workflow.yaml"
+            body = yaml.safe_dump({"run_id": "x", "stages": [{"name": "x", "command": None}]})
+            cfg.write_bytes(("# note — non-ascii comment\n" + body).encode("utf-8"))
+            env = dict(os.environ)
+            env.update({"LC_ALL": "C", "LANG": "C",
+                        "PYTHONCOERCECLOCALE": "0", "PYTHONUTF8": "0"})
+            result = subprocess.run(
+                [sys.executable, "-c",
+                 "from workflow.controller import RunController; import sys; "
+                 "RunController.initialize(sys.argv[1], sys.argv[2]); print('OK')",
+                 str(cfg), str(root / "run")],
+                cwd=ROOT, env=env, capture_output=True, text=True)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertIn("OK", result.stdout)
 
     def test_failed_initialization_leaves_no_partial_run_directory(self):
         with tempfile.TemporaryDirectory() as tmp:

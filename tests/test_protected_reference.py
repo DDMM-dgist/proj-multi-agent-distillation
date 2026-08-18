@@ -1,6 +1,9 @@
 from pathlib import Path
 
 import json
+import os
+import subprocess
+import sys
 from unittest.mock import patch
 
 import numpy as np
@@ -15,6 +18,9 @@ from validation.protected_reference import (
     _structure_fingerprint,
     validate_protection_audit_report,
 )
+
+
+ROOT = Path(__file__).resolve().parent.parent
 
 
 def _atoms(x=0.0, parent="seed-pool:10"):
@@ -115,6 +121,24 @@ def test_parent_lineage_requires_explicit_lineage(tmp_path):
             {760, 761},
         )
 
+
+
+def test_load_protected_indices_reads_non_ascii_content_regardless_of_locale(tmp_path):
+    # A hand-annotated protected-indices file containing a non-ASCII character (e.g. an
+    # em dash) must be read correctly -- and fail on its own domain validation, not a
+    # UnicodeDecodeError -- even in a subprocess whose ambient locale resolves to ASCII.
+    path = tmp_path / "protected.txt"
+    path.write_bytes("760\n761\n# note — non-ascii annotation\n".encode("utf-8"))
+    env = dict(os.environ)
+    env.update({"LC_ALL": "C", "LANG": "C", "PYTHONCOERCECLOCALE": "0", "PYTHONUTF8": "0"})
+    result = subprocess.run(
+        [sys.executable, "-c",
+         "from validation.protected_reference import load_protected_indices; import sys; "
+         "load_protected_indices(sys.argv[1])", str(path)],
+        cwd=ROOT, env=env, capture_output=True, text=True)
+    assert result.returncode != 0
+    assert "UnicodeDecodeError" not in result.stderr
+    assert "invalid protected source index" in result.stderr
 
 
 def test_protection_audit_contract_passes(tmp_path):

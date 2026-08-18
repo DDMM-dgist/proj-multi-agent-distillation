@@ -50,7 +50,7 @@ def load_protected_indices(path):
     path = Path(path).resolve()
 
     values = []
-    for lineno, raw in enumerate(path.read_text().splitlines(), 1):
+    for lineno, raw in enumerate(path.read_text(encoding="utf-8").splitlines(), 1):
         raw = raw.strip()
 
         if not raw:
@@ -82,7 +82,7 @@ def validate_reference_config(reference_yaml):
     registers a new validator here rather than growing new branches inside one function.
     """
     reference_yaml = Path(reference_yaml).resolve()
-    cfg = yaml.safe_load(reference_yaml.read_text()) or {}
+    cfg = yaml.safe_load(reference_yaml.read_text(encoding="utf-8")) or {}
     kind = cfg.get("kind")
     validator = _REFERENCE_KIND_VALIDATORS.get(kind)
     if validator is None:

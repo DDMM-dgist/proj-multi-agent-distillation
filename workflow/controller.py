@@ -232,7 +232,7 @@ class RunController:
     def initialize(cls, workflow_config, run_dir):
         run_dir = Path(run_dir).resolve()
         workflow_config = Path(workflow_config).resolve()
-        cfg = yaml.safe_load(workflow_config.read_text())
+        cfg = yaml.safe_load(workflow_config.read_text(encoding="utf-8"))
         if (not isinstance(cfg, dict) or not isinstance(cfg.get("run_id"), str) or
                 not cfg["run_id"].strip()):
             raise ValueError("workflow config requires a non-empty run_id")
