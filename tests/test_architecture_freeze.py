@@ -104,6 +104,76 @@ unconditional default exactly as before. ``APPROVAL_GATED_ACTIONS``'s dict value
 unchanged. No role/action-set membership, schema_version, recovery-taxonomy, protected-reference,
 or Judge change; the separate ``_teacher_validation_downstream_reliance_gap`` policy (cli.py, not
 frozen) is untouched.
+
+v24 (R28 forensic-defect correction: bounded/representable external-executor lifecycle) closes the
+defect R28 exposed: a Controller-dispatched external executor (the acquisition subprocess) that
+never returns could not be recorded as attempted (``attempts`` stayed 0) or judged (``record_gate``
+required ``status == "completed"``), so it could only ever be left unrepresentable at
+pending/attempts=0 -- an operator had to kill the process from outside the Controller lifecycle to
+close the run. workflow/controller.py re-freezes: ``begin_stage_execution`` now increments
+``attempts`` and records a ``stage_execution_started`` event AT DISPATCH TIME (before the external
+process can hang) instead of only on return; ``heartbeat_stage`` gained an optional ``progress``
+payload and now emits an ``executor_heartbeat`` event; three new terminal-state methods --
+``fail_stage_execution``, ``timeout_stage_execution``, ``cancel_stage_execution`` -- give a running
+external-executor stage a representable failed/timed_out/cancelled status (new module constant
+``EXECUTION_TERMINAL_FOR_GATE``); ``record_gate`` now accepts REVISE/FAIL against any of those
+terminal statuses (PASS still requires ``status == "completed"``, unchanged) and tolerates zero
+registered artifacts when building ``pending_recovery`` for a stage that never completed;
+``run_stage`` now launches its command via the new ``workflow.subprocess_runner.run_bounded``
+(process-group-scoped, via an optional per-stage ``timeout_s`` from ``initialize()``) instead of a
+bare ``subprocess.run``, so a command-list stage can now time out, get ONLY its own process group
+killed, and land on ``timed_out`` instead of hanging the Controller forever; ``run_stage`` also now
+records its own ``runner``/heartbeat metadata, reusing the same generic mechanism the external
+(pydantic_ai-dispatched) path uses. schema_version UNCHANGED at 10 -- every new key
+(``timeout_s``, ``runner``, the new event types) is optional/additive with safe ``.get(...,
+default)`` reads, so no on-disk migration is required. No role/action-set, recovery-taxonomy,
+protected-reference, or Judge change; scientific defaults (e.g. acquisition
+``similarity_threshold``) are untouched by this revision.
+
+v25 (R28 forensic-defect correction, part 2: wiring the pydantic_ai dispatch pipeline itself to the
+v24 lifecycle hooks) closes the remaining gap: v24 gave the Controller a representable
+running/failed/timed_out vocabulary, but nothing in the actual PydanticAI producer-dispatch path
+called it yet. dispatch.py (not frozen) gains an optional ``on_dispatch_start`` callback on
+``authorize_and_execute``, fired exactly once, immediately before the trusted executor is actually
+invoked -- i.e. only after role/capability/approval-boundary/param-validation/idempotency all pass
+-- and never for a dry-run or any pre-executor rejection (DENIED, BLOCKED_CAPABILITY,
+APPROVAL_REQUIRED, param-INVALID, DUPLICATE), all of which are resolved before this point and can
+never hang. dispatch.py stays ignorant of the Controller; it only invokes a generic callback.
+controller_bridge.py re-freezes: ``dispatch_via_controller`` gained the same additive
+``on_dispatch_start`` passthrough. production_router.py re-freezes: ``run_role`` and
+``_accept_via_dispatch`` gained the identical additive passthrough, used only by the
+``producer_dispatch`` strategy; every other strategy (judge_gate, typed_result,
+typed_reasoning_output, agent_result) ignores it entirely, unaffected. cli.py (not frozen) wires a
+closure into this hook that calls ``workflow.controller.begin_stage_execution`` at the one point
+that precedes the R28-class hang; every rejection branch that follows first checks whether the
+stage actually reached "running" (i.e. the executor was genuinely invoked, as opposed to a
+pre-executor rejection which leaves the stage "pending" exactly as before, unaffected). The
+PENDING (``ExternalActionPending``) branch in ``run_production_stage`` calls the new
+``defer_stage_execution`` back to "pending", preserving the pre-existing resumable-pause contract
+byte-for-byte -- see ``tests/test_run_campaign_external_pending.py``, unchanged and still passing.
+The ``status not in {"EXECUTED", "DUPLICATE"}`` rejection branch distinguishes a genuine TIMEOUT
+(a forward-compatible, generic check for a reason string whose leading exception name ends in
+"TimeoutError" -- no such exception exists yet; this is inert until one is introduced), which alone
+calls ``timeout_stage_execution`` followed by ``record_gate(..., "FAIL", ...)``, returning the same
+``GATE_{decision}`` shape the Judge-scored gate path already returns so run-campaign's existing
+recovery loop picks it up for free -- from every OTHER (ordinary, fast, synchronous) executor
+rejection, which instead calls ``defer_stage_execution`` back to "pending" and returns the same
+``DISPATCH_REJECTED`` result as before, deliberately preserving the established ad-hoc direct
+run-stage retry-after-fixing-input contract (``tests/test_base_plus_augmentation_dataset_route.py``,
+``tests/test_production_readiness.py``) rather than opening a ``pending_recovery`` for a
+non-hanging failure. The same running-check-then-``defer_stage_execution`` pattern is applied to a
+declared-outputs-missing rejection and to any exception ``complete_external_stage`` itself raises,
+in both cases then preserving the original return value/exception unchanged -- the executor already
+succeeded in these two cases, so only the Controller-side "running" mark is reverted, not the
+outcome. Either way -- terminal or reverted-to-pending -- ``attempts`` and the
+``stage_execution_started``/``stage_execution_deferred`` events remain a permanent, durable record
+that the attempt occurred; only whether ``status`` itself lands terminal or resumable differs.
+workflow/controller.py re-freezes for one additive method, ``defer_stage_execution`` (return a
+running stage to pending, recording a ``stage_execution_deferred`` event, without touching
+``attempts``) -- no other controller.py behavior changed in this revision. schema_version UNCHANGED
+at 10. No role/action-set, recovery-taxonomy, protected-reference, or Judge change; pre-executor
+rejection outcomes (DENIED, BLOCKED_CAPABILITY, APPROVAL_REQUIRED, param-INVALID, DUPLICATE) are
+byte-for-byte unaffected.
 """
 from __future__ import annotations
 
@@ -599,7 +669,61 @@ FREEZE_REVISION = (
     "dispatch.py and cli.py (neither frozen) wire the new resolver in and supply the generic "
     "reference_validation default parameters respectively. No role/action-set membership, "
     "schema_version, recovery-taxonomy, protected-reference, or Judge change; "
-    "_teacher_validation_downstream_reliance_gap is untouched."
+    "_teacher_validation_downstream_reliance_gap is untouched. "
+    "v24 (R28 forensic-defect correction: bounded/representable external-executor lifecycle) "
+    "re-froze workflow/controller.py: begin_stage_execution now records attempts+1 and a "
+    "stage_execution_started event at dispatch time (not only on return); heartbeat_stage gained "
+    "an optional progress payload and emits executor_heartbeat; new fail_stage_execution/"
+    "timeout_stage_execution/cancel_stage_execution methods and the new "
+    "EXECUTION_TERMINAL_FOR_GATE constant let record_gate accept REVISE/FAIL against a stage "
+    "that ran and definitively did not complete (PASS still requires status == completed, "
+    "unchanged), tolerating zero registered artifacts in that case; run_stage now dispatches via "
+    "workflow.subprocess_runner.run_bounded with an optional per-stage timeout_s (new optional "
+    "stage field from initialize()) instead of a bare subprocess.run, so a command-list stage can "
+    "time out with only its own process group killed instead of hanging forever, and now records "
+    "its own runner/heartbeat metadata via the same generic mechanism the external-dispatch path "
+    "uses. schema_version UNCHANGED at 10; every new key is optional/additive. No role/action-set, "
+    "recovery-taxonomy, protected-reference, or Judge change; scientific defaults untouched. "
+    "heartbeat_stage also gained an optional pid kwarg (backfills the real OS pid once known, "
+    "for a caller whose executor spawns its subprocess after begin_stage_execution already ran), "
+    "and complete_external_stage now skips its own attempts increment when the stage already "
+    "shows status=='running' (begin_stage_execution already counted that same attempt at "
+    "dispatch time) -- a stage that arrives at complete_external_stage still 'pending' (the "
+    "historical/direct-call shape) is counted exactly as before. "
+    "v25 (R28 forensic-defect correction, part 2: wiring the pydantic_ai dispatch pipeline itself "
+    "to the v24 lifecycle hooks) re-froze production_router.py and controller_bridge.py: both "
+    "gained an additive on_dispatch_start passthrough (run_role/_accept_via_dispatch, "
+    "dispatch_via_controller) mirroring the existing progress_cb passthrough exactly, used only by "
+    "the producer_dispatch strategy; every other strategy ignores it. dispatch.py (not frozen) "
+    "gained the same optional on_dispatch_start on authorize_and_execute, fired exactly once, "
+    "immediately before the trusted executor is actually invoked -- i.e. only after role/"
+    "capability/approval-boundary/param-validation/idempotency all pass -- never for a dry-run or "
+    "any pre-executor rejection (DENIED, BLOCKED_CAPABILITY, APPROVAL_REQUIRED, param-INVALID, "
+    "DUPLICATE); dispatch.py stays ignorant of the Controller, only invoking a generic callback. "
+    "cli.py (not frozen) wires begin_stage_execution into that hook; every rejection branch that "
+    "follows first checks whether the stage actually reached running (executor genuinely invoked, "
+    "vs. a pre-executor rejection which leaves it pending exactly as before, unaffected). The "
+    "PENDING (ExternalActionPending) branch calls the new defer_stage_execution (returns the stage "
+    "to pending), preserving the pre-existing resumable-pause contract byte-for-byte. The "
+    "status-not-in-{EXECUTED,DUPLICATE} rejection branch distinguishes a genuine TIMEOUT (a "
+    "forward-compatible, generic check for a reason string whose leading exception name ends in "
+    "TimeoutError -- inert until such an exception exists), which alone calls "
+    "timeout_stage_execution followed by record_gate(..., FAIL, ...), returning the same "
+    "GATE_{decision} shape the Judge-scored gate path already returns so run-campaign's existing "
+    "recovery loop picks it up for free -- from every OTHER (ordinary, fast, synchronous) executor "
+    "rejection, which instead calls defer_stage_execution back to pending and returns the same "
+    "DISPATCH_REJECTED result as before, preserving the established ad-hoc direct run-stage "
+    "retry-after-fixing-input contract rather than opening a pending_recovery for a non-hanging "
+    "failure. The same running-check-then-defer_stage_execution pattern applies to a "
+    "declared-outputs-missing rejection and to any exception complete_external_stage itself "
+    "raises, in both cases preserving the original return value/exception unchanged. Either way, "
+    "attempts and the stage_execution_started/stage_execution_deferred events remain a permanent "
+    "record the attempt occurred; only whether status lands terminal or resumable differs. "
+    "workflow/controller.py re-freezes for one additive method, defer_stage_execution (return a "
+    "running stage to pending, recording a stage_execution_deferred event, without touching "
+    "attempts) -- no other controller.py behavior changed in this revision. schema_version "
+    "UNCHANGED at 10. No role/action-set, recovery-taxonomy, protected-reference, or Judge change; "
+    "pre-executor rejection outcomes are byte-for-byte unaffected."
 )
 FROZEN_MODEL = "qwen2.5-7b-instruct"
 
@@ -619,17 +743,17 @@ FROZEN = {
     "runtimes/pydantic_ai/role_outputs.py":
         "a1d5ba42801907e621efcba70d5dba4b93b659aa87e0dd4224acfcd69e00d6db",
     "runtimes/pydantic_ai/production_router.py":
-        "ff8d2f36d453775a46de25d85f9464c20fa8831bf68f5124f2c8c58b2079ac0f",
+        "14087ca90537013f49982a2794e970e3f81de719ea751384f05160157d78b089",
     "runtimes/pydantic_ai/driver.py":
         "db480c20d126b7511e8bbaa4fc2018adb56aa789fabe496ba4f08313379f5939",
     "runtimes/pydantic_ai/actions.py":
         "b514f17cb9870d790ae375ba2faac3375dc58e3bc139f52e6875fdf97dd80041",
     "runtimes/pydantic_ai/controller_bridge.py":
-        "b046922cd32620cd5dbe1c2dc7b4390a2eb67b4201e473d9b6062c68f8bd869d",
+        "c90599ed5974985cd43251ad9d88b2947d44136012608c7aaafd2604d8e4ab16",
     "orchestration/specs.py":
         "4b6dc829fe2b6b594cc87e8a62bd944ea9df181cd7f420ae3732c861ce8e43cb",
     "workflow/controller.py":
-        "a7c12e845116998f3b8f0219e25dc5a7d08a5a98802d1cd3d54831192a429cea",
+        "60d29fa7da76a07d9657a6b3e9ba3ddbb61c8cf96ccc23340ea035c1afe8f0c3",
     "orchestration/schema/agent_result.schema.json":
         "a38afea9c06c21e647376efd835dec32a16b2f247583a090560cb1843e0eda31",
     "orchestration/schema/agent_spec.schema.json":

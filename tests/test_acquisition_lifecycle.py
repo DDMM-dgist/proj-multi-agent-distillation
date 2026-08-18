@@ -242,6 +242,7 @@ class AcquisitionLifecycleRunStageTests(unittest.TestCase):
             n_per_structure=1,
             expected_output_count=2,
             max_force=24.0,
+            similarity_threshold=0.01,
         )
         c = self._init(include_plan=True)
         from runtimes.pydantic_ai.executors import acquisition_plan_sha256_from_proposal
@@ -251,15 +252,14 @@ class AcquisitionLifecycleRunStageTests(unittest.TestCase):
         plan_sha = acquisition_plan_sha256_from_proposal(proposal)
         cli.main(["approve", "--run-dir", str(self.run_dir), "--boundary", "costly_teacher_labeling", "--note", "exact", "--plan-sha256", plan_sha])
         calls = {"command": None}
-        import subprocess
-        real_subprocess_run = subprocess.run
 
-        def fake_run(command, check=False, cwd=None, **kwargs):
-            if "augment-atoms" not in [str(x) for x in command]:
-                return real_subprocess_run(command, check=check, cwd=cwd, **kwargs)
+        def fake_run_bounded(command, *, cwd=None, env=None, stdout=None, stderr=None,
+                             timeout_s=None, on_start=None, heartbeat_cb=None, **_kwargs):
+            from workflow.subprocess_runner import BoundedRunResult
             calls["command"] = list(command)
-            self.assertTrue(check)
-            self.assertIn("PYTHONPATH", kwargs.get("env") or {})
+            self.assertIn("PYTHONPATH", env or {})
+            if on_start is not None:
+                on_start(4242)
             native_cfg = yaml.safe_load((self.run_dir / "artifacts" / "acquisition_augment_atoms.native.yaml").read_text(encoding="utf-8"))
             self.assertEqual(set(native_cfg), {"data", "model", "config"})
             self.assertEqual(native_cfg["model"]["calculator"], {
@@ -274,10 +274,9 @@ class AcquisitionLifecycleRunStageTests(unittest.TestCase):
             second = Atoms("Cu", positions=[[4, 0, 0]], cell=[10, 10, 10], pbc=True)
             second.info.update({"starting-structure": 1, "id": "native-1", "parent": "native-parent-1", "level": 1, "sigma": 0.02, "relax_steps": 3})
             write(str(self.run_dir / "artifacts" / "acquisition_candidates.extxyz"), [first, second])
-            import subprocess
-            return subprocess.CompletedProcess(command, 0)
+            return BoundedRunResult(returncode=0, timed_out=False, elapsed_s=0.01, pid=4242)
 
-        with mock.patch("adapters.acquisition.subprocess.run", fake_run):
+        with mock.patch("adapters.acquisition.run_bounded", fake_run_bounded):
             code = cli.main(["run-stage", "--runtime", "mock", "--run-dir", str(self.run_dir), "--stage", "acquisition", "--auto-mock-judges"])
         self.assertEqual(code, cli.EXIT_SUCCESS)
         self.assertEqual(calls["command"][:4], ["conda", "run", "-n", "augment"])
@@ -299,7 +298,7 @@ class AcquisitionLifecycleRunStageTests(unittest.TestCase):
         proposal = cli._bind_acquisition_plan_for_stage(c, proposal)
         plan_sha = acquisition_plan_sha256_from_proposal(proposal)
         cli.main(["approve", "--run-dir", str(self.run_dir), "--boundary", "costly_teacher_labeling", "--note", "exact", "--plan-sha256", plan_sha])
-        def adapter(cfg, teacher_cfg, seed_path, out_path):
+        def adapter(cfg, teacher_cfg, seed_path, out_path, progress_cb=None):
             atoms = Atoms("Cu", positions=[[3, 0, 0]], cell=[10, 10, 10], pbc=True)
             atoms.info["parent"] = "seed-pool:900"
             write(str(out_path), [atoms])

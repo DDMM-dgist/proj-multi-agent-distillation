@@ -1184,7 +1184,7 @@ def _exec_build_teacher_baseline(proposal):
             "label_manifest": str(Path(label_manifest).resolve())}
 
 
-def _exec_acquire_structures(proposal):
+def _exec_acquire_structures(proposal, progress_cb=None):
     from adapters import load_config
     from adapters.acquisition import acquire
     from workflow.integrity import artifact_digest
@@ -1210,7 +1210,7 @@ def _exec_acquire_structures(proposal):
     created_paths = [p.get("out_path"), p.get("manifest_path"), str(audit_path), str(executable_path)]
     try:
         result = acquire(executable_cfg, load_config(p["teacher_config"]),
-                         p["seed_structures"], p["out_path"])
+                         p["seed_structures"], p["out_path"], progress_cb=progress_cb)
         n_frames = _validate_acquisition_output(result, plan)
         audit_result = _write_acquisition_protection_audit(
             audit_path, reference_yaml=p["reference_yaml"], result_path=result,

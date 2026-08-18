@@ -62,7 +62,7 @@ class ControllerRecoveryAuthorizationStore:
 
 
 def dispatch_via_controller(proposal, *, controller, registry=None, mode="dry_run",
-                            progress_cb=None):
+                            progress_cb=None, on_dispatch_start=None):
     """Authorize + (optionally) execute a proposed action with controller-backed approval and
     idempotency. Returns the ActionOutcome. Heavy compute runs only inside a registered trusted
     executor, only in mode='primary', and only after every enforcement check passes.
@@ -74,7 +74,9 @@ def dispatch_via_controller(proposal, *, controller, registry=None, mode="dry_ru
 
     ``progress_cb``, if given, is passed straight through to ``authorize_and_execute`` -- an
     optional, additive long-running-executor progress hook; no existing caller or executor is
-    affected when it is omitted.
+    affected when it is omitted. ``on_dispatch_start``, if given, is likewise passed straight
+    through -- fires once, immediately before the trusted executor actually runs, never for a
+    dry-run or a pre-executor rejection.
     """
     registry = registry if registry is not None else default_registry()
     outcome = authorize_and_execute(
@@ -82,5 +84,5 @@ def dispatch_via_controller(proposal, *, controller, registry=None, mode="dry_ru
         approvals=ControllerApprovalStore(controller),
         idempotency=ControllerIdempotencyStore(controller),
         recovery_authorization=ControllerRecoveryAuthorizationStore(controller), mode=mode,
-        progress_cb=progress_cb)
+        progress_cb=progress_cb, on_dispatch_start=on_dispatch_start)
     return outcome

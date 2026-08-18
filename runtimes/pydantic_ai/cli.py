@@ -978,12 +978,33 @@ def _run_producer_with_binding_retries(runtime, task, spec, context, *, controll
                         detail={"attempt": attempt})
 
         def _progress_cb(progress: dict, _emitter=emitter, _stage=stage_name, _role=role,
-                         _action=action) -> None:
+                         _action=action, _controller=controller) -> None:
             _emitter.emit("executor_progress", stage=_stage, role=_role, action=_action,
                          detail=progress)
+            # Additive Controller-durable heartbeat (see workflow.controller.heartbeat_stage):
+            # a no-op unless begin_stage_execution already marked this stage running. A pid
+            # discovered only once the trusted executor's own subprocess starts (after dispatch)
+            # is backfilled here rather than requiring it up front.
+            _controller.heartbeat_stage(_stage, progress=progress, pid=progress.get("pid")
+                                        if isinstance(progress, dict) else None)
+
+        def _on_dispatch_start(_controller=controller, _stage=stage_name, _role=role,
+                               _action=action, _proposal=authoritative_proposal) -> None:
+            # Fires only once dispatch.authorize_and_execute is about to invoke the real trusted
+            # executor (past every pre-executor rejection check) -- exactly the point that
+            # precedes R28's class of defect (an executor invoked here can hang for hours with no
+            # durable record an attempt occurred). See workflow.controller.begin_stage_execution.
+            try:
+                from .executors import acquisition_plan_sha256_from_proposal
+                plan_sha256 = acquisition_plan_sha256_from_proposal(_proposal)
+            except Exception:
+                plan_sha256 = None
+            _controller.begin_stage_execution(_stage, runner_id="pydantic_ai",
+                                              executor=f"{_role}:{_action}",
+                                              plan_sha256=plan_sha256)
 
         result = run_role(runtime, current_task, spec, context, controller=controller,
-                          registry=registry, mode="primary",
+                          registry=registry, mode="primary", on_dispatch_start=_on_dispatch_start,
                           progress_cb=_progress_cb if emitter is not None else None)
         if emitter is not None:
             emitter.emit("role_invocation_completed", stage=stage_name, role=role, action=action,
@@ -1487,12 +1508,41 @@ def run_production_stage(controller, stage_name, *, runtime, agent_specs_dir="ag
         # a scheduler-bridge action still queued), and deserves the identical resumable-pause
         # treatment, not the terminal DISPATCH_REJECTED/FAILED outcome below.
         reason = getattr(res.detail, "reason", res.error)
+        # The trusted executor WAS invoked (on_dispatch_start already marked the stage running),
+        # so undo that mark back to pending -- ExternalActionPending is the one non-terminal
+        # outcome, and this pre-R28 resumable-pause contract must not regress.
+        if c.stage(stage_name)["status"] == "running":
+            c.defer_stage_execution(stage_name, reason=reason)
         emitter.emit("resource_pause", stage=stage_name, detail={"status": status})
         return StageRunResult("EXTERNAL_ACTION_PENDING", EXIT_EXTERNAL_ACTION_PENDING,
                               f"EXTERNAL_ACTION_PENDING: {reason}", action_status=status)
     if status not in {"EXECUTED", "DUPLICATE"}:
         reason = getattr(res.detail, "reason", res.error)
         emitter.emit("executor_failed", stage=stage_name, role=role, detail={"status": status})
+        if c.stage(stage_name)["status"] == "running":
+            # The trusted executor was genuinely invoked (past every pre-executor rejection check)
+            # and either raised or its own completion validator rejected the result. A definitive
+            # TIMEOUT (forward-compatible, generic: the reason's leading exception name ends in
+            # "TimeoutError" -- inert until such an exception exists) is exactly R28's regression
+            # class -- land it on a terminal, representable status and force the campaign through
+            # the same Controller-owned FAIL recovery path a Judge-scored gate would (the
+            # GATE_{decision} shape below), rather than let an automated retry loop silently
+            # re-dispatch a pathological/hanging plan forever. Every OTHER (ordinary, fast,
+            # synchronous) EXECUTOR_ERROR/INVALID is deliberately reverted back to pending instead
+            # -- an established, tested contract (direct ad-hoc run-stage retries after fixing the
+            # underlying input, e.g. tests/test_base_plus_augmentation_dataset_route.py, must keep
+            # working without going through propose_recovery/approve_recovery) -- attempts and the
+            # stage_execution_started/deferred events remain a permanent, durable record that the
+            # attempt occurred either way; only the resumability of `status` differs.
+            exc_name = reason.split(":", 1)[0].strip() if isinstance(reason, str) else ""
+            if exc_name.endswith("TimeoutError"):
+                c.timeout_stage_execution(stage_name)
+                c.record_gate(stage_name, "FAIL", evidence=f"executor failed: {status}: {reason}")
+                return StageRunResult(
+                    "GATE_FAIL", EXIT_VALIDATION_REJECTED,
+                    "GATE_FAIL: recovery path is now controlled by the Controller",
+                    gate_decision="FAIL", evidence_path=evidence_path, action_status=status)
+            c.defer_stage_execution(stage_name, reason=reason)
         return StageRunResult("DISPATCH_REJECTED", EXIT_VALIDATION_REJECTED,
                               f"stage dispatch failed: {status}: {reason}", action_status=status)
     emitter.emit("executor_completed", stage=stage_name, role=role, detail={"status": status})
@@ -1500,11 +1550,26 @@ def run_production_stage(controller, stage_name, *, runtime, agent_specs_dir="ag
     declared = [(c.run_dir / rel).resolve() for rel in c.stage(stage_name).get("outputs", [])]
     missing = [str(path) for path in declared if not path.exists()]
     if missing:
+        # The executor itself succeeded (EXECUTED), but the Controller's own declared-outputs
+        # contract rejects registering it complete -- orthogonal to R28 (no hang, no unresolved
+        # attempt), and an established, tested contract expects this to leave the stage retryable
+        # exactly as before, not landed on a new terminal status.
+        if c.stage(stage_name)["status"] == "running":
+            c.defer_stage_execution(stage_name, reason="missing declared outputs")
         return StageRunResult("MISSING_OUTPUTS", EXIT_VALIDATION_REJECTED,
                               "stage missing declared outputs: " + ", ".join(missing),
                               action_status=status)
     if c.stage(stage_name)["status"] != "completed":
-        c.complete_external_stage(stage_name, declared)
+        try:
+            c.complete_external_stage(stage_name, declared)
+        except Exception:
+            # Same reasoning as the missing-outputs branch immediately above: revert the running
+            # mark so the stage stays retryable exactly as it was before this fix, then propagate
+            # the original exception unchanged (existing callers, e.g. _cmd_run_stage, already
+            # catch and report it identically).
+            if c.stage(stage_name)["status"] == "running":
+                c.defer_stage_execution(stage_name, reason="stage could not complete")
+            raise
     c = RunController(c.run_dir)
     if c.stage(stage_name)["status"] != "completed":
         return StageRunResult("STAGE_NOT_COMPLETED", EXIT_VALIDATION_REJECTED,
@@ -2226,13 +2291,38 @@ def _dispatch_recovery_corrective_action(controller, trigger, recovery, correcti
                 action=corrective_action["action_type"])
 
     def _progress_cb(progress: dict, _emitter=emitter, _stage=return_stage, _role=role,
-                     _action=corrective_action["action_type"]) -> None:
+                     _action=corrective_action["action_type"], _controller=c) -> None:
         _emitter.emit("executor_progress", stage=_stage, role=_role, action=_action,
                      detail=progress)
+        # Same additive Controller-durable heartbeat as run_production_stage's own dispatch path
+        # (see workflow.controller.heartbeat_stage): a no-op unless begin_stage_execution already
+        # marked this stage running.
+        _controller.heartbeat_stage(_stage, progress=progress, pid=progress.get("pid")
+                                    if isinstance(progress, dict) else None)
+
+    def _on_dispatch_start(_controller=c, _stage=return_stage, _role=role,
+                           _action=corrective_action["action_type"], _proposal=proposal) -> None:
+        # Same R28-defect fix as the forward-dispatch path (_run_producer_with_binding_retries):
+        # fires only once dispatch.authorize_and_execute is about to invoke the real trusted
+        # executor, so the attempt is durably recorded before it can hang. See
+        # workflow.controller.begin_stage_execution.
+        try:
+            from .executors import acquisition_plan_sha256_from_proposal
+            plan_sha256 = acquisition_plan_sha256_from_proposal(_proposal)
+        except Exception:
+            plan_sha256 = None
+        _controller.begin_stage_execution(_stage, runner_id="pydantic_ai",
+                                          executor=f"{_role}:{_action}",
+                                          plan_sha256=plan_sha256)
 
     outcome = dispatch_via_controller(proposal, controller=c, registry=registry, mode="primary",
-                                      progress_cb=_progress_cb)
+                                      progress_cb=_progress_cb, on_dispatch_start=_on_dispatch_start)
     if outcome.status == "PENDING":
+        # Same resumable-pause contract as run_production_stage: the executor was genuinely
+        # invoked (on_dispatch_start already marked the stage running), so undo that mark back to
+        # pending -- ExternalActionPending is the one non-terminal outcome.
+        if c.stage(return_stage)["status"] == "running":
+            c.defer_stage_execution(return_stage, reason=outcome.reason)
         emitter.emit("executor_pending", stage=return_stage, role=role,
                     detail={"status": outcome.status})
         return CampaignRunResult(
@@ -2243,6 +2333,17 @@ def _dispatch_recovery_corrective_action(controller, trigger, recovery, correcti
     if outcome.status not in {"EXECUTED", "DUPLICATE"}:
         emitter.emit("executor_failed", stage=return_stage, role=role,
                     detail={"status": outcome.status})
+        if c.stage(return_stage)["status"] == "running":
+            # Same TIMEOUT-vs-ordinary distinction as run_production_stage: a genuine timeout is
+            # R28's regression class and must land on a terminal, Controller-recorded state; any
+            # other (ordinary, fast, synchronous) rejection reverts to pending instead, so a
+            # subsequent recovery iteration or ad-hoc retry is not blocked by a stray "running"
+            # stage left over from this dispatch attempt.
+            exc_name = outcome.reason.split(":", 1)[0].strip() if isinstance(outcome.reason, str) else ""
+            if exc_name.endswith("TimeoutError"):
+                c.timeout_stage_execution(return_stage)
+            else:
+                c.defer_stage_execution(return_stage, reason=outcome.reason)
         return CampaignRunResult(
             CAMPAIGN_FAILED, EXIT_VALIDATION_REJECTED,
             f"recovery corrective action dispatch failed: {outcome.status}: {outcome.reason}",
@@ -2256,12 +2357,19 @@ def _dispatch_recovery_corrective_action(controller, trigger, recovery, correcti
         # (DUPLICATE) for this exact recovery iteration -- either way that is a completed dispatch
         # by definition, so required outputs still being absent is a genuine failure, never a
         # reason to sit in a pause waiting for evidence that will never arrive.
+        if c.stage(return_stage)["status"] == "running":
+            c.defer_stage_execution(return_stage, reason="missing declared outputs")
         return CampaignRunResult(
             CAMPAIGN_FAILED, EXIT_VALIDATION_REJECTED,
             f"recovery corrective action for stage {return_stage!r} reported {outcome.status} but "
             "declared outputs are still missing: " + ", ".join(missing), stage=return_stage)
     if c.stage(return_stage)["status"] != "completed":
-        c.complete_external_stage(return_stage, declared)
+        try:
+            c.complete_external_stage(return_stage, declared)
+        except Exception:
+            if c.stage(return_stage)["status"] == "running":
+                c.defer_stage_execution(return_stage, reason="stage could not complete")
+            raise
     emitter.emit("artifact_registered", stage=return_stage,
                 detail={"artifacts": [str(p) for p in declared]})
     return None

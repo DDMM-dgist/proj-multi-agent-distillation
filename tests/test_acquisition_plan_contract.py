@@ -233,7 +233,7 @@ class AcquisitionPlanContractTests(unittest.TestCase):
 
     def test_plan_output_count_mismatch_rejects_after_single_adapter_call(self):
         calls = {"n": 0}
-        def adapter(cfg, teacher_cfg, seed_path, out_path):
+        def adapter(cfg, teacher_cfg, seed_path, out_path, progress_cb=None):
             calls["n"] += 1
             write(str(out_path), [_atoms(1.0, "seed-pool:900"), _atoms(2.0, "seed-pool:900")])
             return out_path
@@ -295,16 +295,19 @@ class AcquisitionPlanContractTests(unittest.TestCase):
             max_force=25.0,
             min_separation=0.7,
             max_relax_steps=9,
-            similarity_threshold=0.12,
+            similarity_threshold=0.01,
         )
         calls = {"n": 0, "command": None}
 
-        def fake_run(command, check, cwd=None, env=None):
+        def fake_run_bounded(command, *, cwd=None, env=None, stdout=None, stderr=None,
+                             timeout_s=None, on_start=None, heartbeat_cb=None, **_kwargs):
+            from workflow.subprocess_runner import BoundedRunResult
             calls["n"] += 1
             calls["command"] = list(command)
-            self.assertTrue(check)
             self.assertIsNone(cwd)
             self.assertIn("PYTHONPATH", env or {})
+            if on_start is not None:
+                on_start(4242)
             native_cfg = yaml.safe_load(self.plan_exec.read_text(encoding="utf-8"))
             self.assertEqual(set(native_cfg), {"data", "model", "config"})
             self.assertEqual(native_cfg["data"], {
@@ -325,11 +328,11 @@ class AcquisitionPlanContractTests(unittest.TestCase):
             second = Atoms("Cu", positions=[[4, 0, 0]], cell=[10, 10, 10], pbc=True)
             second.info.update({"starting-structure": 1, "id": "native-child-1", "parent": "native-parent-uuid-1", "level": 1, "sigma": 0.02, "relax_steps": 4})
             write(str(self.root / "out.extxyz"), [first, second])
-            return subprocess.CompletedProcess(command, 0)
+            return BoundedRunResult(returncode=0, timed_out=False, elapsed_s=0.01, pid=4242)
 
         self._approve_current_plan()
         prop = self._proposal(selected_source_indices=[900, 901])
-        with mock.patch("adapters.acquisition.subprocess.run", fake_run):
+        with mock.patch("adapters.acquisition.run_bounded", fake_run_bounded):
             out = self._dispatch(prop)
         self.assertEqual(out.status, "EXECUTED")
         self.assertEqual(calls["n"], 1)
@@ -348,7 +351,7 @@ class AcquisitionPlanContractTests(unittest.TestCase):
 
     def test_protection_failure_quarantines_partial_outputs_without_idempotency(self):
         self._approve_current_plan()
-        def adapter(cfg, teacher_cfg, seed_path, out_path):
+        def adapter(cfg, teacher_cfg, seed_path, out_path, progress_cb=None):
             write(str(out_path), [_atoms(1.0, "seed-pool:760")])
             return out_path
         out = self._dispatch(self._proposal(), adapter)
@@ -360,7 +363,7 @@ class AcquisitionPlanContractTests(unittest.TestCase):
 
     def test_executor_runs_at_most_once_with_idempotency(self):
         calls = {"n": 0}
-        def adapter(cfg, teacher_cfg, seed_path, out_path):
+        def adapter(cfg, teacher_cfg, seed_path, out_path, progress_cb=None):
             calls["n"] += 1
             write(str(out_path), [_atoms(1.0, "seed-pool:900")])
             return out_path

@@ -297,7 +297,7 @@ class RunControllerTests(unittest.TestCase):
             controller.rebind_inputs()
             controller.run_stage("x")
             self.assertEqual(controller.stage("x")["status"], "completed")
-            self.assertEqual(controller.state["events"][-1]["type"], "inputs_rebound")
+            self.assertIn("inputs_rebound", [e["type"] for e in controller.state["events"]])
 
     def test_large_directory_input_is_hash_bound_without_copying(self):
         with tempfile.TemporaryDirectory() as tmp:

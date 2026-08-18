@@ -10,6 +10,7 @@ import subprocess
 from pathlib import Path
 
 import numpy as np
+import yaml
 from ase import units
 from ase.constraints import FixCom
 from ase.io import read, write
@@ -20,6 +21,7 @@ from adapters import load_config, resolve_config_path
 from adapters.teacher import (load_teacher, load_teacher_with_species_evidence,
                               teacher_model_reference)
 from workflow.integrity import artifact_digest
+from workflow.subprocess_runner import run_bounded
 
 
 def _sha256(path):
@@ -28,6 +30,71 @@ def _sha256(path):
         for chunk in iter(lambda: f.read(1024 * 1024), b""):
             h.update(chunk)
     return h.hexdigest()
+
+
+class AcquisitionTimeoutError(TimeoutError):
+    """Raised when the augment-atoms subprocess exceeds its configured ``timeout_s`` wall-clock
+    budget. Deliberately a ``TimeoutError`` subclass (name ends in "TimeoutError") so the generic,
+    forward-compatible detection in ``runtimes.pydantic_ai.cli.run_production_stage`` recognizes it
+    from the ``EXECUTOR_ERROR`` reason string and routes the stage through the Controller's own
+    ``timeout_stage_execution`` + FAIL-gate recovery path instead of leaving it silently hung --
+    the exact R28 regression class this module's bounded execution now makes representable."""
+
+
+class AcquisitionFeasibilityError(ValueError):
+    """Raised by ``check_acquisition_feasibility`` when a configured augment-atoms
+    rejection-sampling parameter combination is structurally infeasible -- i.e. the R28
+    pathology (see runs/sio2-sox-allegro-simplenn-r28/artifacts/r28_workflow_failure_report.json):
+    ``augment_atoms.generate_structures()``'s outer while loop has no cap on rejected attempts,
+    and only accepts a candidate once its cumulative per-atom displacement from every existing
+    pool member exceeds ``similarity_threshold``. If the largest displacement the sampler can
+    plausibly ever produce does not clear that threshold by a comfortable margin, acceptance is a
+    rare-to-impossible tail event and the subprocess can run unboundedly by design. Raised BEFORE
+    any subprocess is dispatched, so it is an ordinary (non-timeout) exception -- it takes the
+    same fast, deterministic ``defer_stage_execution``-to-pending path as any other pre-dispatch
+    validation failure, never the timeout/FAIL path."""
+
+
+def _harmonic_number(n):
+    return sum(1.0 / i for i in range(1, int(n) + 1))
+
+
+def check_acquisition_feasibility(config_section, *, margin=1.5):
+    """Pre-execution sanity check on augment-atoms's own resolved ``config`` parameters.
+
+    Deliberately generic: it never hard-codes a specific ``similarity_threshold`` value (or any
+    other parameter value) -- it only checks that whatever ``sigma_range``/``max_relax_steps``/
+    ``similarity_threshold`` a plan actually declares are mutually feasible, so a legitimately
+    tighter or looser plan is free to use any values it likes as long as they remain feasible.
+
+    Per-atom displacement from the rattle+relax walk is bounded above by
+    ``max(sigma_range) * sum(1/i for i in 1..max_relax_steps)`` (the worst-case cumulative
+    relaxation-step walk at the largest sampled perturbation scale). Returns the computed bound
+    when all three parameters are present and feasible; returns ``None`` (no-op) when any of them
+    is absent, since there is then nothing concrete enough to evaluate.
+    """
+    sigma_range = config_section.get("sigma_range")
+    similarity_threshold = config_section.get("similarity_threshold")
+    max_relax_steps = config_section.get("max_relax_steps")
+    if not sigma_range or similarity_threshold is None or not max_relax_steps:
+        return None
+    sigma_max = float(max(sigma_range))
+    harmonic = _harmonic_number(max_relax_steps)
+    reach = sigma_max * harmonic
+    threshold = float(similarity_threshold)
+    if reach < margin * threshold:
+        raise AcquisitionFeasibilityError(
+            "acquisition parameters are structurally infeasible for the rejection-sampling loop: "
+            f"max(sigma_range)={sigma_max:g} * harmonic(max_relax_steps={max_relax_steps})="
+            f"{harmonic:.4f} gives an estimated maximum plausible cumulative per-atom displacement "
+            f"of {reach:.4f} A, which does not clear similarity_threshold={threshold:g} by the "
+            f"required {margin:g}x safety margin. Under this combination, augment_atoms's "
+            "too_similar() rejection is expected to fire on effectively every candidate, so its "
+            "uncapped outer while loop can run for a practically unbounded time (the R28 "
+            "regression). Revise sigma_range, max_relax_steps, or similarity_threshold so the "
+            "bound comfortably exceeds the threshold, then resubmit for approval."
+        )
+    return reach
 
 
 def langevin_friction(cfg):
@@ -44,8 +111,18 @@ def langevin_friction(cfg):
     raise ValueError("teacher-MD config requires friction_per_fs")
 
 
-def run_augment_atoms(cfg, seed_path, out_path):
-    """Run a configured augment-atoms wrapper without assuming its CLI version."""
+def run_augment_atoms(cfg, seed_path, out_path, *, progress_cb=None):
+    """Run a configured augment-atoms wrapper without assuming its CLI version.
+
+    Bounded via ``workflow.subprocess_runner.run_bounded`` (R28 forensic-defect correction): an
+    optional ``cfg["timeout_s"]`` wall-clock budget (``None`` means unbounded, exactly as before
+    this fix) terminates ONLY this subprocess's own process group on expiry and raises
+    ``AcquisitionTimeoutError`` -- never silently hangs the calling Controller-dispatched attempt.
+    ``progress_cb``, if given, is called with ``{"pid": <int or None>}`` at most every few seconds
+    while the subprocess is still running -- the same liveness mechanism every other trusted
+    executor uses via ``dispatch.authorize_and_execute``'s ``progress_cb`` passthrough, so a
+    long-running acquisition attempt is no longer silent between dispatch and return.
+    """
     context = {
         "config_path": str(Path(cfg["config_path"]).resolve()) if cfg.get("config_path") else "",
         "seed_path": str(Path(seed_path).resolve()),
@@ -72,12 +149,34 @@ def run_augment_atoms(cfg, seed_path, out_path):
                 "augment-atoms executable must be absolute or acquisition env must be configured"
             )
     workdir = resolve_config_path(cfg, cfg["workdir"]) if cfg.get("workdir") else None
+    config_path = cfg.get("config_path")
+    if config_path and Path(config_path).exists():
+        native_cfg = yaml.safe_load(Path(config_path).read_text(encoding="utf-8")) or {}
+        check_acquisition_feasibility(native_cfg.get("config", {}) or {})
     env = os.environ.copy()
     repo_root = Path(__file__).resolve().parents[1]
     existing_pythonpath = env.get("PYTHONPATH")
     env["PYTHONPATH"] = (str(repo_root) if not existing_pythonpath
                          else str(repo_root) + os.pathsep + existing_pythonpath)
-    subprocess.run(command, check=True, cwd=workdir, env=env)
+    timeout_s = cfg.get("timeout_s")
+    pid_box: dict = {}
+
+    def _on_start(pid):
+        pid_box["pid"] = pid
+
+    def _heartbeat():
+        if progress_cb is not None:
+            progress_cb({"pid": pid_box.get("pid")})
+
+    # stdout/stderr left as None (inherited) to preserve run_augment_atoms's pre-existing
+    # passthrough behavior exactly -- only the timeout/process-group/heartbeat wiring is new.
+    bounded = run_bounded(command, cwd=workdir, env=env, stdout=None, stderr=None,
+                         timeout_s=timeout_s, on_start=_on_start, heartbeat_cb=_heartbeat)
+    if bounded.timed_out:
+        raise AcquisitionTimeoutError(
+            f"augment-atoms command timed out after {timeout_s}s (pid={bounded.pid})")
+    if bounded.returncode != 0:
+        raise subprocess.CalledProcessError(bounded.returncode, command)
     if not Path(out_path).exists():
         raise FileNotFoundError(f"augment-atoms command produced no output: {out_path}")
     return Path(out_path)
@@ -165,7 +264,10 @@ def run_teacher_md(cfg, teacher_cfg, seed_path, out_path, capture_labels=False):
     return Path(out_path)
 
 
-def acquire(acquisition_cfg, teacher_cfg, seed_path, out_path):
+def acquire(acquisition_cfg, teacher_cfg, seed_path, out_path, *, progress_cb=None):
+    """``progress_cb``, if given, is only wired to the built-in ``augment-atoms`` recipe (see
+    ``run_augment_atoms``) -- a configured ``adapter.acquire`` callable's signature is not
+    controlled by this module, so it is invoked exactly as before, unaffected."""
     kind = acquisition_cfg["kind"]
     adapter = acquisition_cfg.get("adapter", {}).get("acquire")
     if adapter:
@@ -177,7 +279,7 @@ def acquire(acquisition_cfg, teacher_cfg, seed_path, out_path):
         validate_lineage(result)
         return result
     if kind == "augment-atoms":
-        result = run_augment_atoms(acquisition_cfg, seed_path, out_path)
+        result = run_augment_atoms(acquisition_cfg, seed_path, out_path, progress_cb=progress_cb)
         if not acquisition_cfg.get("defer_lineage_validation"):
             validate_lineage(result)
         return result

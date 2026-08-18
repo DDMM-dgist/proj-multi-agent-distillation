@@ -145,9 +145,19 @@ def default_registry() -> dict:
 def authorize_and_execute(proposal, *, registry: dict, approvals, idempotency,
                           mode: str = "dry_run", manifest_lookup=manifest_for,
                           recovery_authorization=None,
-                          progress_cb: Optional[Callable[[dict], None]] = None) -> ActionOutcome:
+                          progress_cb: Optional[Callable[[dict], None]] = None,
+                          on_dispatch_start: Optional[Callable[[], None]] = None) -> ActionOutcome:
     """Run the full enforcement pipeline for one proposed action. ``mode`` in
     {"dry_run","validate_only","primary"}; only "primary" runs a real executor.
+
+    ``on_dispatch_start``, if given, fires exactly once, immediately before the trusted executor is
+    actually invoked (i.e. only once every check through idempotency has passed and a real
+    executor exists) -- never for a dry-run, never for a pre-executor rejection (DENIED,
+    BLOCKED_CAPABILITY, APPROVAL_REQUIRED, INVALID param validation, DUPLICATE), all of which are
+    resolved before this point and never touch the (potentially long-running/hanging) executor.
+    This is the single generic hook a caller uses to durably mark "an attempt is starting" (see
+    ``workflow.controller.RunController.begin_stage_execution``) at the one point that precedes the
+    R28-class hang -- deliberately dispatch.py itself stays ignorant of the Controller.
 
     ``recovery_authorization``, if given, is a duck-typed object with a
     ``verify(*, action_type, capability=None, artifact_roles=None, resource_usage=None)`` method
@@ -231,6 +241,8 @@ def authorize_and_execute(proposal, *, registry: dict, approvals, idempotency,
         return out("DRY_RUN", "dry-run: validated, no side effects",
                    executor=(desc.executor.__name__ if desc.executor else "none"),
                    recovery_authorization_envelope_sha256=envelope_sha256)
+    if on_dispatch_start is not None:
+        on_dispatch_start()
     try:
         if progress_cb is not None and "progress_cb" in inspect.signature(desc.executor).parameters:
             artifact = desc.executor(proposal, progress_cb=progress_cb)

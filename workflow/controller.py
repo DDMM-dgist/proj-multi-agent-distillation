@@ -21,6 +21,7 @@ from workflow.contracts import (
     validate_md_manifest, validate_validation_manifest,
 )
 from workflow.review_lenses import normalize_review_lenses
+from workflow.subprocess_runner import run_bounded
 
 # Path-valued vs. pass-through-valued keys a workflow's OPTIONAL `teacher_evidence_sources` block
 # may declare -- see RunController.initialize's handling and
@@ -71,6 +72,17 @@ ADJUDICATION_SCOPE_EFFECT = "restrict_scope_to_declared_limitations"
 VALIDATION_CONTRACT_COMPONENTS = (
     "teacher_applicability_domain", "validation_scope", "dataset_split_policy",
 )
+
+# Stage EXECUTION statuses (as distinct from GATE verdicts) that record_gate will accept for a
+# non-PASS (REVISE/FAIL) verdict. R28 exposed a genuine external executor (the acquisition
+# subprocess) that never returned: the Controller had no representable terminal state for that
+# other than leaving the stage "pending"/attempts=0 forever, and record_gate's original
+# status == "completed" guard meant a stage that failed/timed out before completion could never
+# receive ANY gate verdict either -- not even FAIL. "completed" remains the ONLY status PASS may
+# ever be recorded against (see record_gate); REVISE/FAIL may additionally be recorded against a
+# stage that ran and definitively did not complete, so a hung/failed external executor can still
+# reach a truthful, resumable terminal state instead of being stuck unrepresentable.
+EXECUTION_TERMINAL_FOR_GATE = frozenset({"completed", "failed", "timed_out", "cancelled"})
 
 
 def _build_validation_contract_record(components, source_files=None):
@@ -346,6 +358,11 @@ class RunController:
             env = item.get("env")
             if env is not None and (not isinstance(env, str) or not env.strip()):
                 raise ValueError(f"stage {item['name']!r} env must be a non-empty string")
+            timeout_s = item.get("timeout_s")
+            if timeout_s is not None and (isinstance(timeout_s, bool) or
+                                          not isinstance(timeout_s, (int, float)) or
+                                          timeout_s <= 0):
+                raise ValueError(f"stage {item['name']!r} timeout_s must be a positive number")
             produces_student_results = item.get("produces_student_results", False)
             if not isinstance(produces_student_results, bool):
                 raise ValueError(
@@ -406,6 +423,7 @@ class RunController:
                            "gate_criteria": gate_criteria,
                            "gate_review_lenses": gate_review_lenses,
                            "produces_student_results": produces_student_results,
+                           "timeout_s": timeout_s,
                            "started_at": None, "completed_at": None, "attempts": 0})
         run_dir.parent.mkdir(parents=True, exist_ok=True)
         temporary = Path(tempfile.mkdtemp(prefix=f".{run_dir.name}.init-", dir=run_dir.parent))
@@ -635,21 +653,131 @@ class RunController:
             "recorded_at": now()}
         self.save()
 
-    def begin_stage_execution(self, name, *, pid=None, runner_id=""):
-        """Mark a (typically external/long) stage running WITH runner metadata so a killed run
-        can later be detected as stale. Operational only."""
+    def begin_stage_execution(self, name, *, pid=None, runner_id="", executor=None,
+                              plan_sha256=None, input_sha256=None):
+        """Mark a (typically external/long) stage RUNNING with runner metadata so a killed run
+        can later be detected as stale, AND durably record that an attempt occurred.
+
+        R28 exposed a dispatched external executor that never returned: because the Controller
+        only ever incremented ``attempts``/recorded a ``stage_execution_started`` event inside
+        ``run_stage``/``complete_external_stage`` (both of which require the external process to
+        RETURN), the canonical manifest showed attempts=0 despite three real, hours-long dispatch
+        attempts. This method is the attempt-recording point for the OTHER (non-``run_stage``)
+        external-dispatch path, so ``attempts`` and the ``stage_execution_started`` event are both
+        written at DISPATCH time, before the external process can possibly hang.
+        """
         stage = self.stage(name)
         ts = now()
         stage["status"] = "running"
+        stage["attempts"] = stage.get("attempts", 0) + 1
+        stage["started_at"] = stage.get("started_at") or ts
         stage["runner"] = {"pid": pid, "runner_id": runner_id, "started_at": ts, "last_update": ts}
+        self.state.setdefault("events", []).append({
+            "at": ts, "type": "stage_execution_started", "stage": name,
+            "attempt": stage["attempts"], "executor": executor, "pid": pid,
+            "plan_sha256": plan_sha256, "input_sha256": input_sha256,
+        })
         self.save()
 
-    def heartbeat_stage(self, name):
+    def heartbeat_stage(self, name, *, progress=None, pid=None):
+        """Record runner liveness and, when available, an ``executor_heartbeat`` progress event.
+
+        ``progress`` is an opaque, executor-supplied payload (e.g. attempted/accepted/rejected
+        acquisition candidate counts); the generic Controller mechanism works identically when a
+        caller has no detailed metrics to offer (``progress=None``). ``pid`` lets a caller that
+        only learns the real OS pid AFTER ``begin_stage_execution`` was called (e.g. a nested
+        subprocess launched deep inside a trusted executor) durably attach it once known.
+        """
         stage = self.stage(name)
         runner = stage.get("runner")
+        if runner is None:
+            return
+        ts = now()
+        runner["last_update"] = ts
+        if pid is not None:
+            runner["pid"] = pid
+        if progress is not None:
+            runner["progress"] = progress
+        elapsed_s = None
+        started = runner.get("started_at")
+        if started:
+            try:
+                elapsed_s = (dt.datetime.now(dt.timezone.utc) -
+                            dt.datetime.fromisoformat(started)).total_seconds()
+            except ValueError:
+                elapsed_s = None
+        self.state.setdefault("events", []).append({
+            "at": ts, "type": "executor_heartbeat", "stage": name,
+            "attempt": stage.get("attempts", 0), "pid": runner.get("pid"),
+            "elapsed_s": elapsed_s, "progress": progress,
+        })
+        self.save()
+
+    def _finish_stage_execution(self, name, status, *, event_type, **event_fields):
+        stage = self.stage(name)
+        if stage["status"] != "running":
+            raise RuntimeError(
+                f"stage {name!r} is not running (status={stage['status']!r}); only a running "
+                "external-executor stage can be moved to a terminal execution state"
+            )
+        ts = now()
+        stage["status"] = status
+        stage["completed_at"] = ts
+        runner = stage.get("runner")
         if runner is not None:
-            runner["last_update"] = now()
-            self.save()
+            runner["ended_at"] = ts
+        self.state.setdefault("events", []).append({
+            "at": ts, "type": event_type, "stage": name,
+            "attempt": stage.get("attempts", 0), **event_fields,
+        })
+        self.save()
+
+    def fail_stage_execution(self, name, *, reason=""):
+        """Mark a running external-executor stage FAILED: it raised/errored before completing.
+
+        Distinct from ``timeout_stage_execution`` (a bounded wall-clock budget elapsed rather than
+        the executor itself erroring). Both land in ``EXECUTION_TERMINAL_FOR_GATE``, so
+        ``record_gate`` can record REVISE/FAIL against this stage instead of it being stuck
+        unrepresentable at pending/attempts=0 (the R28 defect).
+        """
+        self._finish_stage_execution(name, "failed", event_type="stage_execution_failed",
+                                     reason=reason)
+
+    def timeout_stage_execution(self, name, *, elapsed_s=None, timeout_s=None):
+        """Mark a running external-executor stage TIMED_OUT: the Controller-owned wall-time
+        budget elapsed before the executor returned. The caller is responsible for actually
+        terminating the owned process group (see ``workflow.subprocess_runner.run_bounded``)
+        before or after calling this -- this method only records the canonical terminal state."""
+        self._finish_stage_execution(name, "timed_out", event_type="stage_execution_timed_out",
+                                     elapsed_s=elapsed_s, timeout_s=timeout_s)
+
+    def cancel_stage_execution(self, name, *, reason=""):
+        """Mark a running external-executor stage CANCELLED: an operator/policy-initiated stop,
+        as distinct from a timeout or an executor-raised failure."""
+        self._finish_stage_execution(name, "cancelled", event_type="stage_execution_cancelled",
+                                     reason=reason)
+
+    def defer_stage_execution(self, name, *, reason=""):
+        """Return a RUNNING external-executor stage to PENDING: the trusted executor determined
+        the action is legitimately still in flight elsewhere (``dispatch.ExternalActionPending``)
+        rather than completing, erroring, or timing out. Deliberately the one exception to every
+        other transition in this module landing on a terminal execution status -- dispatch.py's
+        pre-R28 contract for this exact case is "not a failure ... the SAME idempotency key can be
+        dispatched again later to re-check", and that resumable-pause behavior must not regress."""
+        stage = self.stage(name)
+        if stage["status"] != "running":
+            raise RuntimeError(
+                f"stage {name!r} is not running (status={stage['status']!r}); only a running "
+                "external-executor stage can be deferred back to pending"
+            )
+        ts = now()
+        stage["status"] = "pending"
+        stage["runner"] = None
+        self.state.setdefault("events", []).append({
+            "at": ts, "type": "stage_execution_deferred", "stage": name,
+            "attempt": stage.get("attempts", 0), "reason": reason,
+        })
+        self.save()
 
     def reconcile_stale_stages(self, *, threshold_s, current_time=None, is_pid_alive=None):
         """Clear stages stuck in 'running' after an external kill. A running stage whose runner
@@ -964,15 +1092,30 @@ class RunController:
                 command[0] = "python"
             command = ["conda", "run", "--no-capture-output", "-n", stage["env"], *command]
         stage.update(status="running", started_at=now(), attempts=stage["attempts"] + 1, gate="pending")
+        timeout_s = stage.get("timeout_s")
+        stage["runner"] = {"pid": None, "runner_id": "run_stage", "started_at": now(),
+                           "last_update": now()}
+        self.state.setdefault("events", []).append({
+            "at": now(), "type": "stage_execution_started", "stage": name,
+            "attempt": stage["attempts"], "executor": "run_stage", "pid": None,
+            "timeout_s": timeout_s,
+        })
         self.save()
         log_path = self.run_dir / "logs" / f"{name}.attempt-{stage['attempts']}.log"
         environment = os.environ.copy()
         project_dir = self.state["project_dir"]
         environment["PYTHONPATH"] = project_dir + os.pathsep + environment.get("PYTHONPATH", "")
+
+        def _on_start(pid):
+            stage["runner"]["pid"] = pid
+            self.save()
+
         with log_path.open("w") as log:
             try:
-                result = subprocess.run(command, cwd=self.run_dir, env=environment,
-                                        stdout=log, stderr=subprocess.STDOUT)
+                bounded = run_bounded(command, cwd=self.run_dir, env=environment, stdout=log,
+                                      stderr=subprocess.STDOUT, timeout_s=timeout_s,
+                                      on_start=_on_start,
+                                      heartbeat_cb=lambda: self.heartbeat_stage(name))
             except OSError as exc:
                 log.write(f"stage launch failed: {exc}\n")
                 stage.update(status="failed", completed_at=now())
@@ -981,11 +1124,20 @@ class RunController:
                                              "error": str(exc), "log": str(log_path)})
                 self.save()
                 raise RuntimeError(f"stage {name!r} could not be launched; see {log_path}") from exc
+        if bounded.timed_out:
+            stage.update(status="timed_out", completed_at=now())
+            self.state["events"].append({"at": now(), "type": "stage_execution_timed_out",
+                                         "stage": name, "attempt": stage["attempts"],
+                                         "elapsed_s": bounded.elapsed_s, "timeout_s": timeout_s,
+                                         "log": str(log_path)})
+            self.save()
+            raise RuntimeError(f"stage {name!r} timed out after {timeout_s}s; see {log_path}")
+        result_returncode = bounded.returncode
         stage["completed_at"] = now()
-        if result.returncode != 0:
+        if result_returncode != 0:
             stage["status"] = "failed"
             self.state["events"].append({"at": now(), "type": "stage_failed", "stage": name,
-                                         "returncode": result.returncode, "log": str(log_path)})
+                                         "returncode": result_returncode, "log": str(log_path)})
             self.save()
             raise RuntimeError(f"stage {name!r} failed; see {log_path}")
         output_paths = []
@@ -1075,6 +1227,11 @@ class RunController:
         self._previous_passed(name)
         stage = self.stage(name)
         self._require_validation_contract_for_student_stage(name, stage)
+        # If a caller already recorded this attempt via begin_stage_execution (status=="running"),
+        # attempts was already incremented at dispatch time -- do not count the same attempt
+        # twice. A stage arriving here still "pending" (the historical/direct-call shape) gets
+        # its attempt counted exactly as before.
+        already_counted = stage["status"] == "running"
         if not artifacts:
             raise ValueError("at least one artifact is required")
         resolved = []
@@ -1096,7 +1253,8 @@ class RunController:
         self.quarantine_artifacts({name}, exclude_paths=resolved)
         self.state["artifacts"] = [a for a in self.state["artifacts"] if a["stage"] != name]
         stage.update(status="completed", started_at=stage.get("started_at") or now(),
-                     completed_at=now(), attempts=stage["attempts"] + 1, gate="pending")
+                     completed_at=now(),
+                     attempts=stage["attempts"] + (0 if already_counted else 1), gate="pending")
         for path in resolved:
             self.register_artifact(name, path)
         self._mark_student_stage_completed(stage)
@@ -1201,8 +1359,14 @@ class RunController:
         if verdict not in {"PASS", "REVISE", "FAIL"}:
             raise ValueError("verdict must be PASS, REVISE, or FAIL")
         stage = self.stage(name)
-        if stage["status"] != "completed":
-            raise RuntimeError("a gate can only judge a completed stage")
+        if verdict == "PASS":
+            if stage["status"] != "completed":
+                raise RuntimeError("a gate can only judge a completed stage")
+        elif stage["status"] not in EXECUTION_TERMINAL_FOR_GATE:
+            raise RuntimeError(
+                "a REVISE/FAIL gate requires a stage in a terminal execution state "
+                f"({sorted(EXECUTION_TERMINAL_FOR_GATE)}); status is {stage['status']!r}"
+            )
         if verdict == "PASS":
             self._require_verified_recovery_for_pass(name)
         if verdict == "PASS" and (stage.get("contract") or {}).get("kind") == "validation_manifest":
@@ -1232,11 +1396,18 @@ class RunController:
                                      "votes": str(saved_votes) if saved_votes else None,
                                      "vote_bundle": bundle})
         if verdict != "PASS":
+            # A stage that reached a REVISE/FAIL-eligible terminal state WITHOUT ever completing
+            # (timed_out, failed, cancelled -- see EXECUTION_TERMINAL_FOR_GATE) has no registered
+            # artifacts at all; verify_stage_artifacts would reject that as an error for every
+            # OTHER gate outcome, but here a zero-artifact record is the truthful state, not a
+            # defect -- there is nothing to bind pending recovery to.
+            artifact_hashes = ({record["path"]: record["sha256"]
+                               for record in self.verify_stage_artifacts(name)}
+                              if stage["status"] == "completed" else {})
             self.state["pending_recovery"] = {
                 "status": "required", "failed_stage": name, "verdict": verdict,
                 "gate_recorded_at": gate_time,
-                "artifact_sha256": {record["path"]: record["sha256"]
-                                    for record in self.verify_stage_artifacts(name)},
+                "artifact_sha256": artifact_hashes,
                 "votes_integrity": artifact_digest(saved_votes) if saved_votes else None,
             }
         self.save()

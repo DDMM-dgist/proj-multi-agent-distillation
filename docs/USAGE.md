@@ -121,6 +121,43 @@ python -m workflow.controller status runs/<CAMPAIGN_ID>
 
 Shows each stage's status, its gate result, `pending_recovery`, and the campaign status.
 
+### 8a. External-executor lifecycle (dispatched/long-running stages)
+
+A stage whose `pydantic_ai` action is genuinely invoked (e.g. the `acquisition` stage's
+`augment-atoms` subprocess, or any other dispatched executor that can run for minutes to hours)
+moves through a bounded, fully representable lifecycle instead of only ever showing
+`pending`/`completed`:
+
+```
+pending --(dispatch: trusted executor about to run)--> running
+running --(executor returns + declared outputs present)--> completed
+running --(executor raises an ordinary, fast, synchronous error)--> pending   (deferred, retryable)
+running --(ExternalActionPending: legitimately still queued elsewhere)--> pending (deferred, resumable)
+running --(Controller-owned wall-time budget elapses)--> timed_out            (terminal)
+running --(executor operationally cancelled)--> cancelled                    (terminal)
+```
+
+`attempts` is incremented and a `stage_execution_started` event is recorded the moment the stage
+enters `running` — **at dispatch time**, before the executor can possibly hang — so a killed or
+still-hanging process is never lost as an unaccounted attempt. While `running`, a heartbeat
+(`executor_heartbeat` events, carrying `pid`/`elapsed_s`/an executor-supplied `progress` payload)
+is recorded periodically if the executor reports progress.
+
+Only `completed` is eligible for a **PASS** gate. `timed_out`, `failed`, and `cancelled` are all
+eligible for a **REVISE**/**FAIL** gate (`record_gate` accepts any of them) — an execution that
+never completed is not stuck unrepresentable; it can still route straight into the same
+propose-recovery / approve-recovery / start-iteration path described in §10.
+
+A dispatched external executor with a configured `timeout_s` runs under
+`workflow.subprocess_runner.run_bounded`: the subprocess is launched in its own process group, and
+if the wall-time budget elapses, ONLY that process group is terminated (SIGTERM, then SIGKILL
+after a grace period) — never any other process on the host. The acquisition adapter
+(`adapters.acquisition.run_augment_atoms`) additionally runs a static feasibility pre-check
+(`check_acquisition_feasibility`) before dispatching a subprocess at all: if the configured
+`sigma_range`/`max_relax_steps`/`similarity_threshold` combination cannot plausibly ever satisfy
+augment-atoms's own rejection-sampling acceptance criterion, the stage is rejected immediately
+(fast, deterministic, pre-dispatch) instead of hanging.
+
 ## 9. PASS / REVISE / FAIL
 
 After a stage is executed and its declared outputs validate, it is gated:
