@@ -123,5 +123,52 @@ class DftComparisonAssertionGatingTests(unittest.TestCase):
         self.assertEqual(validated.failure_category, "reference_disagreement")
 
 
+# --- R31 forensic finding: the recovery Analyst cited a plausible-but-wrong artifact path
+# ('artifacts/train.extxyz') when the registered path is 'artifacts/dataset/train.extxyz'. The
+# validator already fails closed on any unregistered path; the minimal grounding fix only makes the
+# rejection ACTIONABLE by pointing a basename near-miss at the real registered path, so a retry
+# cites the true path instead of re-inventing one. It must NOT widen what is accepted.
+@unittest.skipUnless(_HAS_PYDANTIC, "pydantic not installed")
+class InventedArtifactPathGroundingTests(unittest.TestCase):
+    def _validate(self, c, available):
+        from runtimes.pydantic_ai.root_cause import validate_root_cause_classification
+        return validate_root_cause_classification(
+            c, available_artifacts=available, valid_recovery_targets=TARGETS)
+
+    def test_basename_near_miss_surfaced_in_rejection(self):
+        from runtimes.pydantic_ai.models import EvidenceReference
+        from runtimes.pydantic_ai.root_cause import RootCauseValidationError
+        available = {"runs/r/artifacts/dataset/train.extxyz", "runs/r/committee/u.json"}
+        bad = _classification(
+            evidence_refs=[EvidenceReference(role="x", path="runs/r/artifacts/train.extxyz")],
+            affected_artifact_refs=[EvidenceReference(role="x", path="runs/r/committee/u.json")])
+        with self.assertRaises(RootCauseValidationError) as ctx:
+            self._validate(bad, available)
+        msg = str(ctx.exception)
+        self.assertIn("did you mean", msg)
+        self.assertIn("runs/r/artifacts/dataset/train.extxyz", msg)
+
+    def test_no_hint_when_basename_has_no_registered_match(self):
+        from runtimes.pydantic_ai.models import EvidenceReference
+        from runtimes.pydantic_ai.root_cause import RootCauseValidationError
+        available = {"runs/r/committee/u.json"}
+        bad = _classification(
+            evidence_refs=[EvidenceReference(role="x", path="runs/r/nowhere/mystery.json")])
+        with self.assertRaises(RootCauseValidationError) as ctx:
+            self._validate(bad, available)
+        self.assertNotIn("did you mean", str(ctx.exception))
+
+    def test_hint_does_not_accept_invented_path(self):
+        # The near-miss hint is diagnostic only: a classification citing the wrong path is still
+        # rejected, never silently accepted or rewritten to the suggested path.
+        from runtimes.pydantic_ai.models import EvidenceReference
+        from runtimes.pydantic_ai.root_cause import RootCauseValidationError
+        available = {"runs/r/artifacts/dataset/train.extxyz"}
+        bad = _classification(
+            evidence_refs=[EvidenceReference(role="x", path="runs/r/artifacts/train.extxyz")])
+        with self.assertRaises(RootCauseValidationError):
+            self._validate(bad, available)
+
+
 if __name__ == "__main__":  # pragma: no cover
     unittest.main()

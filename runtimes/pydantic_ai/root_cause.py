@@ -124,6 +124,26 @@ def _asserts_dft_comparison(classification: "RootCauseClassification") -> bool:
             or category == "reference_disagreement")
 
 
+def _near_miss_hint(missing, available) -> str:
+    """Return a ' (did you mean ...)' hint pointing an invented path at the registered artifact
+    that shares its basename, if any. Grounding aid only: it never widens what is accepted (the
+    caller still raises); it just makes the rejection actionable so a retry cites the real,
+    controller-registered path instead of re-inventing a plausible-but-wrong one (R31 forensic
+    finding: analyst cited 'artifacts/train.extxyz' when the registered path is
+    'artifacts/dataset/train.extxyz')."""
+    from os.path import basename
+    by_base: dict[str, list[str]] = {}
+    for path in available:
+        by_base.setdefault(basename(path), []).append(path)
+    suggestions = []
+    for path in missing:
+        for real in sorted(by_base.get(basename(path), [])):
+            suggestions.append(f"{path} -> {real}")
+    if not suggestions:
+        return ""
+    return " (did you mean: " + "; ".join(suggestions) + ")"
+
+
 def validate_root_cause_classification(classification: RootCauseClassification, *,
                                        available_artifacts, valid_recovery_targets,
                                        dft_comparison_evidence_present: bool = True,
@@ -158,7 +178,9 @@ def validate_root_cause_classification(classification: RootCauseClassification, 
             [r.path for r in classification.affected_artifact_refs]
     missing = [p for p in cited if p not in available]
     if missing:
-        raise RootCauseValidationError(f"cites nonexistent artifact(s): {missing}")
+        raise RootCauseValidationError(
+            f"cites nonexistent artifact(s): {missing}"
+            + _near_miss_hint(missing, available))
     if not classification.evidence_refs:
         raise RootCauseValidationError("classification has no evidence_refs (missing evidence)")
     if classification.recommended_recovery_target not in set(valid_recovery_targets):

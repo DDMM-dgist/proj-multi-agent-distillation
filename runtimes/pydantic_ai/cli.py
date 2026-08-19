@@ -220,6 +220,63 @@ def _selective_provenance_inputs(controller, stage_name):
     return paths
 
 
+def _committee_training_gate_evidence(controller, declared, provenance_inputs):
+    """Surface a compact, verified training-evidence summary in place of the raw multi-seed
+    committee OUTPUT DIRECTORY for the training gate's bounded evidence.
+
+    Detected generically off the declared outputs' own shape -- a ``student_committee.manifest.json``
+    (the committee manifest contract) alongside a committee output DIRECTORY -- never a hardcoded
+    stage name. When that shape is present, the committee directory (whose ``artifact_digest`` is a
+    ~1,500-entry per-file listing of intermediate feature-cache files -- filesystem noise that told
+    earlier Judges nothing about what was trained, and even misled one into reading a single seed's
+    cache files as "multiple runs") is dropped from the EVIDENCE packet and replaced by a small
+    semantic summary (dataset provenance, committee/checkpoint identity + hashes, per-seed training
+    dynamics from the real LOGs, and deterministic verification of the checkpoint/provenance claims;
+    see runtimes.pydantic_ai.training_evidence). This changes ONLY the LLM-facing evidence: the
+    committee directory's canonical ``artifact_digest`` and its Controller-registered artifact
+    record (with the full tree ``sha256`` the summary re-surfaces) are untouched, as are the
+    committee manifest and all provenance inputs, which remain in the packet unchanged.
+    """
+    declared_paths = [Path(p) for p in declared]
+    manifest = next((p for p in declared_paths
+                     if p.name == "student_committee.manifest.json" and p.is_file()), None)
+    committee_dir = next((p for p in declared_paths if p.is_dir()), None)
+    if manifest is None or committee_dir is None:
+        return [str(p) for p in declared_paths] + list(provenance_inputs)
+    from .training_evidence import write_training_evidence_summary
+    summary_path = write_training_evidence_summary(controller.run_dir)
+    kept = [p for p in declared_paths if p.resolve() != committee_dir.resolve()]
+    return [str(p) for p in kept] + [str(summary_path)] + list(provenance_inputs)
+
+
+def _stage_input_artifact_paths(proposal, artifacts):
+    """Scope the producer evidence packet to the artifacts a stage actually consumes.
+
+    The producer only ECHOES the Controller's authoritative proposal, so its evidence packet
+    should show the stage's declared inputs -- the artifact paths named in the proposal's
+    parameters -- not the whole accumulated artifact registry, which grows every stage and past a
+    point drives a small local producer model to emit an empty proposal skeleton. Falls back to the
+    full registry when no parameter names a registered artifact, preserving prior behavior for
+    stages that declare no artifact-valued parameters.
+    """
+    referenced = set()
+
+    def _collect(value):
+        if isinstance(value, str):
+            referenced.add(value)
+        elif isinstance(value, dict):
+            for item in value.values():
+                _collect(item)
+        elif isinstance(value, (list, tuple)):
+            for item in value:
+                _collect(item)
+
+    _collect((proposal or {}).get("parameters") or {})
+    all_paths = [a["path"] for a in artifacts]
+    scoped = [p for p in all_paths if p in referenced]
+    return scoped or all_paths
+
+
 def _teacher_validation_not_applicable_reason(controller, stage_name, stage_cfg):
     """Return a non-empty reason string iff ``stage_name`` declares an OPTIONAL
     ``teacher_validation_component`` -- this stage/executor's STATIC CAPABILITY: which generic
@@ -1385,7 +1442,7 @@ def run_production_stage(controller, stage_name, *, runtime, agent_specs_dir="ag
             return StageRunResult("PLAN_INPUT_REQUIRED", EXIT_VALIDATION_REJECTED, message)
         raise
     evidence_path = c.run_dir / "exchange" / "bounded_evidence" / f"{stage_name}.json"
-    upstream = [a["path"] for a in c.state.get("artifacts", [])]
+    upstream = _stage_input_artifact_paths(proposal, c.state.get("artifacts", []))
     upstream += _selective_provenance_inputs(c, stage_name)
     build_bounded_evidence(upstream, evidence_path, protocol_refs=[c.state.get("workflow_config")])
     specs = load_agent_specs(agent_specs_dir)
@@ -1576,7 +1633,8 @@ def run_production_stage(controller, stage_name, *, runtime, agent_specs_dir="ag
                               "controller stage did not complete", action_status=status)
     emitter.emit("artifact_registered", stage=stage_name,
                 detail={"artifacts": [str(p) for p in declared]})
-    gate_evidence_artifacts = declared + _selective_provenance_inputs(c, stage_name)
+    gate_evidence_artifacts = _committee_training_gate_evidence(
+        c, declared, _selective_provenance_inputs(c, stage_name))
     build_bounded_evidence(gate_evidence_artifacts, evidence_path,
                            protocol_refs=[c.state.get("workflow_config")],
                            validation_outcomes=_stage_validation_outcomes(c, stage_name))

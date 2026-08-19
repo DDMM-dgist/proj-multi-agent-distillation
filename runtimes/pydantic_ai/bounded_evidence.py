@@ -10,6 +10,11 @@ from workflow.integrity import artifact_digest, sha256_file
 
 MAX_EVIDENCE_BYTES = 256 * 1024
 DIRECT_JUDGE_ARTIFACT_BYTES = 1_000_000
+# Cap on the number of per-file entries inlined into an LLM-facing directory summary. The
+# canonical `artifact_digest` still hashes the COMPLETE tree; this only bounds the *evidence*
+# representation so a large output directory (e.g. a multi-seed committee) cannot blow
+# MAX_EVIDENCE_BYTES. 64 keeps a rich, deterministic sample while staying well under the cap.
+EVIDENCE_DIRECTORY_FILE_CAP = 64
 
 # --- Extensible JSON-evidence adapter registry -------------------------------------------------
 #
@@ -383,6 +388,29 @@ def _split_membership_manifest_summary(payload: dict) -> dict:
     }
 
 
+def _training_evidence_summary(payload: dict) -> dict:
+    """Pass through the already-compact, self-declared training-evidence summary (see
+    runtimes.pydantic_ai.training_evidence.build_training_evidence_summary) so the training gate's
+    Judges see its semantic content -- dataset provenance, committee/checkpoint identity, per-seed
+    training dynamics, and deterministic verification outcomes -- rather than only its top-level
+    key names. The artifact is bounded by construction (a fixed committee of seeds, no raw vectors
+    or per-file cache listings), so it is surfaced verbatim except for the redundant schema fields
+    the generic ``_json_summary`` already reports."""
+    return {
+        "run_id": payload.get("run_id"),
+        "dataset_provenance": payload.get("dataset_provenance"),
+        "committee": payload.get("committee"),
+        "training_dynamics": payload.get("training_dynamics"),
+        "verification_outcomes": payload.get("verification_outcomes"),
+        "all_verifications_passed": payload.get("all_verifications_passed"),
+    }
+
+
+register_json_evidence_adapter(
+    "training_evidence_summary",
+    lambda payload: payload.get("profile") == "training_evidence_summary",
+    _training_evidence_summary,
+)
 register_json_evidence_adapter(
     "structural_coverage_evidence", _is_directed_coverage_evidence,
     _structural_coverage_evidence_summary,
@@ -393,12 +421,42 @@ register_json_evidence_adapter(
 )
 
 
+def _compact_directory_integrity(integrity: dict) -> dict:
+    """Bound the LLM-facing representation of a directory's integrity digest.
+
+    ``artifact_digest`` returns the COMPLETE per-file ``files`` list for a directory tree; that is
+    the canonical, tamper-evident record and is left untouched in Controller state. For the
+    bounded *evidence* packet a large tree (e.g. a multi-seed committee with thousands of
+    intermediate cache files) would overflow ``MAX_EVIDENCE_BYTES``, so this trims the inlined
+    listing to a deterministic head of ``EVIDENCE_DIRECTORY_FILE_CAP`` entries. The aggregate tree
+    ``sha256`` and total ``size`` already preserve full integrity; ``n_files``/``n_files_omitted``
+    make the truncation explicit. Non-directory or already-small digests pass through unchanged
+    (a directory at/below the cap keeps its full listing with ``n_files_omitted == 0``). File
+    order is the sorted-by-relative-path order ``artifact_digest`` already produces, so the sample
+    is stable and reproducible -- never dependent on filesystem traversal order.
+    """
+    if not isinstance(integrity, dict) or integrity.get("kind") != "directory":
+        return integrity
+    files = integrity.get("files")
+    if not isinstance(files, list):
+        return integrity
+    shown = files[:EVIDENCE_DIRECTORY_FILE_CAP]
+    return {
+        "kind": integrity.get("kind"),
+        "size": integrity.get("size"),
+        "sha256": integrity.get("sha256"),
+        "n_files": len(files),
+        "files_shown": shown,
+        "n_files_omitted": len(files) - len(shown),
+    }
+
+
 def summarize_artifact(path: str | Path, *, split_crosswalk: dict | None = None) -> dict:
     path = Path(path).resolve()
     suffix = path.suffix.lower()
     summary = {
         "artifact_path": str(path),
-        "integrity": artifact_digest(path),
+        "integrity": _compact_directory_integrity(artifact_digest(path)),
         "summary_kind": "generic",
         "evidence_gaps": [],
     }
