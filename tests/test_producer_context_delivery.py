@@ -80,7 +80,8 @@ class _CaptureRuntime:
                                 runtime_version=f"{RUNTIME_VERSION}+capture")
 
 
-def _fake_train_committee(student_config, dataset, output_dir, manifest_path):
+def _fake_train_committee(student_config, dataset, output_dir, manifest_path,
+                          *, continue_from=None, total_epoch_override=None):
     out_dir = Path(output_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
     model = out_dir / "seed-1"

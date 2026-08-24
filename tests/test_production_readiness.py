@@ -651,6 +651,8 @@ class ProductionReadinessTests(unittest.TestCase):
                 state = {"run_id": "r"}
                 def stage(self, _name):
                     return {"status": "completed", "attempts": 1, "gate": "pending"}
+                def _current_iteration(self):
+                    return {"id": 1}
             from runtimes.pydantic_ai.bounded_evidence import build_bounded_evidence
             build_bounded_evidence([small, large], evidence, validation_outcomes=[{"result":"PASS"}])
             task = _judge_task("s", 1, gate_context["review_lenses"][0], gate_context, evidence, C())

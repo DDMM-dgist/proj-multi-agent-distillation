@@ -26,7 +26,8 @@ def _artifact(value, kind, seed=None):
     return ModelArtifact(kind=kind, path=Path(value), seed=seed).require_exists()
 
 
-def train_student(cfg, dataset_path, out_dir, seed):
+def train_student(cfg, dataset_path, out_dir, seed, *, continue_from=None,
+                  total_epoch_override=None):
     """Train one committee member.
 
     cfg: configs/student.<name>.yaml, already loaded.
@@ -35,15 +36,28 @@ def train_student(cfg, dataset_path, out_dir, seed):
         performed by an explicit project-specific stage.
     out_dir: where to write the checkpoint + logs for this seed.
     seed: int, the committee member's random seed.
+    continue_from: optional path to a prior checkpoint for TRUE RESUME (restores
+        model/optimizer/normalization state and continues from its epoch). None =>
+        fresh training. Only the simple-nn trainer supports this today.
+    total_epoch_override: optional MAXIMUM total epoch budget that overrides the
+        config's train.total_epoch (used by continuation recovery).
     """
     kind = cfg["kind"]
     out_dir = Path(out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
     adapter = cfg.get("adapter", {})
     if adapter.get("train"):
+        if continue_from is not None or total_epoch_override is not None:
+            raise NotImplementedError(
+                "continue_from/total_epoch_override are not supported for a custom "
+                "adapter.train callable; add support in the adapter or use the simple-nn trainer")
         return _artifact(_callable(adapter["train"])(cfg, dataset_path, out_dir, int(seed)),
                          kind, int(seed))
     if cfg.get("train", {}).get("command"):
+        if continue_from is not None or total_epoch_override is not None:
+            raise NotImplementedError(
+                "continue_from/total_epoch_override are not supported for a raw train.command; "
+                "use the simple-nn trainer or extend the command template")
         context = {"dataset_path": str(Path(dataset_path).resolve()),
                    "out_dir": str(out_dir.resolve()), "seed": int(seed),
                    "project_dir": cfg.get("_project_dir", str(Path.cwd()))}
@@ -65,6 +79,15 @@ def train_student(cfg, dataset_path, out_dir, seed):
         raise NotImplementedError(
             f"student kind={kind!r} requires adapter.train or train.command"
         )
+    if kind == "simple-nn":
+        return _artifact(
+            _train_simple_nn(cfg, dataset_path, out_dir, seed,
+                             continue_from=continue_from,
+                             total_epoch_override=total_epoch_override),
+            kind, int(seed))
+    if continue_from is not None or total_epoch_override is not None:
+        raise NotImplementedError(
+            f"continue_from/total_epoch_override are not supported for student kind={kind!r}")
     return _artifact(trainers[kind](cfg, dataset_path, out_dir, seed), kind, int(seed))
 
 
@@ -104,7 +127,8 @@ def _train_mock(cfg, dataset_path, out_dir, seed):
     )
 
 
-def _train_simple_nn(cfg, dataset_path, out_dir, seed):
+def _train_simple_nn(cfg, dataset_path, out_dir, seed, *, continue_from=None,
+                     total_epoch_override=None):
     """Run one SIMPLE-NN v2 seed through the configured CLI wrapper."""
     train_cfg = cfg["train"]
     rendered_config = _render_simple_nn_config(cfg, out_dir)
@@ -112,6 +136,8 @@ def _train_simple_nn(cfg, dataset_path, out_dir, seed):
     module = runner.get("module", "adapters.simple_nn_v2_wrapper")
     env = train_cfg.get("env")
     prefix = ["conda", "run", "-n", env, "python"] if env else [sys.executable]
+    total_epoch = int(total_epoch_override) if total_epoch_override is not None \
+        else int(train_cfg["total_epoch"])
     cmd = prefix + [
         "-m", module,  # override train.runner.module for the installed SIMPLE-NN wrapper
         "--config", str(rendered_config),
@@ -122,10 +148,16 @@ def _train_simple_nn(cfg, dataset_path, out_dir, seed):
         "--dataset", str(dataset_path),
         "--out", str(out_dir),
         "--seed", str(seed),
-        "--epochs", str(train_cfg["total_epoch"]),
+        "--epochs", str(total_epoch),
         "--precision", "double" if train_cfg.get("double_precision") else "single",
         "--batch-size", str(train_cfg["batch_size"]),
     ]
+    if continue_from is not None:
+        checkpoint = Path(continue_from)
+        if not checkpoint.is_file():
+            raise FileNotFoundError(
+                f"continue_from checkpoint for seed {seed} not found: {checkpoint}")
+        cmd += ["--continue-from", str(checkpoint.resolve())]
     if train_cfg.get("use_stress"):
         cmd += ["--use-stress", "--stress-loss-weight", str(train_cfg.get("stress_loss_weight", 0.1))]
     policy = (cfg.get("struct_weight_policy") or {}).get("name", "").strip().lower()

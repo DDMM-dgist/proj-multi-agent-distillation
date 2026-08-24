@@ -64,6 +64,9 @@ def _build_parser() -> argparse.ArgumentParser:
     approve.add_argument("--note", required=True)
     approve.add_argument("--plan-sha256", default=None,
                          help="optional exact AcquisitionPlan SHA256 binding for acquire_structures")
+    approve.add_argument("--action-type", default=None,
+                         help="exact action this approval authorizes (e.g. label_with_teacher); "
+                              "binds the grant so it cannot authorize any other action")
     stage = sub.add_parser("run-stage", help="run one production-routed stage")
     stage.add_argument("--run-dir", required=True)
     stage.add_argument("--stage", required=True)
@@ -108,6 +111,38 @@ def _build_parser() -> argparse.ArgumentParser:
                           help="suppress console progress output (durable event log is unaffected)")
     campaign.add_argument("--json-events", action="store_true",
                           help="stream progress events as JSON lines instead of human-readable text")
+    bind_closure = sub.add_parser(
+        "bind-closure",
+        help="bind the Framework-V2 closure review contracts (DeploymentScope + one frozen "
+             "StageReviewSpec per stage) onto a run so record_gate enforces the CanonicalReviewPacket "
+             "/ JudgeReview path")
+    bind_closure.add_argument("--run-dir", required=True)
+    bind_closure.add_argument("--scope-contract", required=True,
+                              help="path to the DeploymentScopeContract JSON to bind as the run's "
+                                   "single scope source of truth")
+    bind_closure.add_argument("--stage", action="append", default=[],
+                              help="canonical stage value to bind a default StageReviewSpec to; "
+                                   "repeatable (omit to bind all stages that have a gate)")
+    bind_closure.add_argument("--validation-profile-version", type=int, default=1)
+    bind_closure.add_argument("--convergence-policy", default=None,
+                              help="path to a ConvergencePolicy JSON to bind on stages whose "
+                                   "StageReviewSpec requires convergence_report evidence; when "
+                                   "omitted the framework default policy is bound so the "
+                                   "convergence gate is never silently skipped")
+    bind_sci = sub.add_parser(
+        "bind-scientific-policies",
+        help="attach typed scientific-adequacy policies to a run BEFORE any relevant Student "
+             "evidence exists; the framework refuses to overwrite an existing binding with a "
+             "different content-hash (idempotent on identical content).")
+    bind_sci.add_argument("--run-dir", required=True)
+    bind_sci.add_argument("--policy-file", action="append", default=[], required=True,
+                          metavar="STAGE:KIND:PATH",
+                          help="repeatable; e.g. 'evaluation:EvaluationAdequacyPolicyV2:candidates/1.json'")
+    bind_sci.add_argument("--source-ref", default="operator-bound-at-init",
+                          help="provenance reference recorded with every binding")
+    bind_sci.add_argument("--allow-not-required", action="store_true",
+                          help="bind with required=False (advisory only, does not block gate PASS); "
+                               "default is required=True for canonical campaign use")
     approve_recovery = sub.add_parser(
         "approve-recovery", help="record explicit human approval for a proposed recovery")
     approve_recovery.add_argument("--run-dir", required=True)
@@ -177,6 +212,68 @@ def _stage_config(controller, stage_name):
         if stage.get("name") == stage_name:
             return stage
     return {}
+
+
+def _split_membership_manifest_sources(controller):
+    """Return the resolved paths of the run's authoritative source->split crosswalk manifest(s):
+    every ``teacher_evidence_sources.split_source_manifest_paths`` entry the run declared at init,
+    plus every bound Controller input that a ``recovered-original-holdout`` (or other evidence-
+    bearing) reference auto-bound as its split manifest (input event ``auto_bound_split_manifest_for``).
+
+    These are surfaced (lineage-only) in a stage's bounded evidence so ``build_split_crosswalk`` can
+    join every recovered held-out frame's per-frame lineage keys (``source_category`` +
+    ``source_local_index``) against authoritative split membership -- the missing link that made
+    reference_validation's frames all report source-split-unjoined / domain unknown despite carrying
+    the join keys (see FE-032). Generic: driven by the ``teacher_evidence_sources`` /
+    evidence-bearing-reference provenance contract, never a material/filename or a hardcoded stage.
+    A frame that carries no lineage keys simply does not join -- surfacing the crosswalk is inert
+    for such a stage. Deduplicated by resolved path; only paths that exist on disk are returned."""
+    paths = []
+    seen = set()
+
+    def _add(raw):
+        if not raw:
+            return
+        resolved = str(Path(raw).resolve())
+        if resolved in seen or not Path(resolved).exists():
+            return
+        seen.add(resolved)
+        paths.append(resolved)
+
+    sources = controller.state.get("teacher_evidence_sources") or {}
+    for declared in sources.get("split_source_manifest_paths", []) or []:
+        _add(declared)
+    auto_bound = {
+        e.get("source") for e in controller.state.get("events", [])
+        if e.get("type") == "input_bound" and e.get("auto_bound_split_manifest_for")}
+    for record in controller.state.get("inputs", []):
+        if record.get("source") in auto_bound:
+            _add(record.get("snapshot") or record.get("source"))
+    return paths
+
+
+def _reference_validation_readiness(controller, proposal, *, report_path=None):
+    """Deterministic criterion-evidence record for a Teacher-vs-DFT reference_validation proposal, or
+    None when the proposal is not such an action (see reference_validation_readiness). Passes the
+    run's authoritative source->split crosswalk manifest(s) so the lineage-join criterion is
+    computed against real split membership. Used pre-execution (fail-closed preflight, report_path
+    absent) and post-execution (gate-packet criterion surfacing, report_path present)."""
+    from .reference_validation_readiness import compute_reference_validation_evidence
+    return compute_reference_validation_evidence(
+        controller, proposal, split_manifest_paths=_split_membership_manifest_sources(controller),
+        report_path=report_path)
+
+
+def _acquisition_readiness(controller, proposal, *, report_path=None):
+    """Deterministic criterion-evidence record for an ``acquire_structures`` proposal, or None when
+    the proposal is not that action (see acquisition_readiness). Surfaces the parent->pool join,
+    per-parent deployment-domain mapping (resolved from the run's OWN bound frozen
+    scope-classification evidence), and selection-control attestations into the acquisition gate
+    packet so a Judge can VERIFY each criterion against deterministic evidence rather than infer it
+    from the raw manifest. Evidence surfacing only: never re-selects structures or changes any
+    AcquisitionPlan field."""
+    from .acquisition_readiness import compute_acquisition_evidence
+    return compute_acquisition_evidence(controller, proposal, report_path=report_path)
 
 
 def _selective_provenance_inputs(controller, stage_name):
@@ -249,7 +346,63 @@ def _committee_training_gate_evidence(controller, declared, provenance_inputs):
     return [str(p) for p in kept] + [str(summary_path)] + list(provenance_inputs)
 
 
-def _stage_input_artifact_paths(proposal, artifacts):
+def _gate_lineage_only_artifacts(gate_evidence_artifacts):
+    """Which gate-evidence artifacts should be surfaced lineage/integrity-only (see
+    bounded_evidence.lineage_reference_summary) rather than fully summarized.
+
+    Shape-detected, never a stage name: when the packet already carries a four-channel
+    accuracy_report.json (which surfaces the exact evaluation population and every fidelity metric,
+    aggregate + domain/configuration-family resolved), the co-declared raw per-frame predictions
+    ``.extxyz`` is redundant SCIENTIFIC content for the gate. Surfacing it lineage-only keeps its
+    deterministic provenance/hash binding while dropping its bulky per-frame distribution, so the
+    Judge is not required to infer fidelity from a large extxyz artifact and the packet stays within
+    the Judge context budget. Returns [] (no change) for any packet without a four-channel report.
+    """
+    from .bounded_evidence import _is_four_channel_accuracy_report
+
+    paths = [Path(p) for p in gate_evidence_artifacts]
+    has_four_channel = False
+    for p in paths:
+        if p.suffix.lower() == ".json" and p.is_file():
+            try:
+                payload = json.loads(p.read_text(encoding="utf-8"))
+            except Exception:
+                continue
+            if _is_four_channel_accuracy_report(payload):
+                has_four_channel = True
+                break
+    if not has_four_channel:
+        return []
+    return [str(p) for p in paths if p.suffix.lower() in {".xyz", ".extxyz"}]
+
+
+def _is_gate_only_correction_regate(controller, stage_name):
+    """True when the current iteration is an audited evidence-surfacing correction re-gate (see
+    RunController.open_correction_iteration) of a stage that is ALREADY completed with all of its
+    declared outputs present on disk.
+
+    In that case the stage's production action must NOT be re-executed: the correction re-gate only
+    re-surfaces corrected evidence and re-judges the SAME, already-accepted authoritative outputs
+    (directive: "re-run ONLY the evidence/gate path"; do not rerun a deterministic executor merely
+    to obtain a fresh Judge identity). Generic -- keyed off the correction-iteration trigger marker
+    and the stage's own completion/outputs, never a hardcoded stage name.
+    """
+    iteration = controller.state["iterations"][-1]
+    trigger = iteration.get("trigger") or {}
+    if trigger.get("kind") != "evidence_surfacing_correction":
+        return False
+    if trigger.get("regate_stage") not in (None, stage_name):
+        return False
+    stage = controller.stage(stage_name)
+    if stage.get("status") != "completed":
+        return False
+    outputs = stage.get("outputs", [])
+    if not outputs:
+        return False
+    return all((controller.run_dir / rel).exists() for rel in outputs)
+
+
+def _stage_input_artifact_paths(proposal, artifacts, own_outputs=()):
     """Scope the producer evidence packet to the artifacts a stage actually consumes.
 
     The producer only ECHOES the Controller's authoritative proposal, so its evidence packet
@@ -258,6 +411,14 @@ def _stage_input_artifact_paths(proposal, artifacts):
     point drives a small local producer model to emit an empty proposal skeleton. Falls back to the
     full registry when no parameter names a registered artifact, preserving prior behavior for
     stages that declare no artifact-valued parameters.
+
+    A stage's OWN declared outputs (``own_outputs``) are always excluded, even when the proposal's
+    parameters name them (evaluation, for instance, names its ``report_path``/``labeled_output``
+    outputs). The producer proposes to PRODUCE those outputs; it must never receive its own prior
+    outputs as input evidence. On a first run this is a no-op (the outputs aren't registered
+    artifacts yet); on a re-gate re-run it prevents a stale prior output -- e.g. a fully expanded
+    accuracy_report.json -- from ballooning the producer prompt. The GATE evidence packet is built
+    separately from the declared outputs and is unaffected.
     """
     referenced = set()
 
@@ -272,7 +433,8 @@ def _stage_input_artifact_paths(proposal, artifacts):
                 _collect(item)
 
     _collect((proposal or {}).get("parameters") or {})
-    all_paths = [a["path"] for a in artifacts]
+    excluded = {str(Path(p).resolve()) for p in own_outputs}
+    all_paths = [a["path"] for a in artifacts if str(Path(a["path"]).resolve()) not in excluded]
     scoped = [p for p in all_paths if p in referenced]
     return scoped or all_paths
 
@@ -409,6 +571,19 @@ def _default_stage_route(stage_name):
         "teacher_md": ("simulation", "run_teacher_md", "production_md"),
         "deployment_md": ("simulation", "run_student_md", "production_md"),
     }.get(stage_name)
+
+
+def _stage_route_action(controller, stage_name):
+    """Resolve a stage's action_type the SAME way ``_proposal_from_stage`` does -- from the
+    stage's own ``pydantic_ai.action`` route metadata, falling back to ``_default_stage_route`` --
+    WITHOUT building a proposal, binding a plan, or touching any executor. Used only to decide,
+    cheaply and side-effect-free, whether the next eligible stage is the acquisition stage so its
+    (expensive) autonomous planning can be deferred until that stage is genuinely entered."""
+    route = _stage_config(controller, stage_name).get("pydantic_ai") or {}
+    if route:
+        return route.get("action")
+    default = _default_stage_route(stage_name)
+    return default[1] if default else None
 
 
 def _input_source(controller, contains=None, suffix=None, exclude_contains=None):
@@ -646,6 +821,16 @@ def _proposal_from_stage(controller, stage_name, stage_cfg):
             if existing is not None and str(Path(existing).resolve()) != protected_reference:
                 raise ValueError("stage proposal reference_yaml does not match the controller-bound protected reference")
             params["reference_yaml"] = protected_reference
+    if action == "acquire_structures" and not (
+            params.get("acquisition_plan_path") or params.get("acquisition_plan")):
+        # An AcquisitionPlan bound to the run (autonomously by the run-campaign planner, or supplied
+        # as a human input at init) is a first-class controller input; resolve it into the stage
+        # proposal here so the acquisition executor consumes it WITHOUT the workflow.yaml or a human
+        # having to hard-code a per-run plan path. Only the auto-fill is generic -- the downstream
+        # bound-input identity/hash check (``_bind_acquisition_plan_for_stage``) stays fail-closed.
+        bound_plan_path = _resolve_bound_acquisition_plan(controller)
+        if bound_plan_path is not None:
+            params["acquisition_plan_path"] = bound_plan_path
     if action == "generate_run_summary":
         # The state snapshot is ALWAYS freshly assembled from the current Controller state right
         # before dispatch -- never taken from a config-supplied path -- so the Analyst can never
@@ -693,10 +878,78 @@ def _run_bound_input_paths(controller):
     return paths
 
 
+def _resolve_bound_acquisition_plan(controller):
+    """Return the resolved path of the run's single canonically-bound AcquisitionPlan input, or
+    ``None`` if none is bound. Identifies a plan input by its ``*acquisition_plan.json`` source
+    (the same identity ``default_acquisition_provider._acquisition_plan_already_bound`` uses) and
+    returns the content-addressed ``snapshot`` (falling back to ``source``) so the value is always a
+    member of ``_run_bound_input_paths`` -- the downstream ``_bind_acquisition_plan_for_stage`` gate
+    stays fail-closed on that membership + the plan's own field/hash validation. Fails closed if more
+    than one acquisition-plan input is bound (an ambiguous run whose plan identity is not unique)."""
+    matches = []
+    for record in controller.state.get("inputs", []):
+        if record.get("superseded"):
+            continue
+        source = record.get("source") or ""
+        if str(source).endswith("acquisition_plan.json"):
+            raw = record.get("snapshot") or record.get("source")
+            matches.append(str(Path(raw).resolve()))
+    if not matches:
+        return None
+    if len(set(matches)) > 1:
+        raise ValueError(
+            "PLAN_INPUT_REQUIRED: multiple acquisition_plan inputs are bound to this run; "
+            "the acquisition plan identity is ambiguous")
+    return matches[0]
+
+
+def _acquisition_incurs_teacher_inference(acquisition_config_path) -> bool:
+    """Deterministically classify whether an acquisition recipe performs Teacher inference, from the
+    ACTUAL bound acquisition config -- never a self-asserted flag. This is the typed
+    capability/effect signal ``actions.resolve_action_approval_boundary`` consumes to decide whether
+    ``acquire_structures`` genuinely needs the ``costly_teacher_labeling`` approval.
+
+    Both built-in recipes drive the REAL Teacher ASE calculator during structure generation, so both
+    perform materially costly Teacher inference (``True``): ``teacher-md`` runs Langevin MD under the
+    Teacher, and ``augment-atoms`` is executed by ``executors._write_executable_augment_config``,
+    which UNCONDITIONALLY binds ``augment_atoms_bridge.teacher_calculator`` as the perturbation/
+    relaxation calculator (Teacher forward passes over every candidate x relax step) -- structure
+    generation here is NOT Teacher-free. A configured ``adapter.acquire`` callable is opaque, and any
+    unknown kind / missing / unreadable / non-dict config, all fail closed to ``True``. The gate is
+    only ever relaxed for a recipe that AFFIRMATIVELY proves, through an explicit typed
+    ``performs_teacher_inference: false`` declaration, that its structure generation uses no Teacher
+    calculator -- and only when that recipe kind is not one the Teacher-binding executor overrides.
+    (No current recipe kind qualifies; the escape stays for a genuinely geometry-only future recipe,
+    e.g. random/classical-potential perturbation with no Teacher calculator.)"""
+    from adapters import load_config
+    try:
+        cfg = load_config(acquisition_config_path)
+    except Exception:  # noqa: BLE001 - unreadable/absent config must fail closed (keep the gate)
+        return True
+    if not isinstance(cfg, dict):
+        return True
+    if (cfg.get("adapter") or {}).get("acquire"):
+        return True
+    kind = cfg.get("kind")
+    # Recipe kinds whose executor drives the Teacher calculator: their structure generation IS
+    # Teacher inference and can never be relaxed by a self-asserted recipe flag (the executor would
+    # bind the Teacher regardless of what the config claims).
+    if kind in {"augment-atoms", "teacher-md"}:
+        return True
+    if cfg.get("performs_teacher_inference") is False:
+        return False
+    return True
+
+
 def _bind_acquisition_plan_for_stage(controller, proposal):
     if proposal.get("action_type") != "acquire_structures":
         return proposal
-    from .executors import _acquisition_plan_payload, _validate_acquisition_plan
+    from .executors import (
+        _acquisition_plan_payload,
+        _is_existing_pool_plan,
+        _validate_acquisition_plan,
+        _validate_existing_pool_plan,
+    )
     params = dict(proposal.get("parameters") or {})
     raw_plan = params.get("acquisition_plan_path") or params.get("acquisition_plan")
     if not raw_plan:
@@ -705,8 +958,32 @@ def _bind_acquisition_plan_for_stage(controller, proposal):
         plan_path = str(Path(params["acquisition_plan_path"]).resolve())
         if plan_path not in _run_bound_input_paths(controller):
             raise ValueError("PLAN_INPUT_REQUIRED: acquisition_plan_path must be a controller-bound run input")
+    raw_payload = _acquisition_plan_payload(raw_plan)
+
+    # EXISTING_POOL_SELECTION: SELECT an existing subset for canonical labeling -- selection itself
+    # runs NO Teacher inference, so the acquire_structures step is Teacher-free and is not gated
+    # behind costly_teacher_labeling (the run still STOPs at the downstream teacher_labeling boundary).
+    if _is_existing_pool_plan(raw_payload):
+        params["performs_teacher_inference"] = False
+        plan = _validate_existing_pool_plan(
+            raw_payload, reference_yaml=params.get("reference_yaml"),
+            proposal_selected_source_indices=(params.get("selected_source_indices") or None))
+        params["acquisition_plan_sha256"] = plan["_plan_sha256"]
+        params["selected_source_indices"] = list(plan["selected_source_global_indices"])
+        outputs = list(controller.stage(proposal["stage"]).get("outputs") or [])
+        if len(outputs) >= 3:
+            params.setdefault("protection_audit_path", str((controller.run_dir / outputs[2]).resolve()))
+        proposal["parameters"] = params
+        return proposal
+
+    # Framework-authoritative typed effect classification: derive performs_teacher_inference from the
+    # ACTUAL bound acquisition recipe, overriding any value the stage config or producer supplied, so
+    # a geometry-only acquisition is not gated behind costly_teacher_labeling while an acquisition
+    # that would run Teacher inference still is (fail-closed).
+    params["performs_teacher_inference"] = _acquisition_incurs_teacher_inference(
+        params.get("acquisition_config"))
     plan = _validate_acquisition_plan(
-        _acquisition_plan_payload(raw_plan), reference_yaml=params.get("reference_yaml"),
+        raw_payload, reference_yaml=params.get("reference_yaml"),
         seed_structures=params.get("seed_structures"),
         proposal_selected_source_indices=(params.get("selected_source_indices") or None))
     params["acquisition_plan_sha256"] = plan["_plan_sha256"]
@@ -1201,30 +1478,123 @@ def _write_three_pass_votes(controller, stage_name):
 
 
 
-def _judge_task(stage_name, judge_index, lens, gate_context, evidence_path, controller):
+def _judge_task_id(controller, stage_name, judge_index):
+    """Iteration-scope the immutable Judge task identity.
+
+    A re-gate of the same stage after a recovery runs under a NEW recovery iteration (the Controller
+    opens a fresh iteration whenever a REVISE/FAIL gate binds pending recovery). Its evidence differs
+    from the prior iteration's, so re-deriving the historical ``{stage}-judge-{n}`` task_id would
+    collide with the earlier iteration's immutable packet and fail closed with TaskPacketConflictError
+    (the exchange never overwrites a conflicting packet). Scoping the task_id by the canonical
+    ``_current_iteration()["id"]`` -- the same identity the Controller already uses to name saved
+    vote bundles (``record_gate`` -> ``{stage}.iteration-{id:03d}.votes.json``) -- makes each
+    re-gate produce DISTINCT immutable Judge task/result/raw/provenance artifacts while leaving the
+    prior iteration's audit trail untouched. Iteration 1 keeps the historical unsuffixed identity so
+    existing runs' on-disk packets are preserved byte-for-byte; INVALID_JUDGE_OUTPUT retries stay
+    within one iteration's task_id (same gate attempt), exactly as before."""
+    iteration_id = controller._current_iteration()["id"]
+    base = f"{stage_name}-judge-{judge_index}"
+    if iteration_id <= 1:
+        return base
+    return f"{base}-iter{iteration_id:03d}"
+
+
+def _judge_task(stage_name, judge_index, lens, gate_context, evidence_path, controller,
+                criteria=None):
     packet = build_judge_evidence_packet(
         controller, stage_name, judge_index, lens, gate_context, evidence_path)
-    return {
+    # When the closure StageReviewSpec is bound for this stage, ``criteria`` is the
+    # lens's own predeclared, frozen criterion questions (Section E/G) rather than the
+    # shared free-text gate criteria; the live judge-vote validator then requires the
+    # answered ``criteria_checked`` to equal them in order, which is what lets each
+    # answer map back to its criterion id when re-encoded as a typed JudgeReview.
+    task_criteria = list(gate_context["criteria"] if criteria is None else criteria)
+    packet["criteria"] = task_criteria
+    # Framework-V2 scientific-adequacy layer (Session 2026-08-21 R1 close):
+    # additive; inert when no scientific policy is bound for this stage.
+    # Every one of the three mutually-blind Judges receives the SAME frozen
+    # scientific block for a given stage (identical policy content_sha256);
+    # they still each see only their own review_lens.
+    scientific_block = _build_scientific_layer_for_stage(controller, stage_name)
+    task = {
         "schema_version": 1,
-        "task_id": f"{stage_name}-judge-{judge_index}",
+        "task_id": _judge_task_id(controller, stage_name, judge_index),
         "agent": "judge",
         "run_id": controller.state["run_id"],
         "created_at": "controller-stage-runner",
         "instruction": (f"Judge stage {stage_name} against the frozen criteria using "
-                        "context.judge_evidence_packet as the complete primary evidence."),
+                        "context.judge_evidence_packet as the complete primary evidence. "
+                        "Distinguish PROCEDURAL VALIDITY (correct computation on the "
+                        "correct population) from SCIENTIFIC ADEQUACY (evidence meets "
+                        "the bound scientific policy). See context.scientific_adequacy_layer "
+                        "for the frozen policy content when active."),
         "inputs": [],
-        "criteria": list(gate_context["criteria"]),
+        "criteria": task_criteria,
         "constraints": [
             "Primary evidence is already supplied in context.judge_evidence_packet; do not discover it with tools.",
             "Use only the supplied frozen evidence packet, compact summaries, hashes, validation outcomes, and criteria.",
             "Do not assume or inspect another Judge context or vote.",
             "Do not mark REVISE/FAIL solely because a large registered artifact is not exposed for full direct reading.",
             "Do not request compression or filtering merely for LLM readability when deterministic bounded evidence resolves the criterion.",
+            "Procedural PASS is NOT scientific adequacy: a stage may satisfy every procedural criterion while its scientific adequacy layer scores FAIL or NOT_EVALUABLE.",
         ],
         "context": {"review_lens": lens["id"], "review_focus": lens["focus"],
                     "stage": stage_name, "primary_evidence_inline": True,
-                    "judge_evidence_packet": packet},
+                    "judge_evidence_packet": packet,
+                    "scientific_adequacy_layer": scientific_block},
     }
+    return task
+
+
+def _build_scientific_layer_for_stage(controller, stage_name):
+    """Build the scientific-adequacy layer that gets attached to every Judge
+    task packet for a scientific stage. Returns a dict that is either
+    ``{"scientific_layer_active": False, ...}`` (inert) or the full frozen
+    policy block per ``framework_v2.judge_packet_extension``.
+
+    Also runs the deterministic adjudicator so the Judge sees the deterministic
+    verdict summary (PASS / FAIL / NOT_EVALUABLE + reasons) alongside the
+    frozen policy content.
+    """
+    from framework_v2.judge_packet_extension import build_scientific_extension_block
+    from framework_v2.scientific_gate import (
+        POLICIES_KEY, assert_stage_scientific_adequacy, ScientificAdequacyBlocked,
+    )
+    state = controller.state
+    observed_values = {}
+    verdict = None
+    def _load(rel):
+        # run_dir is only needed when the scientific layer is active (policies
+        # bound); fetched lazily so an inert layer works with a run_dir-less
+        # controller.
+        p = controller.run_dir / rel
+        if not p.is_file():
+            return None
+        try:
+            return json.loads(p.read_text())
+        except Exception:
+            return None
+    if state.get(POLICIES_KEY):
+        try:
+            verdict = assert_stage_scientific_adequacy(
+                state, stage_name,
+                accuracy_report_loader=lambda: _load("artifacts/accuracy_report.json"),
+                uncertainty_report_loader=lambda: _load("artifacts/uncertainty_report.json"),
+                md_manifest_loader=lambda: _load("artifacts/md.manifest.json"),
+                validation_report_loader=lambda: _load("artifacts/validation_report.json"),
+            )
+        except ScientificAdequacyBlocked as e:
+            # In the Judge packet we surface the FAIL / NOT_EVALUABLE state as
+            # data; we do NOT raise here because the packet is being READ by
+            # the Judge, not gated. The Controller's record_gate PASS branch
+            # is where the raise happens.
+            verdict = {"stage": stage_name,
+                       "adjudications": [{"kind": "aggregated",
+                                          "verdict": {"status": "BLOCKED",
+                                                       "reason": str(e)}}]}
+    return build_scientific_extension_block(state, stage_name,
+                                             observed_evidence_values=observed_values,
+                                             adequacy_verdict_summary=verdict)
 
 
 def judge_read_allowlist(gate_context, evidence_path):
@@ -1236,6 +1606,14 @@ class JudgeResumeConflictError(RuntimeError):
     derived task for the same task_id (e.g. a stale result no longer matching the run's current
     criteria/review_lens, or a result with no corresponding accepted=true provenance record).
     Fails closed rather than silently reusing or overwriting an inconsistent record."""
+
+
+class JudgeInvalidOutputBlocker(RuntimeError):
+    """Raised when a single lens's Judge keeps emitting an INVALID_JUDGE_OUTPUT review (Section J)
+    until the bounded invalid-output retry limit is exhausted. An INVALID_JUDGE_OUTPUT is never a
+    Gate vote, so the Gate cannot be aggregated; this is a terminal ``JUDGE_INVALID_BLOCKER`` that
+    stops the campaign for human attention -- it is NOT a scientific REVISE/FAIL and never triggers
+    the Controller recovery path."""
 
 
 def _accepted_judge_provenance_exists(exchange, task_id: str) -> bool:
@@ -1300,9 +1678,54 @@ def run_three_judge_gate(controller, stage_name, specs, runtime_factory, runtime
     is unchanged: all votes (reused or freshly invoked) are collected, the decision is computed,
     and ``controller.record_gate`` is called exactly once at the end, atomically, as before."""
     from orchestration.exchange import FileExchangeRuntime, TaskPacketConflictError
+    from framework_v2.review_packet import validate_judge_review as _validate_judge_review
     from .production_router import run_role
+    from . import closure_review as _closure
     gate_context = controller.gate_context(stage_name)
     exchange = FileExchangeRuntime(runtime_context_factory(1).exchange_dir)
+
+    # Framework-V2 closure review path (Sections H & J): when a frozen
+    # StageReviewSpec is bound to this stage, each lens is asked its OWN
+    # predeclared criteria, a single CanonicalReviewPacket is compiled from the
+    # stage's real deterministic facts, and each real Judge vote is re-encoded as
+    # a typed JudgeReview so ``RunController._enforce_v2_review`` deterministically
+    # validates it (INVALID_JUDGE_OUTPUT refuses PASS) and requires unanimity.
+    review_spec = _closure.bound_stage_review_spec(controller, stage_name)
+    packet = None
+    reviews = []
+    if review_spec is not None:
+        facts = _closure.deterministic_facts_for_stage(
+            stage_name, dict(gate_context.get("artifact_sha256") or {}),
+            _stage_validation_outcomes(controller, stage_name))
+        decision_sha256 = __import__(
+            "workflow.integrity", fromlist=["sha256_file"]).sha256_file(
+                Path(evidence_path).resolve())
+        packet = _closure.compile_review_packet(
+            controller=controller, stage_name=stage_name, spec=review_spec,
+            facts=facts, decision_sha256=decision_sha256,
+            producer_rationale=f"{stage_name} decision rests on registered artifacts and "
+            "deterministic validation outcomes")
+
+    # Bounded invalid-output retry (Section J): when the closure StageReviewSpec is bound, each
+    # real Judge vote is re-encoded as a typed JudgeReview and validated against the ONE
+    # CanonicalReviewPacket BEFORE it can enter Gate aggregation. An INVALID_JUDGE_OUTPUT (e.g. a
+    # verdict that deterministically contradicts the packet's authoritative facts) is NOT a vote:
+    # that single lens's Judge is retried -- SAME spec/decision/packet SHA/lens/evidence, no
+    # prompt/rubric/threshold change -- for up to two corrective attempts. A still-invalid output
+    # after the bound is a terminal JUDGE_INVALID_BLOCKER; it never enters the Gate as a REVISE.
+    max_invalid_attempts = 3  # initial + at most 2 invalid-output retries
+
+    def _validate_encoded_review(vote):
+        """Encode a vote as a typed JudgeReview and deterministically validate it against the
+        bound packet/spec. Returns (review, validation) or (None, None) when V2 closure is not
+        bound (legacy advisory path -- no per-review validation)."""
+        if review_spec is None or packet is None:
+            return None, None
+        review = _closure.judge_vote_to_review(
+            vote, vote["review_lens"], review_spec, packet,
+            run_id=controller.state["run_id"], stage=stage_name, judge_index=1)
+        return review, _validate_judge_review(review, review_spec, packet)
+
     votes = []
     for index, lens in enumerate(gate_context["review_lenses"], 1):
         task = _judge_task(stage_name, index, lens, gate_context, evidence_path, controller)
@@ -1311,35 +1734,78 @@ def run_three_judge_gate(controller, stage_name, specs, runtime_factory, runtime
         except TaskPacketConflictError:
             raise  # never overwrite a conflicting existing task packet; fail closed
         reused = _resume_judge_vote(exchange, task)
-        if reused is not None:
-            vote = dict(reused)
-            vote["judge_id"] = f"judge-{index}"
-            votes.append(vote)
+        vote = None
+        valid_review = None
+        for attempt in range(1, max_invalid_attempts + 1):
+            if attempt == 1 and reused is not None:
+                candidate = dict(reused)
+                resumed = True
+            else:
+                ctx = runtime_context_factory(index)
+                if emitter is not None:
+                    emitter.emit("role_invocation_started", stage=stage_name, role="judge",
+                                action="judge_gate",
+                                detail={"judge_id": f"judge-{index}", "attempt": attempt})
+                res = run_role(runtime_factory(index), task, specs["judge"], ctx, mode=mode)
+                if emitter is not None:
+                    emitter.emit("role_invocation_completed", stage=stage_name, role="judge",
+                                action="judge_gate",
+                                detail={"judge_id": f"judge-{index}", "attempt": attempt})
+                if res.error or res.detail is None:
+                    if getattr(res, "error_category", None) == "judge_output_invalid":
+                        # Hard Judge schema/structural validation failure (e.g. a REVISE/FAIL
+                        # vote with an empty required_fix). A malformed output is NOT a vote: it
+                        # follows the SAME canonical INVALID_JUDGE_OUTPUT semantics as a
+                        # closure-invalid vote below -- classify it, keep it out of Gate
+                        # aggregation, and retry ONLY this lens's Judge (same
+                        # ScientificDecision/StageReviewSpec/CanonicalReviewPacket/lens/rubric,
+                        # via the immutably re-derived task) under the same bounded limit. It
+                        # never crashes the campaign; exhaustion becomes a JUDGE_INVALID_BLOCKER
+                        # below.
+                        if emitter is not None:
+                            emitter.emit("judge_invalid_output", stage=stage_name, role="judge",
+                                        detail={"judge_id": f"judge-{index}",
+                                                "review_lens": lens.get("id"), "attempt": attempt,
+                                                "state": "INVALID_JUDGE_OUTPUT",
+                                                "errors": [res.error] if res.error else []})
+                        continue
+                    raise RuntimeError(f"Judge {index} failed validation: {res.error}")
+                candidate = dict(res.detail)
+                resumed = False
+            candidate["judge_id"] = f"judge-{index}"
+            review, validation = _validate_encoded_review(candidate)
+            if validation is not None and not validation.valid:
+                # INVALID_JUDGE_OUTPUT: not a vote. Record and retry this lens's Judge only.
+                if emitter is not None:
+                    emitter.emit("judge_invalid_output", stage=stage_name, role="judge",
+                                detail={"judge_id": f"judge-{index}",
+                                        "review_lens": lens.get("id"), "attempt": attempt,
+                                        "state": validation.state.value,
+                                        "errors": list(validation.errors)})
+                continue
+            vote = candidate
+            valid_review = review
             if emitter is not None:
                 emitter.emit("judge_result", stage=stage_name, role="judge",
                             detail={"judge_id": f"judge-{index}", "review_lens": lens.get("id"),
-                                    "verdict": vote.get("verdict"), "resumed": True})
-            continue
-        ctx = runtime_context_factory(index)
-        if emitter is not None:
-            emitter.emit("role_invocation_started", stage=stage_name, role="judge",
-                        action="judge_gate", detail={"judge_id": f"judge-{index}"})
-        res = run_role(runtime_factory(index), task, specs["judge"], ctx, mode=mode)
-        if emitter is not None:
-            emitter.emit("role_invocation_completed", stage=stage_name, role="judge",
-                        action="judge_gate", detail={"judge_id": f"judge-{index}"})
-        if res.error or res.detail is None:
-            raise RuntimeError(f"Judge {index} failed validation: {res.error}")
-        vote = dict(res.detail)
-        vote["judge_id"] = f"judge-{index}"
+                                    "verdict": vote.get("verdict"), "resumed": resumed})
+            break
+        if vote is None:
+            raise JudgeInvalidOutputBlocker(
+                f"JUDGE_INVALID_BLOCKER: lens {lens.get('id')!r} Judge produced an "
+                f"INVALID_JUDGE_OUTPUT on all {max_invalid_attempts} attempt(s) "
+                f"(initial + up to {max_invalid_attempts - 1} invalid-output retries); an "
+                "invalid output is never a Gate vote and never a scientific REVISE")
         votes.append(vote)
-        if emitter is not None:
-            emitter.emit("judge_result", stage=stage_name, role="judge",
-                        detail={"judge_id": f"judge-{index}", "review_lens": lens.get("id"),
-                                "verdict": vote.get("verdict"), "resumed": False})
+        if valid_review is not None:
+            reviews.append(valid_review)
     decision = "FAIL" if any(v["verdict"] == "FAIL" for v in votes) else (
         "PASS" if all(v["verdict"] == "PASS" for v in votes) else "REVISE")
     bundle = {**gate_context, "decision": decision, "votes": votes}
+    if review_spec is not None and packet is not None:
+        # Attach the v2_review bundle (all reviews already validated above) so the Controller
+        # deterministically re-validates them (Section J) before any PASS.
+        bundle["v2_review"] = _closure.assemble_v2_review(packet, reviews)
     path = controller.run_dir / "gates" / f"{stage_name}.production.votes.json"
     path.write_text(json.dumps(bundle, indent=2) + "\n")
     controller.record_gate(stage_name, votes_path=path)
@@ -1362,11 +1828,110 @@ def _cmd_preflight(args) -> int:
 def _cmd_approve(args) -> int:
     from workflow.controller import RunController
     c = RunController(args.run_dir)
-    c.grant_action_approval(args.boundary, note=args.note, plan_sha256=args.plan_sha256)
+    c.grant_action_approval(args.boundary, note=args.note, plan_sha256=args.plan_sha256,
+                            action_type=args.action_type)
     suffix = f" plan_sha256={args.plan_sha256}" if args.plan_sha256 else ""
+    if args.action_type:
+        suffix += f" action_type={args.action_type}"
     print(f"approval: {args.boundary}{suffix}")
     emitter = CampaignEventEmitter(c.run_dir, run_id=c.state.get("run_id"), quiet=True)
-    emitter.emit("approval_granted", detail={"approval_boundary": args.boundary})
+    emitter.emit("approval_granted",
+                 detail={"approval_boundary": args.boundary, "action_type": args.action_type})
+    return EXIT_SUCCESS
+
+
+def _cmd_bind_scientific_policies(args) -> int:
+    """Attach typed scientific-adequacy policies to a run.
+
+    Each --policy-file argument is STAGE:KIND:PATH. Bindings are content-hash-
+    immutable: identical rebinds are idempotent; different-content rebinds
+    refuse. Every binding emits a `scientific_policy_bound` event.
+    """
+    import json as _json
+    from workflow.controller import RunController
+    c = RunController(args.run_dir)
+    bound = []
+    for spec in args.policy_file:
+        parts = spec.split(":", 2)
+        if len(parts) != 3:
+            print(f"invalid --policy-file spec {spec!r}; expected STAGE:KIND:PATH",
+                  file=sys.stderr)
+            return EXIT_INTERNAL
+        stage_name, kind, path = parts
+        policy_dict = _json.loads(Path(path).read_text())
+        # Strip leading '_' documentation keys (candidate files may carry them)
+        policy_dict = {k: v for k, v in policy_dict.items()
+                       if not k.startswith("_") and k != "kind"}
+        record = c.bind_scientific_policy(
+            stage_name, kind, policy_dict,
+            source_ref=args.source_ref,
+            note=f"cli-bound from {path}",
+            required=not args.allow_not_required,
+        )
+        bound.append((stage_name, kind, record["content_sha256"]))
+        print(f"bound {stage_name}::{kind} content_sha256={record['content_sha256']}")
+    print(f"total_bindings={len(bound)}")
+    return EXIT_SUCCESS
+
+
+def _cmd_bind_closure(args) -> int:
+    """Bind the Framework-V2 closure review contracts onto a run.
+
+    Turns on V2 gate enforcement (``bind_v2_scope_contract``) and binds one frozen,
+    generic :class:`~framework_v2.review_spec.StageReviewSpec` per requested stage
+    (``bind_v2_stage_review_spec``). After this, every ``record_gate`` PASS at a
+    bound stage additionally requires the vote bundle to carry a valid
+    ``v2_review`` (CanonicalReviewPacket + one deterministic-validated JudgeReview
+    per lens) — which ``run_three_judge_gate`` now assembles from the real Judges.
+    """
+    from workflow.controller import RunController
+    from framework_v2.review_spec import default_stage_review_specs
+    from framework_v2.contracts import ConvergencePolicy
+    from framework_v2.convergence import default_training_convergence_policy
+
+    c = RunController(args.run_dir)
+    scope = json.loads(Path(args.scope_contract).read_text(encoding="utf-8"))
+    scope_sha = c.bind_v2_scope_contract(scope)
+    specs = default_stage_review_specs(
+        validation_profile_version=args.validation_profile_version)
+    # Optional caller-supplied ConvergencePolicy override (honors the
+    # "caller supplies the numbers" contract). When absent, a stage that
+    # requires convergence_report evidence falls back to the framework
+    # default so the R31 max-epoch gate is NEVER silently skipped.
+    conv_override = None
+    if getattr(args, "convergence_policy", None):
+        conv_override = ConvergencePolicy(
+            **json.loads(Path(args.convergence_policy).read_text(encoding="utf-8")))
+    stages = list(args.stage)
+    if not stages:
+        stages = [s["name"] for s in c.state["stages"] if s.get("gate_criteria")]
+    bound = []
+    conv_bound = []
+    for stage_name in stages:
+        spec = specs.get(stage_name)
+        if spec is None:
+            print(f"no default StageReviewSpec for stage {stage_name!r}", file=sys.stderr)
+            return EXIT_VALIDATION_REJECTED
+        sha = c.bind_v2_stage_review_spec(stage_name, spec.model_dump(mode="json"))
+        bound.append((stage_name, sha))
+        # A stage whose predeclared criteria consume ``convergence_report``
+        # evidence MUST have a bound ConvergencePolicy, else the gate's
+        # convergence precondition is inert (the demonstrated Stage 7 defect).
+        # Detected generically from the spec's evidence classes -- no stage
+        # name is hardcoded.
+        needs_convergence = any(
+            "convergence_report" in crit.required_evidence_classes
+            for crit in spec.criteria)
+        if needs_convergence:
+            policy = conv_override or default_training_convergence_policy()
+            conv_sha = c.bind_v2_contract(
+                "convergence_policy", policy.model_dump(mode="json"), stage=stage_name)
+            conv_bound.append((stage_name, conv_sha, policy.policy_id))
+    print(f"closure bound: scope_contract_sha256={scope_sha}")
+    for stage_name, sha in bound:
+        print(f"  stage_review_spec[{stage_name}] = {sha}")
+    for stage_name, conv_sha, policy_id in conv_bound:
+        print(f"  convergence_policy[{stage_name}] = {conv_sha} ({policy_id})")
     return EXIT_SUCCESS
 
 
@@ -1442,9 +2007,14 @@ def run_production_stage(controller, stage_name, *, runtime, agent_specs_dir="ag
             return StageRunResult("PLAN_INPUT_REQUIRED", EXIT_VALIDATION_REJECTED, message)
         raise
     evidence_path = c.run_dir / "exchange" / "bounded_evidence" / f"{stage_name}.json"
-    upstream = _stage_input_artifact_paths(proposal, c.state.get("artifacts", []))
+    own_outputs = [c.run_dir / rel for rel in c.stage(stage_name).get("outputs", [])]
+    upstream = _stage_input_artifact_paths(proposal, c.state.get("artifacts", []),
+                                           own_outputs=own_outputs)
     upstream += _selective_provenance_inputs(c, stage_name)
-    build_bounded_evidence(upstream, evidence_path, protocol_refs=[c.state.get("workflow_config")])
+    split_manifests = _split_membership_manifest_sources(c)
+    upstream += split_manifests
+    build_bounded_evidence(upstream, evidence_path, protocol_refs=[c.state.get("workflow_config")],
+                           lineage_only=split_manifests)
     specs = load_agent_specs(agent_specs_dir)
     task = _producer_task(stage_name, role, evidence_path, c, proposal)
     exchange = Path(exchange_dir) if exchange_dir else c.run_dir / "exchange"
@@ -1545,12 +2115,42 @@ def run_production_stage(controller, stage_name, *, runtime, agent_specs_dir="ag
     def producer_task_factory(feedback):
         return _producer_task(stage_name, role, evidence_path, c, proposal, retry_feedback=feedback)
 
-    emitter.emit("executor_started", stage=stage_name, role=role, action=proposal.get("action_type"))
-    res = _run_producer_with_binding_retries(
-        producer_runtime, task, specs[role], ctx, controller=c, registry=registry,
-        authoritative_proposal=proposal, task_factory=producer_task_factory,
-        budget_policy=producer_budget_policy, emitter=emitter, stage_name=stage_name)
-    status = getattr(res.detail, "status", "")
+    regate_only = _is_gate_only_correction_regate(c, stage_name)
+    if regate_only:
+        # Audited evidence-surfacing correction re-gate of an already-completed stage: re-surface
+        # corrected evidence and re-judge the SAME accepted authoritative outputs WITHOUT
+        # re-executing the (deterministic) production action -- directive "re-run ONLY the
+        # evidence/gate path"; never rerun an executor merely to obtain a fresh Judge identity.
+        emitter.emit("executor_skipped_regate_only", stage=stage_name, role=role,
+                    detail={"iteration": c.state["iterations"][-1]["id"],
+                            "reason": "evidence_surfacing_correction re-gate: stage already "
+                                      "completed with declared outputs present; NOT re-executing "
+                                      "the production action"})
+        status = "DUPLICATE"
+    else:
+        readiness = _reference_validation_readiness(c, proposal)
+        if readiness is not None and not readiness["ready"]:
+            # Pre-costly evidence-readiness preflight (FE-032): the NON-Teacher gate evidence for a
+            # Teacher-vs-DFT reference_validation (per-frame source->split lineage join, TEST-split
+            # membership, structure/DFT-label/checkpoint identity + hashes, protected-reference
+            # policy) must be establishable BEFORE any Teacher/GPU inference is dispatched. Fail
+            # closed here so a run never spends expensive Teacher compute only to discover its gate
+            # can never be satisfied (the ffv4g/ffv4h defect). Teacher-dependent numeric metrics
+            # are the ONLY criteria left to post-execution.
+            emitter.emit("campaign_blocked", stage=stage_name,
+                        detail={"reason": "REFERENCE_VALIDATION_EVIDENCE_READINESS_INCOMPLETE",
+                                "blocking_gaps": readiness["blocking_gaps"]})
+            return StageRunResult(
+                "REFERENCE_VALIDATION_EVIDENCE_READINESS_INCOMPLETE", EXIT_VALIDATION_REJECTED,
+                "FAILED: reference_validation evidence readiness incomplete before costly Teacher "
+                "dispatch: " + "; ".join(readiness["blocking_gaps"]))
+        emitter.emit("executor_started", stage=stage_name, role=role,
+                    action=proposal.get("action_type"))
+        res = _run_producer_with_binding_retries(
+            producer_runtime, task, specs[role], ctx, controller=c, registry=registry,
+            authoritative_proposal=proposal, task_factory=producer_task_factory,
+            budget_policy=producer_budget_policy, emitter=emitter, stage_name=stage_name)
+        status = getattr(res.detail, "status", "")
     if status == "APPROVAL_REQUIRED":
         boundary = getattr(res.detail, "reason", "") or proposal.get("approval_boundary")
         emitter.emit("approval_required", stage=stage_name,
@@ -1633,11 +2233,47 @@ def run_production_stage(controller, stage_name, *, runtime, agent_specs_dir="ag
                               "controller stage did not complete", action_status=status)
     emitter.emit("artifact_registered", stage=stage_name,
                 detail={"artifacts": [str(p) for p in declared]})
+    gate_split_manifests = _split_membership_manifest_sources(c)
     gate_evidence_artifacts = _committee_training_gate_evidence(
-        c, declared, _selective_provenance_inputs(c, stage_name))
+        c, declared, _selective_provenance_inputs(c, stage_name)) + gate_split_manifests
+    gate_outcomes = _stage_validation_outcomes(c, stage_name)
+    # Surface the deterministic per-criterion evidence record (source->split lineage join, TEST
+    # membership, structure/DFT-label/checkpoint/prediction identity + hashes, no-historical-reuse,
+    # protected-reference policy, and the post-execution global + grouped fidelity metrics with
+    # units/denominators) so a Judge can VERIFY each reference_validation gate criterion against
+    # deterministic evidence rather than infer it (FE-032). No-op for non-reference-validation stages.
+    contract_manifest = (c.stage(stage_name).get("contract") or {}).get("manifest")
+    report_path = (c.run_dir / contract_manifest) if contract_manifest else None
+    criterion_evidence = _reference_validation_readiness(c, proposal, report_path=report_path)
+    if criterion_evidence is not None:
+        gate_outcomes = gate_outcomes + [{
+            "stage": stage_name,
+            "kind": "reference_validation_criterion_evidence",
+            "ready": criterion_evidence["ready"],
+            "teacher_metrics_pending": criterion_evidence["teacher_metrics_pending"],
+            "blocking_gaps": criterion_evidence["blocking_gaps"],
+            "criteria": criterion_evidence["criteria"],
+        }]
+    # Symmetric to the reference_validation surfacer above (FE-033): surface the deterministic
+    # acquisition criterion-evidence (parent->pool join, per-parent deployment-domain mapping
+    # resolved from the run's own bound frozen scope-classification evidence, and selection-control
+    # attestations) so a Judge can VERIFY each acquisition gate criterion against deterministic
+    # evidence rather than infer it from the raw manifest. No-op for non-acquisition stages.
+    acquisition_evidence = _acquisition_readiness(c, proposal, report_path=report_path)
+    if acquisition_evidence is not None:
+        gate_outcomes = gate_outcomes + [{
+            "stage": stage_name,
+            "kind": "acquisition_criterion_evidence",
+            "ready": acquisition_evidence["ready"],
+            "pending_execution": acquisition_evidence["pending_execution"],
+            "blocking_gaps": acquisition_evidence["blocking_gaps"],
+            "criteria": acquisition_evidence["criteria"],
+        }]
     build_bounded_evidence(gate_evidence_artifacts, evidence_path,
                            protocol_refs=[c.state.get("workflow_config")],
-                           validation_outcomes=_stage_validation_outcomes(c, stage_name))
+                           validation_outcomes=gate_outcomes,
+                           lineage_only=_gate_lineage_only_artifacts(gate_evidence_artifacts)
+                           + gate_split_manifests)
 
     decision = "NO_GATE"
     vote_path = None
@@ -1672,9 +2308,17 @@ def run_production_stage(controller, stage_name, *, runtime, agent_specs_dir="ag
                 return RuntimeContext(exchange_dir=str(exchange), repo_root=repo_root,
                                       provider=runtime_provider, model_id=runtime_model,
                                       read_allow_prefixes=list(judge_allow), tools_enabled=False)
-            decision, vote_path = run_three_judge_gate(
-                c, stage_name, specs, judge_runtime_factory, judge_ctx_factory, evidence_path,
-                emitter=emitter)
+            try:
+                decision, vote_path = run_three_judge_gate(
+                    c, stage_name, specs, judge_runtime_factory, judge_ctx_factory, evidence_path,
+                    emitter=emitter)
+            except JudgeInvalidOutputBlocker as exc:
+                # A lens's Judge kept emitting INVALID_JUDGE_OUTPUT until the bounded retry was
+                # exhausted. No gate is recorded (an invalid output is never a vote), so no
+                # recovery is triggered; this is a terminal blocker for human attention.
+                return StageRunResult(
+                    "JUDGE_INVALID_BLOCKER", EXIT_VALIDATION_REJECTED, str(exc),
+                    evidence_path=evidence_path, action_status=status)
         c = RunController(c.run_dir)
         if c.stage(stage_name)["gate"] != decision:
             return StageRunResult("GATE_RECORD_MISMATCH", EXIT_VALIDATION_REJECTED,
@@ -1848,12 +2492,15 @@ def _assemble_recovery_execution_report(controller):
         training_report["stage"] = evidence_stage_for("student_training.retrain")
 
     revalidation_plan = plan["revalidation"]
-    revalidation_stages = []
-    for target in revalidation_plan["targets"]:
-        if target in changed_paths_by_stage:
-            revalidation_stages.append(target)
-        else:
-            missing.append(f"revalidation target {target!r} has no changed, completed evidence yet")
+    # revalidation.targets are POST-return-stage revalidation: they only re-run AFTER the
+    # return stage re-earns PASS, so they must NOT be required as pre-gate evidence here.
+    # Requiring them would deadlock any recovery whose return_stage == failed_stage while that
+    # stage's gate is still pending (the return-stage gate can't run until recovery is verified,
+    # but recovery can't verify until the downstream targets -- which can't run until the gate
+    # passes -- have changed). Record any target that already has changed evidence; defer the
+    # rest to normal campaign progression once the return stage passes.
+    revalidation_stages = [target for target in revalidation_plan["targets"]
+                           if target in changed_paths_by_stage]
     revalidation_report = {"targets": list(revalidation_plan["targets"]), "stages": revalidation_stages}
 
     if missing:
@@ -2336,13 +2983,27 @@ def _dispatch_recovery_corrective_action(controller, trigger, recovery, correcti
     roster = c.state.get("recovery_capability_roster") or DEFAULT_RECOVERY_CAPABILITY_ROSTER
     role = (corrective_action.get("role") or
            roster.get(recovery["plan"]["responsible_capability"]) or base_role)
+    # Parameter assembly: when the approved corrective action simply RE-RUNS the return
+    # stage's OWN route action (same action_type), start from that stage's canonical,
+    # controller-resolved parameters (student_config/dataset/output_dir/manifest_path,
+    # protected reference_yaml, ...) and let the plan's corrective_action.parameters
+    # OVERRIDE/EXTEND them (e.g. a continuation's continue_from map + total_epoch_override).
+    # This keeps the plan from having to re-derive protection-resolved paths itself. When
+    # the corrective action is a DIFFERENT action_type (e.g. an evidence-gathering action),
+    # the base stage's parameters do not apply, so only the plan-supplied parameters are used.
+    corrective_params = dict(corrective_action.get("parameters") or {})
+    if corrective_action["action_type"] == base_proposal.get("action_type"):
+        params = dict(base_proposal.get("parameters") or {})
+        params.update(corrective_params)
+    else:
+        params = corrective_params
     proposal = {
         "run_id": c.state["run_id"], "stage": return_stage,
         "requested_by_role": role, "action_type": corrective_action["action_type"],
         "requested_at": "run-campaign",
         "rationale": f"execute recovery {recovery['id']}'s approved corrective action",
         "idempotency_key": base_proposal["idempotency_key"],
-        "parameters": dict(corrective_action.get("parameters") or {}),
+        "parameters": params,
     }
     registry = registry if registry is not None else build_executor_registry()
     emitter.emit("executor_started", stage=return_stage, role=role,
@@ -2633,7 +3294,8 @@ def _commit_teacher_validation_plan_via_reasoning_roles(
 def _run_campaign_loop(controller, *, runtime, agent_specs_dir="agent_specs", exchange_dir=None,
                  repo_root=".", auto_mock_judges=False, mock_response=None,
                  mock_judge_response=None, mock_analyst_response=None,
-                 mock_orchestrator_response=None, max_iterations=None,
+                 mock_orchestrator_response=None, mock_acquisition_response=None,
+                 max_iterations=None,
                  recovery_action_registry=None, emitter=None) -> CampaignRunResult:
     """Drive ``controller``'s run forward through ``run_production_stage`` -- the SAME production
     dispatch+gate path ``run-stage`` uses -- for as many stages as current state allows, stopping
@@ -2671,6 +3333,12 @@ def _run_campaign_loop(controller, *, runtime, agent_specs_dir="agent_specs", ex
         emitter=emitter)
     if planning_result is not None:
         return planning_result
+    # Autonomous acquisition planning is deliberately LAZY: it is NOT run here, before the stage
+    # loop. Its provider's build_context runs expensive geometry work (FPS / coverage / population
+    # sizing over the whole candidate pool) that must not be spent before the campaign has actually
+    # reached -- and cleared the costly-action authorization boundary of -- the acquisition stage.
+    # It is instead triggered inside the loop, only when the next eligible stage is genuinely the
+    # acquisition stage (see the ``_stage_route_action(...) == "acquire_structures"`` gate below).
     c = RunController(c.run_dir)
     if max_iterations is None:
         max_iterations = len(c.state["stages"]) + 1
@@ -2725,6 +3393,25 @@ def _run_campaign_loop(controller, *, runtime, agent_specs_dir="agent_specs", ex
         if next_stage is None:
             return CampaignRunResult(CAMPAIGN_COMPLETED, EXIT_SUCCESS,
                                      "COMPLETED: every declared stage has passed its gate")
+        # Lazy autonomous acquisition planning: only when the next eligible stage is genuinely the
+        # acquisition stage do we install the default provider and run the (expensive) planner,
+        # binding its deterministically-validated plan as a run input BEFORE this same iteration
+        # dispatches the acquisition stage. This defers all FPS/coverage/sizing geometry work past
+        # every earlier costly-action authorization boundary (e.g. teacher_baseline) so it is never
+        # spent on a campaign that pauses for human authorization before reaching acquisition. It is
+        # safe to re-enter every loop turn: the provider's applies() returns False (a cheap no-op)
+        # once a plan is already bound, so a resumed/re-looped campaign never re-plans.
+        if _stage_route_action(c, next_stage["name"]) == "acquire_structures":
+            from .default_acquisition_provider import maybe_install_default_acquisition_provider
+            maybe_install_default_acquisition_provider(c)
+            from .acquisition_planner import plan_acquisition_via_reasoning_roles
+            acquisition_result = plan_acquisition_via_reasoning_roles(
+                c, runtime=runtime, agent_specs_dir=agent_specs_dir, exchange_dir=exchange_dir,
+                repo_root=repo_root, mock_producer_response=mock_acquisition_response,
+                emitter=emitter)
+            if acquisition_result is not None:
+                return acquisition_result
+            c = RunController(c.run_dir)
         result = run_production_stage(
             c, next_stage["name"], runtime=runtime, agent_specs_dir=agent_specs_dir,
             exchange_dir=exchange_dir, repo_root=repo_root, auto_mock_judges=auto_mock_judges,
@@ -2786,7 +3473,8 @@ def _run_campaign_loop(controller, *, runtime, agent_specs_dir="agent_specs", ex
 def run_campaign(controller, *, runtime, agent_specs_dir="agent_specs", exchange_dir=None,
                  repo_root=".", auto_mock_judges=False, mock_response=None,
                  mock_judge_response=None, mock_analyst_response=None,
-                 mock_orchestrator_response=None, max_iterations=None,
+                 mock_orchestrator_response=None, mock_acquisition_response=None,
+                 max_iterations=None,
                  recovery_action_registry=None, emitter=None) -> CampaignRunResult:
     """Thin wrapper around ``_run_campaign_loop`` that owns the campaign-level start/resume and
     terminal outcome events -- the loop itself only ever returns once per invocation, so these are
@@ -2806,7 +3494,8 @@ def run_campaign(controller, *, runtime, agent_specs_dir="agent_specs", exchange
         c, runtime=runtime, agent_specs_dir=agent_specs_dir, exchange_dir=exchange_dir,
         repo_root=repo_root, auto_mock_judges=auto_mock_judges, mock_response=mock_response,
         mock_judge_response=mock_judge_response, mock_analyst_response=mock_analyst_response,
-        mock_orchestrator_response=mock_orchestrator_response, max_iterations=max_iterations,
+        mock_orchestrator_response=mock_orchestrator_response,
+        mock_acquisition_response=mock_acquisition_response, max_iterations=max_iterations,
         recovery_action_registry=recovery_action_registry, emitter=emitter)
     emitter.emit(f"campaign_{terminal_class(result.outcome).lower()}", stage=result.stage,
                 detail={"outcome": result.outcome, "exit_code": result.exit_code})
@@ -2894,6 +3583,10 @@ def main(argv=None) -> int:
         return _cmd_run_stage(args)
     if args.command == "run-campaign":
         return _cmd_run_campaign(args)
+    if args.command == "bind-closure":
+        return _cmd_bind_closure(args)
+    if args.command == "bind-scientific-policies":
+        return _cmd_bind_scientific_policies(args)
     if args.command == "approve-recovery":
         return _cmd_approve_recovery(args)
     if args.command == "plan-teacher-validation":

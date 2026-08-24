@@ -73,6 +73,181 @@ def compute_rdf(frames, elements, r_max=6.0, nbins=200):
     return r, out
 
 
+def _smooth_1d(y, window):
+    """Deterministic moving-average smoother. window MUST be odd; window=1 is
+    identity (no smoothing). Used for first-peak / first-minimum detection so
+    the algorithm does not pick up single-bin noise."""
+    if window <= 1:
+        return np.asarray(y, dtype=float)
+    if window % 2 == 0:
+        raise ValueError("smoothing window must be odd")
+    kernel = np.ones(window, dtype=float) / float(window)
+    return np.convolve(np.asarray(y, dtype=float), kernel, mode="same")
+
+
+def rdf_first_peak_and_minimum(r, g, *, smoothing_window=5,
+                                min_r_A=None, max_r_A=None):
+    """Deterministic first-peak-position + first-peak-height + first-minimum-
+    position extraction.
+
+    Selection semantics (documented, not brittle):
+      * apply a moving-average smoother of odd window ``smoothing_window`` to
+        g(r); default = 5 bins (~0.15 A on the standard 0-6 A / 200-bin grid);
+      * restrict the search window to [min_r_A, max_r_A] if given, else the
+        full grid;
+      * FIRST-PEAK = argmax of smoothed g(r) over the window;
+      * FIRST-MINIMUM = argmin of smoothed g(r) over the sub-window starting
+        immediately after the first-peak bin and ending at the window end.
+
+    Returns a dict with `r_first_peak_A`, `g_first_peak`, `r_first_min_A`,
+    `g_first_min`, `smoothing_window_bins`, and the search window used.
+    Raises if any required quantity is not identifiable in the smoothed
+    series (e.g., monotone decreasing).
+    """
+    r = np.asarray(r, dtype=float)
+    g = np.asarray(g, dtype=float)
+    if r.shape != g.shape or r.ndim != 1:
+        raise ValueError("r and g must be 1-D arrays of matching length")
+    g_smooth = _smooth_1d(g, smoothing_window)
+    lo = 0 if min_r_A is None else int(np.searchsorted(r, min_r_A, side="left"))
+    hi = len(r) if max_r_A is None else int(np.searchsorted(r, max_r_A, side="right"))
+    if hi - lo < 3:
+        raise ValueError("first-peak search window too narrow")
+    peak_idx_local = int(np.argmax(g_smooth[lo:hi]))
+    peak_idx = lo + peak_idx_local
+    # First minimum: search strictly AFTER the peak, within the same window.
+    min_lo = peak_idx + 1
+    min_hi = hi
+    if min_hi - min_lo < 2:
+        raise ValueError("first-minimum search window (post-peak) too narrow")
+    min_idx_local = int(np.argmin(g_smooth[min_lo:min_hi]))
+    min_idx = min_lo + min_idx_local
+    return {
+        "r_first_peak_A": float(r[peak_idx]),
+        "g_first_peak": float(g_smooth[peak_idx]),
+        "g_first_peak_raw": float(g[peak_idx]),
+        "r_first_min_A": float(r[min_idx]),
+        "g_first_min": float(g_smooth[min_idx]),
+        "smoothing_window_bins": int(smoothing_window),
+        "search_window_A": [float(r[lo]), float(r[min(hi - 1, len(r) - 1)])],
+        "peak_index_bin": peak_idx,
+        "first_min_index_bin": min_idx,
+    }
+
+
+def compute_rdf_v2(frames, center_species, neighbor_species,
+                   *, r_max=6.0, nbins=200):
+    """Typed RDF for a single ordered species pair.
+
+    Distinct from ``compute_rdf`` which computes all combinations-with-
+    replacement pairs; ``compute_rdf_v2`` computes the ORDERED pair
+    (center -> neighbor). The returned r-grid + g(r) can be piped through
+    ``rdf_first_peak_and_minimum`` to extract chemistry-relevant scalars.
+
+    Returns dict with `r_A`, `g_of_r`, `bin_width_A`, `r_max_A`, `nbins`,
+    `center_species`, `neighbor_species`, `n_frames`.
+    """
+    if not frames:
+        raise ValueError("compute_rdf_v2 requires at least one frame")
+    pair = [atomic_numbers[center_species], atomic_numbers[neighbor_species]]
+    rdfs = []
+    grid = None
+    for atoms in frames:
+        g_frame, r_frame = get_rdf(atoms, r_max, nbins, elements=pair)
+        r_frame = np.asarray(r_frame, dtype=float)
+        g_frame = np.asarray(g_frame, dtype=float)
+        if g_frame.shape[0] != nbins or r_frame.shape[0] != nbins:
+            raise ValueError("RDF shape mismatch")
+        if not np.isfinite(g_frame).all() or not np.isfinite(r_frame).all():
+            raise ValueError("non-finite RDF sample")
+        if grid is None:
+            grid = r_frame
+        elif not np.allclose(r_frame, grid, rtol=0, atol=1e-9):
+            raise ValueError("distance grid mismatch across frames")
+        rdfs.append(g_frame)
+    mean_g = np.mean(rdfs, axis=0)
+    bin_width = float(r_max) / float(nbins)
+    return {
+        "r_A": grid.tolist(),
+        "g_of_r": [float(v) for v in mean_g],
+        "bin_width_A": bin_width,
+        "r_max_A": float(r_max),
+        "nbins": int(nbins),
+        "center_species": str(center_species),
+        "neighbor_species": str(neighbor_species),
+        "n_frames": int(len(frames)),
+    }
+
+
+def compute_species_coordination(frames, center_species, neighbor_species,
+                                 cutoff_A, *,
+                                 cutoff_source_ref=None,
+                                 cutoff_frozen_before_student=None,
+                                 max_topology=8):
+    """Species-specific coordination.
+
+    Counts, for each atom of ``center_species`` in every frame, the number of
+    ``neighbor_species`` atoms within ``cutoff_A`` under minimum-image
+    convention. Returns per-frame mean, aggregate mean, and a
+    coordination-number histogram over 0..``max_topology``.
+
+    Fail-closed: ``cutoff_A`` must be an explicit positive number; there is
+    no default. ``cutoff_source_ref`` and ``cutoff_frozen_before_student``
+    are accepted so the caller can pass through the policy's provenance
+    fields, but they are ADVISORY here — the *policy layer* enforces the
+    frozen-before-student invariant at contract construction; this function
+    simply records the values in its returned metadata for downstream
+    provenance surfacing.
+    """
+    if not frames:
+        raise ValueError("compute_species_coordination requires at least one frame")
+    if not (isinstance(cutoff_A, (int, float)) and float(cutoff_A) > 0):
+        raise ValueError("cutoff_A must be a positive real number "
+                          "(species-specific coordination has no default cutoff)")
+    cutoff_A = float(cutoff_A)
+    per_frame_means = []
+    histogram = np.zeros(int(max_topology) + 1, dtype=int)
+    n_center_total = 0
+    for atoms in frames:
+        d = atoms.get_all_distances(mic=True)
+        syms = np.array(atoms.get_chemical_symbols())
+        center_idx = np.where(syms == center_species)[0]
+        neighbor_mask_by_j = (syms == neighbor_species)
+        if len(center_idx) == 0:
+            continue
+        cns = []
+        for i in center_idx:
+            neighbors = np.where(neighbor_mask_by_j & (d[i] < cutoff_A) & (d[i] > 0))[0]
+            n = int(len(neighbors))
+            cns.append(n)
+            if n <= max_topology:
+                histogram[n] += 1
+            else:
+                histogram[-1] += 1  # collapse anything above the reported range
+        per_frame_means.append(float(np.mean(cns)) if cns else 0.0)
+        n_center_total += len(center_idx)
+    if not per_frame_means:
+        raise ValueError(f"no {center_species} atoms present in any frame")
+    aggregate_mean = float(np.mean(per_frame_means))
+    total_counted = int(histogram.sum())
+    fractions = {int(k): float(histogram[k]) / total_counted
+                 for k in range(len(histogram)) if histogram[k] > 0} if total_counted else {}
+    return {
+        "center_species": str(center_species),
+        "neighbor_species": str(neighbor_species),
+        "cutoff_A": cutoff_A,
+        "cutoff_source_ref": cutoff_source_ref,
+        "cutoff_frozen_before_student": cutoff_frozen_before_student,
+        "per_frame_mean_coordination": per_frame_means,
+        "aggregate_mean_coordination": aggregate_mean,
+        "coordination_histogram": [int(x) for x in histogram],
+        "coordination_fractions": fractions,
+        "n_center_atoms_summed": int(n_center_total),
+        "n_frames": int(len(frames)),
+        "max_topology_bin": int(max_topology),
+    }
+
+
 def compute_coordination(frames, elements, cutoffs):
     """Mean coordination number per element, using per-pair cutoffs (dict
     {"Si-O": 2.0, ...} in Angstrom) — supply from validation_profile if you

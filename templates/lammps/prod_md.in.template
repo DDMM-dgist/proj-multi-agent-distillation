@@ -9,6 +9,11 @@
 #    lmp -v DATAFILE <path> -in prod_md.in
 #=======================================================================
 
+#--- Log (write LAMMPS thermo output to `thermo.log` in the current run_dir; the
+#---  Stage-10 md-manifest contract declares `thermo_log` as a required evidence role
+#---  and expects this exact filename). ---
+log         thermo.log
+
 #--- Initialization ---
 units       metal
 boundary    p p p

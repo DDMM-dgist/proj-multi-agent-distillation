@@ -32,6 +32,9 @@ BASE_URL_ENV = "PYDANTIC_AI_BASE_URL"
 # a local Ollama server. "anthropic"/"openai" = optional hosted backends (kept, not required).
 PROVIDER_KINDS = ("test", "local-openai", "ollama", "anthropic", "openai")
 LOCAL_KINDS = ("local-openai", "ollama")
+# Non-secret placeholder credential for local OpenAI-compatible servers. A local endpoint needs no
+# real key; this is passed explicitly so the openai SDK never falls back to a real OPENAI_API_KEY.
+LOCAL_PLACEHOLDER_API_KEY = "api-key-not-set"
 # Hosted (billable, credential-gated) backends: routed through preflight_credentials + the
 # generic pydantic_ai "provider:model" string, never a direct provider SDK call from our code.
 HOSTED_KINDS = ("anthropic", "openai")
@@ -290,8 +293,12 @@ def build_local_model(kind: str, model_id: str, base_url: str):
         raise RuntimeError(
             "the 'openai' SDK is not installed; pip install -e '.[pydantic-ai,local-openai]' "
             "to use a local OpenAI-compatible backend") from exc
+    # A local OpenAI-compatible server needs no real credential. Pass an explicit non-secret
+    # placeholder so the underlying openai SDK never falls back to reading OPENAI_API_KEY from the
+    # environment -- a real hosted secret must never be sent in the Authorization header of a request
+    # to a local (self-hosted, possibly untrusted) endpoint.
     if kind == "ollama":
-        provider = OllamaProvider(base_url=base_url)
+        provider = OllamaProvider(base_url=base_url, api_key=LOCAL_PLACEHOLDER_API_KEY)
     else:  # local-openai (vLLM and any other OpenAI-compatible server)
-        provider = OpenAIProvider(base_url=base_url)
+        provider = OpenAIProvider(base_url=base_url, api_key=LOCAL_PLACEHOLDER_API_KEY)
     return OpenAIChatModel(model_id, provider=provider)

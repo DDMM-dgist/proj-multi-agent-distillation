@@ -11,8 +11,9 @@ the 4 producer/analyst roles -- see
 ``tests/test_architecture_freeze.py::test_production_wiring_keeps_frozen_architecture_dimensions``,
 which pins that boundary.
 
-This module wires two bridge actions -- ``propose_recovery`` and ``commit_teacher_validation_plan``
--- to real controller calls. Every other name in ``ORCHESTRATOR_BRIDGE_ACTIONS`` is a real,
+This module wires three bridge actions -- ``propose_recovery``, ``commit_teacher_validation_plan``
+and ``propose_acquisition_plan`` -- to real controller calls. Every other name in
+``ORCHESTRATOR_BRIDGE_ACTIONS`` is a real,
 declared bridge action (present in the orchestrator's manifest, cross-checked by tests) but
 intentionally NOT_IMPLEMENTED here: it fails closed with ``BLOCKED_CAPABILITY`` rather than
 silently no-oping as if it succeeded. Wiring one of them up means adding it to
@@ -78,11 +79,32 @@ def _exec_commit_teacher_validation_plan(proposal: "OrchestratorActionProposal",
             "selected_components": record.get("selected_components")}
 
 
+def _exec_propose_acquisition_plan(proposal: "OrchestratorActionProposal", *, controller) -> dict:
+    """Bind an autonomously-designed acquisition plan into the run as a new run-bound input.
+
+    ``parameters.plan_path`` is the on-disk legacy 14-field ``AcquisitionPlan`` JSON that
+    ``framework_v2.acquisition.plan_assembly.build_legacy_projection`` produced (already
+    deterministically validated by ``validate_acquisition_plan_v2`` before we get here). Binding it
+    through the frozen ``RunController.bind_new_input`` makes it a first-class run input with a
+    content-addressed snapshot -- exactly the same mechanism ``initialize()`` uses for a
+    human-supplied plan -- so the ACQUISITION stage's existing fail-closed
+    ``_bind_acquisition_plan_for_stage`` / ``executors._validate_acquisition_plan`` gate accepts it
+    unchanged. This bridge never generates candidates or runs the Teacher; it only binds the
+    already-built plan artifact."""
+    plan_path = proposal.parameters.get("plan_path")
+    if not plan_path:
+        raise ValueError("propose_acquisition_plan requires parameters.plan_path")
+    record = controller.bind_new_input(plan_path, copy=True)
+    return {"source": record["source"], "snapshot": record.get("snapshot"),
+            "sha256": record["sha256"]}
+
+
 # Bridge actions with a real, wired controller call. Every other declared bridge action fails
 # closed as BLOCKED_CAPABILITY below -- adding support means adding an entry here, not weakening
 # the allowlist check.
 _BRIDGE_EXECUTORS = {"propose_recovery": _exec_propose_recovery,
-                     "commit_teacher_validation_plan": _exec_commit_teacher_validation_plan}
+                     "commit_teacher_validation_plan": _exec_commit_teacher_validation_plan,
+                     "propose_acquisition_plan": _exec_propose_acquisition_plan}
 
 
 def dispatch_orchestrator_action(proposal: OrchestratorActionProposal, *, controller,

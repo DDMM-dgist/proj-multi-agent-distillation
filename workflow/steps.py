@@ -525,14 +525,28 @@ def merge_datasets(sources, output, manifest, grouping_key="parent_structure_id"
     return result
 
 
-def train_committee(student_config, dataset, output_dir, manifest):
+def train_committee(student_config, dataset, output_dir, manifest, *,
+                    continue_from=None, total_epoch_override=None):
+    """Train the Student committee.
+
+    continue_from: optional mapping of committee member -> prior checkpoint for TRUE
+        RESUME. Keys are matched per seed as ``f"seed-{seed}"`` first, then the bare
+        ``str(seed)`` (so a plan may key by either). A member absent from the mapping
+        trains fresh. None => every member trains fresh.
+    total_epoch_override: optional MAXIMUM total epoch budget applied to every member,
+        overriding the config's train.total_epoch (continuation recovery).
+    """
     cfg = load_config(student_config)
     output_dir = Path(output_dir)
     models = []
     committee_cfg = cfg.get("committee", {}) or {}
     seeds = committee_cfg.get("seeds") or list(range(1, int(committee_cfg.get("n_seeds", 4)) + 1))
+    resume_map = dict(continue_from or {})
     for seed in seeds:
-        artifact = train_student(cfg, dataset, output_dir / f"seed-{seed}", seed)
+        seed_checkpoint = resume_map.get(f"seed-{seed}", resume_map.get(str(seed)))
+        artifact = train_student(cfg, dataset, output_dir / f"seed-{seed}", seed,
+                                 continue_from=seed_checkpoint,
+                                 total_epoch_override=total_epoch_override)
         models.append({"kind": artifact.kind, "seed": seed, "path": str(artifact.path),
                        "integrity": artifact_digest(artifact.path),
                        "metadata": artifact.metadata})
@@ -545,7 +559,7 @@ def train_committee(student_config, dataset, output_dir, manifest):
 
 
 def evaluate_committee(student_config, committee_manifest, frames_path, labeled_output, report,
-                       required_channels=None):
+                       required_channels=None, report_fingerprints=None):
     cfg = load_config(student_config)
     committee = json.loads(Path(committee_manifest).read_text())
     for model in committee["models"]:
@@ -569,12 +583,28 @@ def evaluate_committee(student_config, committee_manifest, frames_path, labeled_
             atoms.info[f"student_energy_seed{key}"] = float(energy)
             atoms.arrays[f"student_forces_seed{key}"] = np.asarray(forces)
     write(labeled_output, frames)
+    # Committee predictions are embedded on every evaluated frame above (label-free student
+    # forward pass, no leakage), so the labeled population can back downstream governed slices.
+    # The ACCURACY channels, however, are computed only over the governed report slice when
+    # ``report_fingerprints`` is given -- this isolates Stage-8's fidelity claim to the
+    # protected evaluation partition without re-running inference for each population.
+    report_frames = frames
+    if report_fingerprints is not None:
+        from validation.protected_reference import _structure_fingerprint as _ref_fp
+        allowed = set(report_fingerprints)
+        report_frames = [atoms for atoms in frames if _ref_fp(atoms) in allowed]
+        matched = {_ref_fp(atoms) for atoms in report_frames}
+        if matched != allowed:
+            raise RuntimeError(
+                "evaluate_committee report_fingerprints were not fully matched in the evaluated "
+                f"population: {len(allowed - matched)} governed frame(s) absent"
+            )
     results = {}
     required_channels = set(required_channels or [])
     for label, ref, pred in (("teacher_vs_dft", "dft", "teacher"),
                              ("student_vs_teacher", "teacher", "student"),
                              ("student_vs_dft", "dft", "student")):
-        results[label] = channel(frames, ref, pred, per_config_type=True,
+        results[label] = channel(report_frames, ref, pred, per_config_type=True,
                                  require_complete=label in required_channels)
     missing = [name for name in required_channels if results.get(name) is None]
     if missing:
@@ -601,6 +631,16 @@ def run_md(md_config, student_config, checkpoint, template_name, context_yaml, i
             raise ValueError(f"invalid MD evidence: {item}")
         evidence.append({"role": role, "path": str(path),
                          "integrity": artifact_digest(path)})
+    # A dedicated NVE energy-conservation segment writes its total-energy log (ENERGY_LOG in the
+    # rendered context) into the run_dir. Record it as first-class evidence (role
+    # nve_energy_log) so Stage-11 can consume it directly from this manifest -- unless the caller
+    # already declared it explicitly above.
+    energy_log_name = context.get("ENERGY_LOG")
+    if energy_log_name and not any(e["role"] == "nve_energy_log" for e in evidence):
+        energy_log_path = (Path(run_dir) / energy_log_name).resolve()
+        if energy_log_path.exists():
+            evidence.append({"role": "nve_energy_log", "path": str(energy_log_path),
+                             "integrity": artifact_digest(energy_log_path)})
     result = {"schema_version": 1, "input": str(Path(input_path).resolve()),
               "run_dir": str(Path(run_dir).resolve()), "checkpoint": str(checkpoint),
               "checkpoint_integrity": artifact_digest(checkpoint), "evidence": evidence}

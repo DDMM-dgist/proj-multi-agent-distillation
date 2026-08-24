@@ -155,5 +155,81 @@ class CapabilityRoutingTests(_RecoveryPlanFixture):
                 self._propose(root, controller, plan)
 
 
+class EvidenceGapRoutingGuardTests(_RecoveryPlanFixture):
+    """A diagnosis in the insufficient_evidence domain (evidence_gap / missing_evidence /
+    unknown) describes an evidence-SURFACING gap, not a grounded model/label/data deficiency, so
+    propose_recovery must refuse to route it into student retraining, a Teacher relabel, or fresh
+    DFT -- costly scientific corrective compute that cannot correct the diagnosed cause. This is the
+    exact defect behind recovery-004 (diagnosed evidence_gap / insufficient_evidence, routed to
+    model_retrain / full retrain). The escape hatch for a genuinely grounded model deficiency is to
+    diagnose it under the model_fitting domain instead (proven separately below)."""
+
+    def test_evidence_gap_cannot_route_to_student_retrain(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            controller = self._controller(root)
+            plan = self._base_plan(
+                failure_category="evidence_gap",
+                responsible_capability="model_retrain",
+                student_training={"retrain": True, "mode": "full"})
+            del plan["responsible_agent"]
+            with self.assertRaisesRegex(ValueError, "student_training.retrain"):
+                self._propose(root, controller, plan)
+
+    def test_evidence_gap_cannot_route_to_new_dft(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            controller = self._controller(root)
+            plan = self._base_plan(
+                failure_category="evidence_gap",
+                labeling={"teacher_relabel": False, "new_dft": True})
+            with self.assertRaisesRegex(ValueError, "labeling.new_dft"):
+                self._propose(root, controller, plan)
+
+    def test_evidence_gap_cannot_route_to_teacher_relabel(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            controller = self._controller(root)
+            plan = self._base_plan(
+                failure_category="missing_evidence",
+                labeling={"teacher_relabel": True, "new_dft": False})
+            with self.assertRaisesRegex(ValueError, "labeling.teacher_relabel"):
+                self._propose(root, controller, plan)
+
+    def test_evidence_gap_routes_to_evidence_repair_without_corrective_compute(self):
+        # The corrected route: an insufficient-evidence recovery that requests NO retrain / new
+        # DFT / relabel is accepted and routes to the evidence_repair capability so the review
+        # packet is regenerated from the already-computed artifacts.
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            controller = self._controller(root)
+            plan = self._base_plan(
+                failure_category="evidence_gap",
+                responsible_capability="evidence_repair",
+                proposed_changes=[{"type": "regenerate_review_packet"}])
+            del plan["responsible_agent"]
+            recovery = self._propose(root, controller, plan)
+            self.assertEqual(recovery["status"], "proposed")
+            self.assertEqual(recovery["resolved_responsible_capability"], "evidence_repair")
+            self.assertEqual(recovery["failure_domain"], "insufficient_evidence")
+
+    def test_grounded_model_fitting_failure_still_routes_to_retrain(self):
+        # The escape hatch: a genuinely grounded fidelity deficiency diagnosed under the
+        # model_fitting domain (student_fidelity) may still authorize a student retrain -- the
+        # guard is domain-scoped, never a blanket ban on retraining.
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            controller = self._controller(root)
+            plan = self._base_plan(
+                failure_category="student_fidelity",
+                responsible_capability="model_retrain",
+                student_training={"retrain": True, "mode": "full"})
+            del plan["responsible_agent"]
+            recovery = self._propose(root, controller, plan)
+            self.assertEqual(recovery["status"], "proposed")
+            self.assertEqual(recovery["failure_domain"], "model_fitting")
+            self.assertTrue(recovery["plan"]["student_training"]["retrain"])
+
+
 if __name__ == "__main__":
     unittest.main()

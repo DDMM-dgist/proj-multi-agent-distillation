@@ -235,3 +235,13 @@ class RuntimeInvocationRecord(BaseModel):
     llm_proposed_verdict: Optional[str] = None
     verdict_overridden: bool = False
     criterion_contradictions: list[str] = Field(default_factory=list)
+    # --- Section Y reproducibility provenance (additive; None on older records) -----
+    # The sampling settings actually used for this attempt, and the canonical SHAs of the
+    # CanonicalReviewPacket the judge reviewed and the ScientificDecisionRecord under review.
+    # None on pre-closure provenance and on non-judge attempts. Recording them here makes a
+    # judge attempt reproducible (same packet SHA + same sampling settings) and lets an auditor
+    # confirm all three lenses reasoned over the identical packet bytes.
+    temperature: Optional[float] = None
+    seed: Optional[int] = None
+    packet_sha256: Optional[str] = None
+    decision_sha256: Optional[str] = None

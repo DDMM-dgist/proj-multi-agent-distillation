@@ -111,17 +111,46 @@ class RootCauseValidationError(ValueError):
 # py's module docstring on why affected_channel is not itself a schema Enum), so matched loosely.
 _DFT_CHANNEL_MARKERS = ("dft", "reference_disagreement")
 
+# Negation cues that, when present in a short affected_channel phrase, mean a DFT-channel MENTION is
+# being ruled OUT rather than asserted (e.g. "...(not a Teacher-vs-DFT accuracy-disagreement
+# channel)"). Naive substring presence of "dft" is NOT a semantic assertion: an analyst who
+# explicitly negates the Teacher-vs-DFT channel while classifying an evidence/provenance gap must
+# not have that negated mention read as asserting the very channel they excluded (FE-032 forensic
+# finding: a correctly-typed `evidence_gap` diagnosis was auto-rejected because "Teacher-vs-DFT"
+# appeared inside a negated phrase). Typed `failure_category` semantics dominate incidental prose.
+_CHANNEL_NEGATION_CUES = (
+    "not ", "not-", "n't", "non-", "no ", "never", "without", "excluding", "except",
+    "other than", "rather than", "instead of", "as opposed to", "isn't", "aren't", "is not",
+    "are not", "was not", "were not")
+
+
+def _channel_affirms_dft_comparison(affected_channel) -> bool:
+    """True iff the free-text ``affected_channel`` AFFIRMATIVELY names a Teacher-vs-DFT channel and
+    is not a negated/ruled-out mention. A negated marker (any ``_CHANNEL_NEGATION_CUES`` token in the
+    phrase) fails toward NOT-asserting so a correctly-typed evidence/provenance-gap classification is
+    never rejected for incidental negated prose."""
+    channel = (affected_channel or "").strip().lower()
+    if not any(marker in channel for marker in _DFT_CHANNEL_MARKERS):
+        return False
+    if any(cue in channel for cue in _CHANNEL_NEGATION_CUES):
+        return False
+    return True
+
 
 def _asserts_dft_comparison(classification: "RootCauseClassification") -> bool:
-    channel = (classification.affected_channel or "").strip().lower()
     # `failure_category` is a `str`-mixin Enum member (see recovery_taxonomy.failure_category_enum):
     # `str(member)` renders "FailureCategory.reference_disagreement", not the raw registered code,
     # so compare the member's own `.value` (equivalently, `==` against the plain string) rather than
-    # its `str()` -- otherwise this half of the gate can never fire.
+    # its `str()` -- otherwise this half of the gate can never fire. The TYPED category is the
+    # authoritative signal: `reference_disagreement` IS the Teacher-vs-DFT accuracy channel and
+    # always asserts a comparison; every other (typed) category does not, and its semantics dominate
+    # the free-text `affected_channel`, which is consulted only for an AFFIRMATIVE, non-negated DFT
+    # mention (preserving the R20/R26 protections without the naive-substring false positive).
     category = classification.failure_category.value \
         if hasattr(classification.failure_category, "value") else str(classification.failure_category)
-    return (any(marker in channel for marker in _DFT_CHANNEL_MARKERS)
-            or category == "reference_disagreement")
+    if category == "reference_disagreement":
+        return True
+    return _channel_affirms_dft_comparison(classification.affected_channel)
 
 
 def _near_miss_hint(missing, available) -> str:

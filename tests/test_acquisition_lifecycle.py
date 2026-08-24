@@ -203,6 +203,9 @@ class AcquisitionLifecycleRunStageTests(unittest.TestCase):
         self.assertEqual(adapter.call_count, 0)
 
     def test_valid_plan_requires_exact_plan_approval(self):
+        # The bound augment-atoms recipe drives the Teacher calculator, so the costly_teacher_labeling
+        # approval is legitimately required before execution; absent an exact-plan approval the run
+        # pauses at the human boundary rather than executing.
         self._init(include_plan=True)
         code = cli.main(["run-stage", "--runtime", "mock", "--run-dir", str(self.run_dir), "--stage", "acquisition", "--auto-mock-judges"])
         self.assertEqual(code, cli.EXIT_APPROVAL_REQUIRED)
@@ -211,6 +214,8 @@ class AcquisitionLifecycleRunStageTests(unittest.TestCase):
         self.assertFalse(c.state.get("idempotency"))
 
     def test_approval_for_other_plan_hash_is_rejected(self):
+        # An approval bound to the WRONG plan hash does not satisfy the exact plan-binding, so the run
+        # still pauses at the costly_teacher_labeling boundary.
         self._init(include_plan=True)
         cli.main(["approve", "--run-dir", str(self.run_dir), "--boundary", "costly_teacher_labeling", "--note", "wrong", "--plan-sha256", "0" * 64])
         code = cli.main(["run-stage", "--runtime", "mock", "--run-dir", str(self.run_dir), "--stage", "acquisition", "--auto-mock-judges"])
@@ -287,6 +292,11 @@ class AcquisitionLifecycleRunStageTests(unittest.TestCase):
         self.assertEqual([a.info["parent"] for a in frames], ["native-parent-0", "native-parent-1"])
         manifest = json.loads((self.run_dir / "artifacts" / "acquisition.manifest.json").read_text(encoding="utf-8"))
         self.assertEqual(manifest["actual_output_count"], 2)
+        # The manifest must carry the data_coverage lineage contract (n_frames + real elements)
+        # derived from the actual produced artifact, so it is self-sufficient for the downstream
+        # data_coverage reader. Both are computed from the produced frames -- never hardcoded.
+        self.assertEqual(manifest["n_frames"], 2)
+        self.assertEqual(manifest["elements"], ["Cu"])
         self.assertEqual(manifest["translated_command"], calls["command"])
         self.assertTrue((self.run_dir / "artifacts" / "acquisition_protection_audit.json").is_file())
 

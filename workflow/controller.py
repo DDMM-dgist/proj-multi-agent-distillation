@@ -64,6 +64,13 @@ DEFAULT_RECOVERY_CAPABILITY_ROSTER = {
     "simulation_rerun": "simulation",
     "root_cause_analysis": "analyst",
     "orchestration": "orchestrator",
+    # evidence_repair is the capability an insufficient-evidence diagnosis routes to: it
+    # re-surfaces / regenerates the review packet from the already-computed artifacts so the
+    # Judges can read the evidence they were previously shown only in bounded form. It performs
+    # no scientific corrective compute (no retrain/relabel/new DFT) -- the orchestrator owns it
+    # because assembling the CanonicalReviewPacket and re-running the gate is an orchestration
+    # concern, not a data/model/simulation science action. See _validate_evidence_gap_recovery.
+    "evidence_repair": "orchestrator",
 }
 RECOVERY_AGENTS = frozenset(DEFAULT_RECOVERY_CAPABILITY_ROSTER.values())
 ADJUDICATION_DECISIONS = {"ACCEPT_DECLARED_LIMITATION", "REQUIRE_SCIENTIFIC_RECOVERY"}
@@ -161,6 +168,112 @@ def git_revision(project_dir):
             "diff_sha256": hashlib.sha256(payload).hexdigest() if dirty else None}
 
 
+# Reference kinds whose declared `structures` population is cited as first-class validation
+# evidence (e.g. reference_validation's protected_reference_structures). For these the
+# structures file itself must be a run-bound Controller input so it lands in the
+# validation-evidence allowlist -- binding only the reference.yaml leaves its structures.path
+# unbound and reference_validation fails its evidence-binding gate. Keyed on the generic
+# reference `kind` only, never on any material/element; extend this set (not per-material logic)
+# if another evidence-bearing reference kind is added.
+EVIDENCE_STRUCTURE_REFERENCE_KINDS = frozenset({"recovered-original-holdout"})
+
+
+def referenced_evidence_structure(source, *, project_dir):
+    """If ``source`` is a YAML reference of an evidence-bearing kind (see
+    ``EVIDENCE_STRUCTURE_REFERENCE_KINDS``) that declares a ``structures.path``, resolve and
+    hash-verify that structures file and return ``(resolved_path, integrity)`` so the caller can
+    bind it as its own Controller input. Return ``None`` for any input that is not such a
+    reference (a plain data/config file, a reference of another kind, unparsable YAML).
+
+    Fail closed: a missing structures file raises ``FileNotFoundError``; a declared
+    ``structures.sha256`` that does not match the file's actual digest raises ``ValueError``.
+    This does NOT weaken ``validate_evidence`` and does NOT make the evidence allowlist
+    recursively trust arbitrary paths found inside YAML -- the caller binds exactly the one
+    declared, hash-verified structures population as an explicit input, identically to a
+    human-authored ``copy: false`` structures input."""
+    try:
+        text = Path(source).read_text(encoding="utf-8")
+    except (OSError, UnicodeDecodeError, ValueError):
+        return None
+    try:
+        doc = yaml.safe_load(text)
+    except yaml.YAMLError:
+        return None
+    if not isinstance(doc, dict) or doc.get("kind") not in EVIDENCE_STRUCTURE_REFERENCE_KINDS:
+        return None
+    structures = doc.get("structures")
+    if not isinstance(structures, dict) or not isinstance(structures.get("path"), str):
+        return None
+    raw = structures["path"].format(project_dir=str(project_dir))
+    structures_path = Path(raw)
+    if not structures_path.is_absolute():
+        structures_path = (Path(source).resolve().parent / structures_path)
+    structures_path = structures_path.resolve()
+    kind = doc.get("kind")
+    if not structures_path.exists():
+        raise FileNotFoundError(
+            f"{kind} reference {Path(source).name} declares a structures population that is "
+            f"missing: {structures_path}")
+    integrity = artifact_digest(structures_path)
+    declared_sha = structures.get("sha256")
+    if isinstance(declared_sha, str) and declared_sha and declared_sha != integrity["sha256"]:
+        raise ValueError(
+            f"{kind} reference {Path(source).name} structures sha256 mismatch: declared "
+            f"{declared_sha}, actual {integrity['sha256']} ({structures_path})")
+    return structures_path, integrity
+
+
+def referenced_split_manifest(source, *, project_dir):
+    """If ``source`` is a YAML reference of an evidence-bearing kind (see
+    ``EVIDENCE_STRUCTURE_REFERENCE_KINDS``) that declares a ``split_source_manifest`` path, resolve
+    and hash-verify that manifest and return ``(resolved_path, integrity)`` so the caller can bind
+    it as its own Controller input. Return ``None`` for any input that is not such a reference or
+    that declares no ``split_source_manifest``.
+
+    The split-source manifest is the authoritative source→split crosswalk (records carrying
+    ``source_category`` + ``source_local_index`` + ``split``) that the recovered held-out frames'
+    per-frame lineage keys join against; without it bound, ``reference_validation``'s bounded
+    evidence packet reports every frame as source-split-unjoined / domain unknown even though the
+    frames carry the join keys, and the gate cannot verify the split-membership / lineage criteria.
+    Binding it here is the same transitive-evidence invariant as ``referenced_evidence_structure``
+    applies to ``structures.path`` (see FE-031): the companion provenance file a reference points
+    at must itself be a run-bound, hash-verified Controller input.
+
+    Fail closed: a missing manifest raises ``FileNotFoundError``; a declared
+    ``split_source_manifest_sha256`` that does not match the file's actual digest raises
+    ``ValueError``. Keyed on the generic reference ``kind`` only, never on any material/element."""
+    try:
+        text = Path(source).read_text(encoding="utf-8")
+    except (OSError, UnicodeDecodeError, ValueError):
+        return None
+    try:
+        doc = yaml.safe_load(text)
+    except yaml.YAMLError:
+        return None
+    if not isinstance(doc, dict) or doc.get("kind") not in EVIDENCE_STRUCTURE_REFERENCE_KINDS:
+        return None
+    declared = doc.get("split_source_manifest")
+    if not isinstance(declared, str) or not declared:
+        return None
+    raw = declared.format(project_dir=str(project_dir))
+    manifest_path = Path(raw)
+    if not manifest_path.is_absolute():
+        manifest_path = (Path(source).resolve().parent / manifest_path)
+    manifest_path = manifest_path.resolve()
+    kind = doc.get("kind")
+    if not manifest_path.exists():
+        raise FileNotFoundError(
+            f"{kind} reference {Path(source).name} declares a split_source_manifest that is "
+            f"missing: {manifest_path}")
+    integrity = artifact_digest(manifest_path)
+    declared_sha = doc.get("split_source_manifest_sha256")
+    if isinstance(declared_sha, str) and declared_sha and declared_sha != integrity["sha256"]:
+        raise ValueError(
+            f"{kind} reference {Path(source).name} split_source_manifest sha256 mismatch: declared "
+            f"{declared_sha}, actual {integrity['sha256']} ({manifest_path})")
+    return manifest_path, integrity
+
+
 # Durable-state schema version. v7 adds ADDITIVE operational metadata only (runtime attempt
 # references, action idempotency, stale-running runner metadata). It does NOT change any
 # stage/gate/retry/recovery scientific semantics. v6 manifests remain readable as-is; a v6 run
@@ -254,6 +367,36 @@ class RunController:
                 if not source.is_file():
                     raise ValueError("directory inputs must use copy: false and are hash-bound in place")
             prepared_inputs.append((source, bool(spec.get("copy", True)), source_integrity))
+        # Auto-bind the structures population of any evidence-bearing reference (e.g.
+        # recovered-original-holdout) as its own hash-bound input, so it lands in the
+        # validation-evidence allowlist. Binding only the reference.yaml leaves its
+        # structures.path unbound and reference_validation fails its evidence-binding gate. Bound
+        # copy=False (hash-bound in place), exactly as a human would declare a structures input;
+        # skipped if the structures file is already a declared input (no duplicate).
+        bound_sources = {src.resolve() for src, _copy, _integ in prepared_inputs}
+        for src, _copy, _integ in list(prepared_inputs):
+            found = referenced_evidence_structure(src, project_dir=project_dir)
+            if found is None:
+                continue
+            structures_path, structures_integrity = found
+            if structures_path in bound_sources:
+                continue
+            prepared_inputs.append((structures_path, False, structures_integrity))
+            bound_sources.add(structures_path)
+        # Auto-bind the authoritative source->split crosswalk manifest of any evidence-bearing
+        # reference (see referenced_split_manifest / FE-032) as its own hash-bound input, so the
+        # recovered held-out frames' per-frame lineage keys can be joined against it in the bounded
+        # evidence packet and reference_validation's split-membership/lineage criteria are
+        # verifiable. Same transitive-evidence invariant as the structures auto-bind above.
+        for src, _copy, _integ in list(prepared_inputs):
+            found = referenced_split_manifest(src, project_dir=project_dir)
+            if found is None:
+                continue
+            manifest_path, manifest_integrity = found
+            if manifest_path in bound_sources:
+                continue
+            prepared_inputs.append((manifest_path, False, manifest_integrity))
+            bound_sources.add(manifest_path)
         contract_sources_spec = cfg.get("validation_contract_sources")
         prepared_contract_sources = None
         if contract_sources_spec is not None:
@@ -512,7 +655,16 @@ class RunController:
                      # mark_stage_not_applicable.
                      "teacher_evidence_sources": prepared_teacher_evidence_sources,
                      "teacher_validation_plan": None,
-                     "stage_applicability": {}}
+                     "stage_applicability": {},
+                     # Framework V2 (additive; schema_version UNCHANGED at 10 -- this key
+                     # defaults when absent, like the v8/v9/v10 additive keys). Empty and
+                     # disabled unless bind_v2_scope_contract() is called for this run. When
+                     # disabled, record_gate() behaves byte-for-byte as before. See
+                     # _v2_state / bind_v2_* / _enforce_v2_gate_preconditions and the
+                     # framework_v2 package (typed scientific contracts + deterministic
+                     # convergence / judge-contradiction gate enforcement).
+                     "framework_v2": {"enabled": False, "contracts": {},
+                                      "stage_bindings": {}, "scope_contract_sha256": None}}
             if validation_contract_record is not None:
                 state["events"].append({
                     "at": validation_contract_record["established_at"],
@@ -578,8 +730,105 @@ class RunController:
         self.state["inputs"].append(record)
         self.state["events"].append({"at": now(), "type": "input_bound", "source": str(source),
                                      "sha256": source_integrity["sha256"], "index": index})
+        # Auto-bind the structures population of an evidence-bearing reference (e.g.
+        # recovered-original-holdout) as its own hash-bound input too -- the same invariant
+        # initialize() enforces, so a reference bound post-init does not silently leave its
+        # structures.path outside the validation-evidence allowlist. Skipped if already bound.
+        found = referenced_evidence_structure(source, project_dir=Path(self.state["project_dir"]))
+        if found is not None:
+            structures_path, structures_integrity = found
+            already = {Path(r["source"]).resolve() for r in self.state["inputs"]}
+            if structures_path not in already:
+                structures_index = len(self.state["inputs"])
+                self.state["inputs"].append(
+                    {"source": str(structures_path), "snapshot": None, "copy": False,
+                     "source_integrity": structures_integrity,
+                     "size": structures_integrity["size"],
+                     "sha256": structures_integrity["sha256"],
+                     "source_sha256": structures_integrity["sha256"]})
+                self.state["events"].append(
+                    {"at": now(), "type": "input_bound", "source": str(structures_path),
+                     "sha256": structures_integrity["sha256"], "index": structures_index,
+                     "auto_bound_structures_for": str(source)})
+        # Auto-bind the reference's declared source->split crosswalk manifest too (see FE-032),
+        # the same invariant initialize() enforces, so a reference bound post-init does not leave
+        # its split_source_manifest outside the run inputs / evidence allowlist. Skipped if bound.
+        found_manifest = referenced_split_manifest(
+            source, project_dir=Path(self.state["project_dir"]))
+        if found_manifest is not None:
+            manifest_path, manifest_integrity = found_manifest
+            already = {Path(r["source"]).resolve() for r in self.state["inputs"]}
+            if manifest_path not in already:
+                manifest_index = len(self.state["inputs"])
+                self.state["inputs"].append(
+                    {"source": str(manifest_path), "snapshot": None, "copy": False,
+                     "source_integrity": manifest_integrity,
+                     "size": manifest_integrity["size"],
+                     "sha256": manifest_integrity["sha256"],
+                     "source_sha256": manifest_integrity["sha256"]})
+                self.state["events"].append(
+                    {"at": now(), "type": "input_bound", "source": str(manifest_path),
+                     "sha256": manifest_integrity["sha256"], "index": manifest_index,
+                     "auto_bound_split_manifest_for": str(source)})
         self.save()
         return record
+
+    def active_inputs(self):
+        """The run-bound inputs that have NOT been superseded. Superseded inputs stay in
+        state (immutable lineage) but are excluded from any 'which input of a kind is
+        active' resolution (e.g. selecting the current acquisition_plan)."""
+        return [r for r in self.state.get("inputs", []) if not r.get("superseded")]
+
+    def supersede_input(self, matcher, *, reason, superseded_by=None):
+        """Mark a previously bound, still-active input as superseded. The record and its
+        content-addressed snapshot are NEVER deleted -- they remain immutable lineage; the
+        input is only excluded from active-input selection (see active_inputs). This is the
+        mechanism a coverage-deficit re-acquisition uses to retire a stale acquisition_plan
+        so a fresh, gap-driven plan can take its place without the resolver seeing two plans
+        as an ambiguous binding. ``matcher`` matches an active input by resolved source or
+        snapshot path, by sha256, or by exact recorded source string. Fails closed if no
+        active input matches (never silently no-ops)."""
+        target = str(matcher)
+        try:
+            resolved_target = str(Path(target).resolve())
+        except Exception:
+            resolved_target = None
+        matched = []
+        for record in self.state.get("inputs", []):
+            if record.get("superseded"):
+                continue
+            src = str(Path(record["source"]).resolve()) if record.get("source") else None
+            snap = str(Path(record["snapshot"]).resolve()) if record.get("snapshot") else None
+            if (resolved_target is not None and resolved_target in (src, snap)) \
+                    or record.get("sha256") == target or record.get("source") == target:
+                matched.append(record)
+        if not matched:
+            raise ValueError(f"no active bound input matches: {matcher}")
+        for record in matched:
+            record["superseded"] = True
+            record["superseded_at"] = now()
+            record["superseded_reason"] = str(reason)
+            if superseded_by is not None:
+                record["superseded_by"] = str(superseded_by)
+            self.state["events"].append(
+                {"at": now(), "type": "input_superseded", "source": record.get("source"),
+                 "sha256": record.get("sha256"), "reason": str(reason),
+                 "superseded_by": str(superseded_by) if superseded_by is not None else None})
+        self.save()
+        return matched
+
+    def supersede_bound_acquisition_plan(self, *, reason):
+        """Retire the run's currently-active AcquisitionPlan input (identified the same way the
+        stage resolver identifies it: a ``*acquisition_plan.json`` source) so a coverage-deficit
+        re-acquisition re-plans instead of reusing the stale plan (which would regenerate byte-
+        identical candidates and dead-loop the recovery's changed-artifact requirement). Returns
+        the superseded records, or [] if no active plan is bound (a run that never had one)."""
+        active_plans = [r for r in self.active_inputs()
+                        if str(r.get("source") or "").endswith("acquisition_plan.json")]
+        superseded = []
+        for record in active_plans:
+            superseded.extend(self.supersede_input(record["source"], reason=reason))
+        return superseded
 
     # --- v7 additive operational metadata (NO change to gate/retry/recovery semantics) --------
     def record_runtime_attempt(self, *, task_id, attempt_id, provenance_path, role="",
@@ -598,23 +847,44 @@ class RunController:
         """True if an action with this idempotency key was already recorded (duplicate guard)."""
         return idempotency_key in self.state.get("idempotency", {})
 
-    def grant_action_approval(self, boundary, *, scope="run", note="", plan_sha256=None):
+    def grant_action_approval(self, boundary, *, scope="run", note="", plan_sha256=None,
+                              action_type=None):
         """Record a human approval for an approval boundary (e.g. costly_teacher_labeling). This
         is the durable approval record the action dispatcher checks before a costly/side-effecting
-        action may execute. Additive; independent of the recovery human-approval state machine."""
+        action may execute. Additive; independent of the recovery human-approval state machine.
+
+        An approval is bound to the exact expensive action it authorizes: ``action_type`` names the
+        single action the grant may satisfy, and ``plan_sha256`` (where applicable) pins the exact
+        plan/decision identity. A grant bound to one action can NEVER authorize a different action,
+        and a plan-scoped grant can NEVER be consumed without the exact plan hash -- so a Stage 3
+        acquisition approval cannot leak into Stage 5 labeling (or vice versa)."""
         record = {"granted": True, "scope": scope, "note": note, "at": now()}
+        if action_type is not None:
+            record["action_type"] = str(action_type)
+            record["scope"] = "exact_action"
         if plan_sha256 is not None:
             record["plan_sha256"] = str(plan_sha256)
             record["scope"] = "exact_acquisition_plan"
         self.state.setdefault("action_approvals", {})[boundary] = record
         self.save()
 
-    def has_action_approval(self, boundary, plan_sha256=None):
+    def has_action_approval(self, boundary, action_type=None, plan_sha256=None):
+        """True iff a grant for ``boundary`` authorizes exactly this ``action_type`` (and plan).
+
+        Fail-closed on every bound dimension:
+          * a grant bound to a specific ``action_type`` authorizes ONLY that action -- a check for
+            any other action returns False (no cross-action reuse);
+          * a plan-scoped grant requires the exact ``plan_sha256`` -- a ``None`` or mismatched plan
+            identity can NEVER broaden or consume it (``None`` is not a wildcard)."""
         record = self.state.get("action_approvals", {}).get(boundary, {})
         if not record.get("granted"):
             return False
-        if plan_sha256 is not None:
-            return record.get("plan_sha256") == str(plan_sha256)
+        granted_action = record.get("action_type")
+        if granted_action is not None and action_type != granted_action:
+            return False
+        granted_plan = record.get("plan_sha256")
+        if granted_plan is not None and (plan_sha256 is None or str(plan_sha256) != str(granted_plan)):
+            return False
         return True
 
     # --- v7 additive: scheduler job lifecycle (pending -> collect -> resume) ------------------
@@ -1298,8 +1568,9 @@ class RunController:
             vote_payload = {key: vote.get(key) for key in (
                 "review_lens", "verdict", "criteria_checked", "rationale", "required_fix"
             )}
+            lens_id = expected_lenses[index - 1]
             validated = validate_judge_vote(
-                vote_payload, criteria, review_lens=expected_lenses[index - 1]
+                vote_payload, criteria, review_lens=lens_id
             )
             verdict = validated["verdict"]
             review_lens = validated["review_lens"]
@@ -1374,6 +1645,15 @@ class RunController:
                 stage, [record["path"] for record in self.stage_artifacts(name)],
                 enforce_required_pass=True,
             )
+        v2_gate_facts = None
+        if verdict == "PASS":
+            v2_gate_facts = self._enforce_v2_gate_preconditions(name, bundle)
+        # Framework-V2 scientific-adequacy layer (Session 2026-08-21 closure).
+        # Additive: inert if no scientific policy is bound to this stage; otherwise
+        # a procedural PASS cannot advance under FAIL / (NOT_EVALUABLE when required).
+        scientific_adequacy_summary = None
+        if verdict == "PASS":
+            scientific_adequacy_summary = self._enforce_scientific_adequacy(name)
         saved_votes = None
         if votes_path:
             iteration_id = self._current_iteration()["id"]
@@ -1391,10 +1671,16 @@ class RunController:
         if verdict != "PASS":
             self.invalidate_from(name)
         gate_time = now()
-        self.state["events"].append({"at": gate_time, "type": "gate", "stage": name,
-                                     "verdict": verdict, "evidence": evidence,
-                                     "votes": str(saved_votes) if saved_votes else None,
-                                     "vote_bundle": bundle})
+        gate_event = {"at": gate_time, "type": "gate", "stage": name,
+                      "verdict": verdict, "evidence": evidence,
+                      "votes": str(saved_votes) if saved_votes else None,
+                      "vote_bundle": bundle}
+        if v2_gate_facts:
+            gate_event["framework_v2"] = v2_gate_facts
+        if scientific_adequacy_summary:
+            gate_event["scientific_adequacy"] = scientific_adequacy_summary
+            stage["scientific_adequacy"] = scientific_adequacy_summary
+        self.state["events"].append(gate_event)
         if verdict != "PASS":
             # A stage that reached a REVISE/FAIL-eligible terminal state WITHOUT ever completing
             # (timed_out, failed, cancelled -- see EXECUTION_TERMINAL_FOR_GATE) has no registered
@@ -1418,6 +1704,283 @@ class RunController:
             raise RuntimeError(
                 "a REVISE/FAIL recovery is pending; propose, approve, and start the next iteration"
             )
+
+    # ------------------------------------------------------------------
+    # Scientific-adequacy layer (framework_v2.scientific_gate)
+    # ------------------------------------------------------------------
+    def bind_scientific_policy(self, stage_name, kind, policy_dict, *,
+                               source_ref, note="", required=True):
+        """Attach a scientific policy contract to a stage BEFORE evidence exists.
+
+        The bind is IMMUTABLE: rebinding the same (stage, kind) with a
+        different content-hash raises. Binding is idempotent on identical
+        content-hash. Every bind emits an auditable event.
+        """
+        from framework_v2.scientific_gate import bind_policy
+        stage = self.stage(stage_name)   # raises if unknown stage name
+        if stage["status"] != "pending":
+            raise RuntimeError(
+                f"scientific policy for {stage_name!r} must be bound BEFORE evidence exists; "
+                f"stage.status is {stage['status']!r}")
+        record = bind_policy(self.state, stage_name, kind, policy_dict,
+                             source_ref=source_ref, note=note, required=required)
+        self.save()
+        return record
+
+    def _enforce_scientific_adequacy(self, stage_name):
+        """Invoked at record_gate PASS time. Raises to block advancement if any
+        bound scientific policy scores FAIL (or NOT_EVALUABLE when required)."""
+        from framework_v2.scientific_gate import (
+            assert_stage_scientific_adequacy,
+        )
+        run_dir = self.run_dir
+
+        def _load_json(rel):
+            p = run_dir / rel
+            if not p.is_file():
+                return None
+            return json.loads(p.read_text())
+
+        loaders = {
+            "accuracy_report_loader": lambda: _load_json("artifacts/accuracy_report.json"),
+            "uncertainty_report_loader": lambda: _load_json("artifacts/uncertainty_report.json"),
+            "md_manifest_loader": lambda: _load_json("artifacts/md.manifest.json"),
+            "validation_report_loader": lambda: _load_json("artifacts/validation_report.json"),
+        }
+        return assert_stage_scientific_adequacy(self.state, stage_name, **loaders)
+
+    # ------------------------------------------------------------------
+    # Framework V2 binding + gate enforcement (additive; inert when unused)
+    # ------------------------------------------------------------------
+    def _v2_state(self) -> dict:
+        """The run's Framework-V2 sub-state, defaulted for pre-V2 manifests
+        (mirrors the v7/v8 additive-field accessor convention)."""
+        v2 = self.state.get("framework_v2")
+        if not isinstance(v2, dict):
+            v2 = {"enabled": False, "contracts": {}, "stage_bindings": {},
+                  "scope_contract_sha256": None}
+            self.state["framework_v2"] = v2
+        v2.setdefault("enabled", False)
+        v2.setdefault("contracts", {})
+        v2.setdefault("stage_bindings", {})
+        v2.setdefault("scope_contract_sha256", None)
+        return v2
+
+    def v2_enabled(self) -> bool:
+        return bool(self._v2_state().get("enabled"))
+
+    def bind_v2_scope_contract(self, contract: dict) -> str:
+        """Bind this run's DeploymentScopeContract (as a dict) and turn on V2
+        gate enforcement. Returns the contract's content SHA. The scope is the
+        single source of truth every downstream V2 contract binds to; binding
+        it here is what makes ``record_gate`` consult the V2 preconditions."""
+        sha = self._register_v2_contract(contract)
+        v2 = self._v2_state()
+        v2["enabled"] = True
+        v2["scope_contract_sha256"] = sha
+        self.state["events"].append({"at": now(), "type": "v2_scope_contract_bound",
+                                     "scope_contract_sha256": sha})
+        self.save()
+        return sha
+
+    def bind_v2_contract(self, role: str, contract: dict, *, stage: str | None = None) -> str:
+        """Bind a downstream V2 contract (dict) under ``role`` (e.g.
+        ``convergence_policy``, ``evaluation_policy``, ``dataset_partition_plan``).
+        If ``stage`` is given the binding also attaches to that stage so
+        ``record_gate`` enforces it there. Returns the content SHA."""
+        if not self.v2_enabled():
+            raise RuntimeError("bind the V2 scope contract before downstream contracts")
+        sha = self._register_v2_contract(contract)
+        v2 = self._v2_state()
+        if stage is not None:
+            v2["stage_bindings"].setdefault(stage, {})[role] = sha
+        else:
+            v2["stage_bindings"].setdefault("_run", {})[role] = sha
+        self.state["events"].append({"at": now(), "type": "v2_contract_bound",
+                                     "role": role, "stage": stage, "contract_sha256": sha})
+        self.save()
+        return sha
+
+    def bind_v2_stage_review_spec(self, stage: str, spec: dict) -> str:
+        """Bind a frozen StageReviewSpec (dict) to ``stage`` under the
+        ``stage_review_spec`` role. Once bound, a PASS at that stage additionally
+        requires a vote bundle carrying ``v2_review`` (the CanonicalReviewPacket
+        plus one JudgeReview per declared lens) that passes deterministic
+        JudgeReview validation — an INVALID_JUDGE_OUTPUT refuses PASS and never
+        becomes a scientific vote. Inert until such a bundle is supplied, so
+        pre-closure gate behavior is unchanged. Returns the spec's content SHA."""
+        return self.bind_v2_contract("stage_review_spec", spec, stage=stage)
+
+    def _register_v2_contract(self, contract: dict) -> str:
+        """Store a contract dict keyed by its canonical SHA. The SHA is
+        computed with the same canonical-JSON rule framework_v2.ContractBase
+        uses, so a dict round-tripped from a contract keeps its identity."""
+        import hashlib as _hashlib
+        payload = json.dumps(contract, sort_keys=True, separators=(",", ":"),
+                             ensure_ascii=False)
+        sha = _hashlib.sha256(payload.encode("utf-8")).hexdigest()
+        self._v2_state()["contracts"][sha] = contract
+        return sha
+
+    def v2_contract(self, sha: str) -> dict | None:
+        return self._v2_state().get("contracts", {}).get(sha)
+
+    def v2_stage_binding(self, stage: str) -> dict:
+        return dict(self._v2_state().get("stage_bindings", {}).get(stage, {}))
+
+    def _bound_stage_review_spec(self, stage: str):
+        """Return the frozen StageReviewSpec bound to ``stage`` (Section E) as a
+        pydantic object, or ``None`` when V2 closure review is not bound for it.
+        Used to validate each Judge vote against its own lens's predeclared
+        criteria in ``_validate_vote_bundle``."""
+        if not self.v2_enabled():
+            return None
+        sha = self.v2_stage_binding(stage).get("stage_review_spec")
+        if not sha:
+            return None
+        contract = self.v2_contract(sha)
+        if contract is None:
+            return None
+        from framework_v2.review_spec import StageReviewSpec
+        return StageReviewSpec(**contract)
+
+    def _enforce_v2_gate_preconditions(self, name: str, bundle) -> dict | None:
+        """Deterministic V2 preconditions on a PASS. Fail-closed:
+
+          * ``convergence_policy`` bound to this stage -> build the convergence
+            report from the run's committee logs; refuse PASS unless
+            ``convergence_gate_ok`` (an R31 max-epoch-as-converged guard).
+          * a vote bundle carrying structured V2 judgments + cited facts ->
+            refuse PASS if any judgment contradicts a deterministic fact
+            (JUDGE_CONTRADICTION is not usable as PASS evidence).
+
+        Returns a small audit dict recorded on the gate event, or None when V2
+        is disabled (in which case this method is a complete no-op, preserving
+        byte-for-byte pre-V2 gate behavior)."""
+        if not self.v2_enabled():
+            return None
+        binding = self.v2_stage_binding(name)
+        audit: dict = {}
+
+        conv_sha = binding.get("convergence_policy")
+        if conv_sha:
+            try:
+                from framework_v2.contracts import ConvergencePolicy
+                from framework_v2.convergence import (
+                    build_convergence_report, convergence_gate_ok)
+            except ModuleNotFoundError as exc:  # pragma: no cover
+                raise RuntimeError(
+                    "framework_v2 (pydantic) is required to enforce a bound "
+                    f"convergence_policy gate: {exc}")
+            policy = ConvergencePolicy(**self.v2_contract(conv_sha))
+            report = build_convergence_report(policy, run_dir=self.run_dir)
+            self._write_v2_gate_fact(name, "convergence_report", report)
+            audit["convergence_status"] = report.get("committee_status")
+            audit["convergence_policy_sha256"] = conv_sha
+            if not convergence_gate_ok(report):
+                raise RuntimeError(
+                    f"framework_v2: refusing PASS for stage {name!r} -- committee "
+                    f"convergence status is {report.get('committee_status')!r} "
+                    "(a converged status is required; this is the R31 "
+                    "max-epoch-as-converged guard)")
+
+        contradictions = self._v2_judge_contradictions(bundle)
+        if contradictions:
+            audit["judge_contradictions"] = contradictions
+            raise RuntimeError(
+                f"framework_v2: refusing PASS for stage {name!r} -- a Judge "
+                "claim contradicts a deterministic fact (JUDGE_CONTRADICTION is "
+                "not usable as PASS evidence)")
+
+        review_spec_sha = binding.get("stage_review_spec")
+        if review_spec_sha and isinstance(bundle, dict) and bundle.get("v2_review"):
+            audit.update(self._enforce_v2_review(name, review_spec_sha, bundle["v2_review"]))
+        return audit or None
+
+    def _enforce_v2_review(self, name: str, review_spec_sha: str, v2_review) -> dict:
+        """Deterministically validate the closure-directive review objects bound to
+        a PASS: the CanonicalReviewPacket + one JudgeReview per declared lens are
+        checked against the frozen StageReviewSpec via
+        ``framework_v2.review_packet.validate_judge_review``. Any structurally
+        invalid review is INVALID_JUDGE_OUTPUT and refuses PASS (it is not a
+        scientific vote); the reviews must also be unanimous PASS to gate PASS.
+        Returns a small audit dict recorded on the gate event."""
+        try:
+            from framework_v2.review_spec import StageReviewSpec
+            from framework_v2.review_packet import (
+                CanonicalReviewPacket, JudgeReview, validate_judge_review)
+        except ModuleNotFoundError as exc:  # pragma: no cover
+            raise RuntimeError(
+                "framework_v2 (pydantic) is required to enforce a bound "
+                f"stage_review_spec gate: {exc}")
+        if not isinstance(v2_review, dict) or "packet" not in v2_review:
+            raise RuntimeError(
+                f"framework_v2: stage {name!r} v2_review must carry a 'packet' and 'reviews'")
+        spec = StageReviewSpec(**self.v2_contract(review_spec_sha))
+        if spec.content_sha256() != review_spec_sha:  # pragma: no cover - round-trip identity
+            raise RuntimeError("framework_v2: bound stage_review_spec SHA does not round-trip")
+        packet = CanonicalReviewPacket(**v2_review["packet"])
+        if packet.stage != name:
+            raise RuntimeError(
+                f"framework_v2: review packet stage {packet.stage!r} does not match gate {name!r}")
+        if packet.stage_review_spec_sha256 != review_spec_sha:
+            raise RuntimeError(
+                "framework_v2: review packet was compiled against a different StageReviewSpec "
+                "than the one bound to this stage")
+        reviews = [JudgeReview(**r) for r in v2_review.get("reviews", [])]
+        expected_lenses = sorted(spec.lens_ids)
+        got_lenses = sorted(r.lens_id for r in reviews)
+        if got_lenses != expected_lenses or len(got_lenses) != len(set(got_lenses)):
+            raise RuntimeError(
+                f"framework_v2: stage {name!r} requires exactly one JudgeReview per declared lens "
+                f"{expected_lenses}, got {got_lenses}")
+        derived: set[str] = set()
+        for review in reviews:
+            outcome = validate_judge_review(review, spec, packet)
+            if not outcome.valid:
+                raise RuntimeError(
+                    f"framework_v2: refusing PASS for stage {name!r} -- JudgeReview for lens "
+                    f"{review.lens_id!r} is INVALID_JUDGE_OUTPUT: {outcome.errors}")
+            derived.update(s.value for s in outcome.derived_failure_states)
+        if any(r.verdict.value != "PASS" for r in reviews):
+            raise RuntimeError(
+                f"framework_v2: refusing PASS for stage {name!r} -- the three review lenses are "
+                "not unanimous PASS")
+        return {
+            "v2_review_spec_sha256": review_spec_sha,
+            "v2_packet_sha256": packet.packet_sha256(),
+            "v2_review_derived_failure_states": sorted(derived),
+        }
+
+    def _v2_judge_contradictions(self, bundle) -> list:
+        """If the vote bundle carries structured V2 judgments+facts, classify
+        contradictions. Absent that structure (ordinary bundles), returns []."""
+        if not isinstance(bundle, dict):
+            return []
+        raw_judgments = bundle.get("v2_judgments")
+        raw_facts = bundle.get("v2_facts")
+        if not raw_judgments or not raw_facts:
+            return []
+        try:
+            from framework_v2.facts import (
+                DeterministicFact, ScientificJudgment, judgment_usability)
+        except ModuleNotFoundError as exc:  # pragma: no cover
+            raise RuntimeError(
+                f"framework_v2 required to classify V2 judge judgments: {exc}")
+        facts = {f["fact_id"]: DeterministicFact(**f) for f in raw_facts}
+        found: list = []
+        for rj in raw_judgments:
+            judgment = ScientificJudgment(**rj)
+            status, contradictions = judgment_usability(judgment, facts)
+            if status == "JUDGE_CONTRADICTION":
+                found.extend(c.model_dump(mode="json") for c in contradictions)
+        return found
+
+    def _write_v2_gate_fact(self, stage: str, kind: str, payload: dict) -> None:
+        out_dir = self.run_dir / "framework_v2" / "gate_facts"
+        out_dir.mkdir(parents=True, exist_ok=True)
+        (out_dir / f"{stage}.{kind}.json").write_text(
+            json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
 
 
     def _pending_gate_votes_path(self, pending):
@@ -1818,6 +2381,45 @@ class RunController:
                         "plan.escalation_rationale to proceed anyway"
                     )
 
+    @staticmethod
+    def _validate_evidence_gap_recovery(resolved_code, labeling, training):
+        """Forbid costly scientific corrective compute for an insufficient-evidence diagnosis.
+
+        An ``insufficient_evidence``-domain diagnosis (evidence_gap / missing_evidence /
+        unknown) asserts, BY DEFINITION, that the gate could not READ enough of the
+        already-computed evidence to judge fidelity -- not that a grounded model/label/data
+        deficiency was demonstrated. Retraining the Student, requesting new DFT, or relabeling
+        with the Teacher therefore cannot correct the diagnosed cause; the correct target is an
+        evidence-repair / review-packet regeneration capability (see the ``evidence_repair``
+        roster entry) that re-surfaces the existing artifacts for the Judges.
+
+        The "unless there is explicit grounded evidence of a model-fitting deficiency" escape
+        hatch is expressed structurally, and unforgeably, by the Analyst instead diagnosing under
+        the ``model_fitting`` / ``student_fidelity`` domain -- in which case this guard does not
+        fire. It deliberately keys off the resolved failure DOMAIN, never off any chemistry or
+        free-text plan field, so it stays fully generic across campaigns.
+        """
+        if resolved_code.domain != "insufficient_evidence":
+            return
+        forbidden = []
+        if training.get("retrain"):
+            forbidden.append("student_training.retrain")
+        if labeling.get("new_dft"):
+            forbidden.append("labeling.new_dft")
+        if labeling.get("teacher_relabel"):
+            forbidden.append("labeling.teacher_relabel")
+        if forbidden:
+            raise ValueError(
+                "recovery plan diagnosed under the insufficient_evidence domain "
+                f"(failure_category {resolved_code.code!r}) may not request "
+                f"{', '.join(forbidden)}: an insufficient-evidence diagnosis is an "
+                "EVIDENCE-SURFACING gap, not a grounded model/label/data deficiency, so costly "
+                "scientific corrective compute cannot correct the diagnosed cause. Route to an "
+                "evidence-repair / review-packet regeneration capability instead, or -- if a "
+                "model-fitting deficiency is actually grounded -- re-diagnose under the "
+                "model_fitting/student_fidelity domain before authorizing retrain/relabel/new DFT."
+            )
+
     def propose_recovery(self, plan_path, *, proposer=None):
         """Bind a scientific recovery proposal to the failed gate and its evidence.
 
@@ -1909,6 +2511,7 @@ class RunController:
             raise ValueError("recovery student_training requires retrain and mode")
         if training["retrain"] == (training["mode"] == "none"):
             raise ValueError("recovery student_training retrain and mode are inconsistent")
+        self._validate_evidence_gap_recovery(resolved_code, labeling, training)
         revalidation = plan.get("revalidation")
         if (not isinstance(revalidation, dict) or
                 not isinstance(revalidation.get("reuse_profile"), bool) or
@@ -2012,6 +2615,48 @@ class RunController:
         self.save()
         return recovery
 
+    def open_correction_iteration(self, *, reason, authorized_by, regate_stage=None):
+        """Open a fresh, audited re-gate iteration WITHOUT a scientific recovery.
+
+        Used ONLY when a stage that already recorded a gate must be RE-GATED after an audited
+        framework/evidence-surfacing correction -- never to run corrective compute. A prior gate
+        attempt left immutable, iteration-scoped Judge task packets; re-deriving the same
+        iteration-scoped identity would collide with them (the exchange never overwrites a
+        conflicting packet). Bumping the iteration here gives the corrected re-gate a DISTINCT
+        Judge task/vote identity while preserving the prior iteration's packets and audit trail.
+
+        Unlike ``start_iteration`` this activates NO recovery and invalidates NO artifacts: the
+        already-accepted, lineage-identical stage artifacts are reused as-is (the corrected gate
+        re-judges the SAME metrics, it does not recompute them). The new iteration carries a
+        non-recovery ``trigger`` (``kind="evidence_surfacing_correction"``, ``failed_stage=None``)
+        so neither the run-stage recovery-execution guard nor ``record_gate``'s recovery-resolution
+        branch treats it as a recovery iteration. Fails closed if a recovery is pending -- resolve
+        or supersede it first, so this can never be used to paper over an unaddressed REVISE/FAIL.
+        """
+        self._ensure_no_pending_recovery()
+        if not isinstance(reason, str) or not reason.strip():
+            raise ValueError("a correction iteration requires a non-empty reason")
+        if not isinstance(authorized_by, str) or not authorized_by.strip():
+            raise ValueError("a correction iteration requires a non-empty authorized_by")
+        old_iteration = self._current_iteration()
+        old_iteration.update(status="superseded", completed_at=now())
+        new_iteration = old_iteration["id"] + 1
+        self.state["iterations"].append({
+            "id": new_iteration, "parent_iteration": old_iteration["id"],
+            "status": "active", "started_at": now(),
+            "trigger": {"kind": "evidence_surfacing_correction", "failed_stage": None,
+                        "reason": reason, "regate_stage": regate_stage},
+            "recovery_execution": {"status": "not_applicable"},
+            "authorized_by": authorized_by,
+        })
+        self.state["events"].append({"at": now(), "type": "correction_iteration_started",
+                                     "iteration": new_iteration,
+                                     "parent_iteration": old_iteration["id"],
+                                     "reason": reason, "regate_stage": regate_stage,
+                                     "authorized_by": authorized_by})
+        self.save()
+        return new_iteration
+
     def start_iteration(self):
         """Activate an approved recovery and invalidate from its declared return stage."""
         recovery = self._pending_recovery_record("approved")
@@ -2022,13 +2667,28 @@ class RunController:
         baseline_artifacts = [dict(record) for record in self.state["artifacts"]
                               if self._stage_index(record["stage"]) >= return_index]
         self.invalidate_from(return_stage, include_stage=True)
+        # A recovery that returns to `acquisition` intends to RE-ACQUIRE. Reusing the stale
+        # bound AcquisitionPlan would regenerate byte-identical candidates (the plan fully
+        # determines the seed/sizing/sigma), which verify_recovery_execution rejects as
+        # "did not change artifacts" -> dead-loop. Retire the active plan so the acquisition
+        # re-run re-plans with fresh, gap-driven sizing. A run with no autonomous planner and
+        # no new human plan then fails closed at the acquisition stage (PLAN_INPUT_REQUIRED),
+        # which is the correct fail-closed outcome, not a silent reuse.
+        superseded_plans = []
+        if return_stage == "acquisition":
+            superseded_plans = self.supersede_bound_acquisition_plan(
+                reason=(f"coverage-deficit re-acquisition (recovery {recovery['id']:03d}, "
+                        f"failed_stage {recovery['failed_stage']}): stale plan retired so the "
+                        "re-run re-plans with gap-driven sizing"))
         new_iteration = old_iteration["id"] + 1
         self.state["iterations"].append({
             "id": new_iteration, "parent_iteration": old_iteration["id"],
             "status": "active", "started_at": now(),
             "trigger": {"recovery_id": recovery["id"],
                         "failed_stage": recovery["failed_stage"],
-                        "return_stage": return_stage},
+                        "return_stage": return_stage,
+                        "superseded_acquisition_plans": [
+                            r.get("sha256") for r in superseded_plans]},
             "baseline_artifacts": baseline_artifacts,
             "recovery_execution": {"status": "required"},
         })
@@ -2162,8 +2822,12 @@ class RunController:
         if revalidation_report.get("targets") != revalidation["targets"]:
             raise ValueError("recovery execution revalidation targets differ from the plan")
         stages = revalidation_report.get("stages")
-        if not isinstance(stages, list) or not stages:
-            raise ValueError("recovery execution revalidation requires evidence stages")
+        if not isinstance(stages, list):
+            raise ValueError("recovery execution revalidation requires a stages list")
+        # Downstream revalidation.targets are re-run only AFTER the return stage re-earns PASS,
+        # so an empty stages list at execution-verification time is valid (deferred revalidation).
+        # The corrective action itself is still proven by the required proposed_changes/labeling/
+        # student_training evidence above; here we merely validate any target that already ran.
         evidence_stages.update(validate_stage(name) for name in stages)
 
         destination = self.run_dir / "recovery" / f"recovery-{recovery['id']:03d}.execution.json"

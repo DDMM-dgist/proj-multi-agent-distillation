@@ -112,6 +112,7 @@ SIMULATION_ACTIONS = (
     "build_teacher_baseline", "validate_teacher_reference", "run_teacher_md", "run_student_md", "compute_rdf", "compute_coordination",
     "compute_minimum_distance", "detect_force_spike", "compute_nve_drift",
     "validate_simulation_completion",
+    "resolve_deployment_checkpoint", "build_deployment_context",
     "submit_scheduler_job", "query_scheduler_job", "collect_scheduler_artifact",
     "build_physical_validation_report",
 )
@@ -121,13 +122,11 @@ ANALYST_ACTIONS = (
     "classify_root_cause", "generate_run_summary",
 )
 
-# Actions that always require explicit human approval before execution (costly/side-effecting).
-# This is a per-ACTION-TYPE DEFAULT boundary. For most actions the default is the whole story: an
-# action that actually creates new labels or launches new costly compute (``acquire_structures``,
-# ``label_with_teacher``, ``train_committee``, ...) keeps its boundary unconditionally, regardless
-# of parameters. ``build_teacher_baseline`` and ``validate_teacher_reference`` are the two
-# exceptions -- see ``resolve_action_approval_boundary`` below, which is what dispatch.py actually
-# consults; this dict alone is never sufficient to determine whether those two require approval.
+# Actions that MAY require explicit human approval before execution (costly/side-effecting). This
+# is a per-ACTION-TYPE DEFAULT boundary only. It is never, by itself, sufficient to decide whether a
+# given proposal requires approval: dispatch.py always resolves the ACTUAL boundary through
+# ``resolve_action_approval_boundary`` below, which relaxes the default when the action's own typed
+# capabilities/effects prove the costly effect the boundary guards is not actually incurred.
 APPROVAL_GATED_ACTIONS = {
     "build_teacher_baseline": "costly_teacher_labeling",
     "validate_teacher_reference": "costly_teacher_labeling",
@@ -141,51 +140,119 @@ APPROVAL_GATED_ACTIONS = {
 }
 
 
-# Actions whose ``costly_teacher_labeling`` default boundary is conditional on the proposal's own
-# declared parameters, not unconditional like ``acquire_structures``/``label_with_teacher``: both
-# run existing-Teacher inference for REPORTING/VALIDATION purposes only (a teacher-baseline
-# operational-stability report, a Teacher-vs-DFT reference comparison), never to create new DFT
-# labels or new protected-reference labels that would grow the training corpus. The boundary exists
-# to gate label creation, not evidence-only inference over already-existing structures/labels.
-_CONDITIONALLY_GATED_VALIDATION_ACTIONS = frozenset({
+# --- Typed costly-compute effect taxonomy ----------------------------------------
+# The human-approval boundary an action requires is derived from the materially costly, non-trivially
+# reversible EFFECTS the action actually performs for a given proposal -- never from its action name
+# or the stage it happens to occupy. Each distinct costly effect maps to exactly one boundary. A
+# geometry-only acquisition action, for example, performs NONE of these effects (it only generates
+# candidate structures) and therefore must not inherit the Teacher-labeling boundary merely because
+# it precedes Teacher labeling in the pipeline.
+COSTLY_EFFECT_BOUNDARY = {
+    "teacher_inference": "costly_teacher_labeling",   # fresh Teacher forward passes / new DFT labels
+    "student_training": "costly_training",            # Student committee training / model search
+    "production_md": "production_md",                  # production MD / long dynamics
+    "scheduler_submission": "scheduler_submission",   # external HPC job submission
+}
+
+
+# Actions whose guarded costly effect is INHERENT -- performing it is the action's defining purpose,
+# so the effect is ALWAYS incurred and the boundary can never be relaxed by any declared parameter.
+_INHERENT_COSTLY_ACTIONS = frozenset({
+    "label_with_teacher",         # always runs fresh Teacher inference to create new training labels
+    "train_committee",            # always runs Student committee training
+    "evaluate_heldout_fidelity",  # always runs the trained committee
+    "run_teacher_md", "run_student_md",  # always run production dynamics
+    "submit_scheduler_job",       # always submits an external scheduler job
+})
+
+
+# Teacher-evidence actions that run REAL Teacher forward passes on GPU to produce a report /
+# comparison (a teacher-baseline operational-stability report; a Teacher-vs-DFT reference
+# comparison). Running the Teacher over a population IS the materially costly, GPU-bound effect the
+# ``costly_teacher_labeling`` boundary guards -- independently of whether the run also grows the
+# training corpus. ``build_teacher_baseline`` has no reuse path, so it ALWAYS incurs it;
+# ``validate_teacher_reference`` incurs it UNLESS the proposal binds a prior verified
+# ``historical_report`` (the executor's verified-reuse path -- ``executors.
+# _exec_validate_teacher_reference`` discriminates on exactly that key -- which recomputes metrics
+# from already-materialized Teacher predictions and runs NO fresh Teacher inference).
+#
+# (Supersedes the R25 ``_CONDITIONALLY_GATED_VALIDATION_ACTIONS`` relaxation, which wrongly treated
+# an affirmative "creates no new DFT/protected-reference labels" declaration -- a statement about
+# CORPUS GROWTH -- as proof that no costly Teacher COMPUTE is incurred, and so let a fresh
+# 9,295-frame Teacher baseline dispatch on GPU with ``action_approvals={}``. Corpus-growth
+# provenance can never relax this compute boundary.)
+_TEACHER_EVIDENCE_INFERENCE_ACTIONS = frozenset({
     "build_teacher_baseline", "validate_teacher_reference",
 })
 
 
-def _declared_label_provenance_flags(parameters: dict) -> tuple[Any, Any]:
-    """Read the proposal's own declared ``(dft_labels_used, protected_reference_labels_used)``
-    pair -- checked first under ``parameters['deployment_domain']`` (the existing convention
-    ``build_teacher_baseline`` already declares this evidence under -- see
-    ``bounded_evidence._teacher_baseline_report_summary``), then at the top level of
-    ``parameters`` itself, so any action can declare this evidence in whichever shape it already
-    carries. Absence at both locations is never treated as False -- only an explicit boolean
-    counts, so a proposal that omits this evidence is never mistaken for one that affirmatively
-    proves it uses no new labels."""
-    domain = parameters.get("deployment_domain")
-    source = domain if isinstance(domain, dict) else parameters
-    return source.get("dft_labels_used"), source.get("protected_reference_labels_used")
+def _incurs_teacher_inference_effect(action_type: str, parameters: dict) -> bool:
+    """Whether THIS proposal performs the costly effect that ``costly_teacher_labeling`` guards --
+    materially costly, GPU-bound Teacher forward passes (fresh Teacher inference).
+
+    Fail-closed: returns ``True`` (effect assumed incurred -> keep the gate) unless the proposal
+    AFFIRMATIVELY proves, through a typed effect declaration appropriate to the action, that it
+    performs NO fresh Teacher forward passes. Only an explicit signal counts; a missing field is
+    never read as proof of absence.
+
+    The relaxation signals are effect-based (does the action run the Teacher?), never name-based and
+    never provenance-based (whether it grows the training corpus is a DIFFERENT concern that must
+    not relax this compute boundary):
+
+    * an action whose Teacher inference is its defining purpose (``_INHERENT_COSTLY_ACTIONS``, e.g.
+      ``label_with_teacher``) can never prove otherwise;
+    * ``build_teacher_baseline`` always runs the Teacher over the operational population to build
+      its report -- it has no reuse path, so it always incurs the effect;
+    * ``validate_teacher_reference`` runs fresh Teacher inference
+      (``adapters.acquisition.label_with_teacher`` over the reference population) UNLESS the
+      proposal binds a prior verified ``historical_report``, in which case the executor's
+      verified-reuse path recomputes metrics from existing predictions and runs NO Teacher;
+    * ``performs_teacher_inference`` is the acquisition-family signal: the framework
+      (``cli._bind_acquisition_plan_for_stage``) deterministically classifies the ACTUAL bound
+      acquisition recipe and injects this flag, OVERRIDING any self-asserted value -- a recipe the
+      framework proves performs no Teacher inference yields ``False`` (cheap, reversible geometry-only
+      structure generation), while a Teacher-driven recipe yields ``True``. Note the built-in
+      ``augment-atoms`` and ``teacher-md`` recipes BOTH drive the Teacher ASE calculator during
+      structure generation (augment-atoms via the Teacher-bound native config the executor writes),
+      so both yield ``True``; an arbitrary adapter / unknown / unreadable recipe also fails closed to
+      ``True``.
+    """
+    if action_type in _INHERENT_COSTLY_ACTIONS:
+        return True
+    if action_type == "build_teacher_baseline":
+        return True
+    if action_type == "validate_teacher_reference":
+        # Verified-reuse (a bound historical_report) runs NO fresh Teacher; a fresh reference
+        # validation runs label_with_teacher over the reference population = costly Teacher compute.
+        return not bool((parameters or {}).get("historical_report"))
+    performs = (parameters or {}).get("performs_teacher_inference")
+    if performs is True:
+        return True
+    if performs is False:
+        return False
+    return True
 
 
 def resolve_action_approval_boundary(action_type: str, default_boundary: Optional[str],
                                      parameters: Optional[dict] = None) -> Optional[str]:
-    """The approval boundary an action ACTUALLY requires for THIS proposal, given not just its
-    action_type (``default_boundary``, normally ``APPROVAL_GATED_ACTIONS.get(action_type)`` as
-    resolved by the caller's registry entry) but -- for ``_CONDITIONALLY_GATED_VALIDATION_ACTIONS``
-    only -- its own declared parameters.
+    """The approval boundary an action ACTUALLY requires for THIS proposal, derived from its typed
+    capabilities/effects -- not from its action name or its position in the pipeline.
 
-    Fail-closed: unless the action is one of the two conditionally-gated validation actions AND its
-    default boundary is exactly ``costly_teacher_labeling`` AND the proposal's own parameters
-    affirmatively declare (never inferred, never defaulted) both ``dft_labels_used is False`` and
-    ``protected_reference_labels_used is False``, the default boundary is returned unchanged. Any
-    missing, non-boolean, or ``True`` value -- or any other action/boundary -- is unaffected by this
-    function and keeps its normal, unconditional default.
+    ``default_boundary`` is the per-action-type default the caller resolved (normally
+    ``APPROVAL_GATED_ACTIONS.get(action_type)``). For the ``costly_teacher_labeling`` boundary, the
+    default is RELAXED to ``None`` iff the proposal affirmatively proves it performs no fresh
+    Teacher forward passes (see ``_incurs_teacher_inference_effect``); otherwise, and for every
+    other boundary, the default is returned unchanged. Fail-closed throughout: any missing /
+    non-boolean / affirmatively-costly declaration keeps the gate, and no boundary other than
+    ``costly_teacher_labeling`` is ever relaxed here. Note that whether the action grows the
+    training corpus (its DFT/protected-reference label provenance) is a SEPARATE concern that never
+    relaxes this compute boundary -- running the Teacher on GPU is costly regardless.
     """
-    if (action_type not in _CONDITIONALLY_GATED_VALIDATION_ACTIONS
-            or default_boundary != "costly_teacher_labeling"):
-        return default_boundary
-    dft_used, protected_used = _declared_label_provenance_flags(parameters or {})
-    if dft_used is False and protected_used is False:
+    if default_boundary is None:
         return None
+    if default_boundary == "costly_teacher_labeling":
+        if not _incurs_teacher_inference_effect(action_type, parameters or {}):
+            return None
     return default_boundary
 
 

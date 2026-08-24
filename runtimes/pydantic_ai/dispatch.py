@@ -66,6 +66,10 @@ class ActionDescriptor:
     approval_boundary: Optional[str] = None
     executor: Optional[Callable[[Any], dict]] = None      # trusted; runs only after all checks
     param_validator: Optional[Callable[[Any], tuple]] = None  # (ok: bool, message: str)
+    # Framework V2 (Section 17): capability names this executor advertises. A
+    # proposal declaring required_capabilities the executor does not advertise
+    # is fail-closed with BLOCKED_CAPABILITY -- never silently downgraded.
+    supported_capabilities: tuple = field(default_factory=tuple)
 
 
 # --- Approval + idempotency stores (in-memory here; controller-backed in the bridge) ---------
@@ -79,7 +83,7 @@ class InMemoryApprovalStore:
         self._granted.add((run_id, boundary, plan_sha256))
 
     def has_approval(self, run_id: str, boundary: str, idempotency_key: str = "",
-                     plan_sha256: str | None = None) -> bool:
+                     plan_sha256: str | None = None, action_type: str | None = None) -> bool:
         return (run_id, boundary, plan_sha256) in self._granted
 
 
@@ -126,6 +130,42 @@ def _resource_usage(proposal) -> Optional[dict]:
     params = _get(proposal, "parameters", {}) or {}
     usage = params.get("resource_usage") if isinstance(params, dict) else None
     return usage if isinstance(usage, dict) else None
+
+
+def _required_capabilities(proposal) -> list:
+    """Capabilities the proposed plan declares it needs (Framework V2, Section
+    17). Read from ``parameters.required_capabilities`` (preferred) or a
+    top-level ``required_capabilities`` field. Absent -> no requirements, so a
+    pre-V2 proposal is unaffected."""
+    params = _get(proposal, "parameters", {}) or {}
+    caps = params.get("required_capabilities") if isinstance(params, dict) else None
+    if caps is None:
+        caps = _get(proposal, "required_capabilities", None)
+    if not caps:
+        return []
+    return [c for c in caps if isinstance(c, str)]
+
+
+def _capability_blocker(action: str, plan_id: str, required, supported):
+    """Return a FrameworkCapabilityBlocker (as a dict) if the executor does not
+    advertise every required capability, else None. Delegates to the V2
+    negotiator so the fail-closed semantics live in one place. If framework_v2
+    is unavailable (core-only install), falls back to a plain set-difference so
+    dispatch still refuses to silently downgrade the plan."""
+    try:
+        from framework_v2.capability import (
+            ExecutorCapabilities, PlanRequirements, check_capabilities)
+    except ModuleNotFoundError:
+        missing = [r for r in required if r not in set(supported)]
+        if not missing:
+            return None
+        return {"unmet_requirements": missing, "plan_id": plan_id,
+                "executor_id": action}
+    blocker = check_capabilities(
+        PlanRequirements(plan_id=plan_id, required=list(required)),
+        ExecutorCapabilities(executor_id=action, supported=list(supported)),
+    )
+    return blocker.model_dump(mode="json") if blocker is not None else None
 
 
 def default_registry() -> dict:
@@ -214,7 +254,7 @@ def authorize_and_execute(proposal, *, registry: dict, approvals, idempotency,
     boundary = resolve_action_approval_boundary(
         action, desc.approval_boundary, _get(proposal, "parameters", {}) or {})
     if boundary and not approvals.has_approval(
-            run_id, boundary, key, plan_sha256=plan_sha256):
+            run_id, boundary, key, plan_sha256=plan_sha256, action_type=action):
         if recovery_authorization is not None:
             envelope_sha256 = recovery_authorization.verify(
                 action_type=action, artifact_roles=_artifact_roles(proposal),
@@ -228,6 +268,20 @@ def authorize_and_execute(proposal, *, registry: dict, approvals, idempotency,
         ok, message = desc.param_validator(proposal)
         if not ok:
             return out("INVALID", message or "parameter/artifact validation failed")
+
+    # (5b) capability negotiation (Framework V2, Section 17). If the plan
+    # declares required_capabilities the executor does not advertise, fail
+    # closed -- the plan is NOT silently downgraded (the R31 per-parent
+    # augmentation flattening bug). No requirement declared -> no-op.
+    required_caps = _required_capabilities(proposal)
+    if required_caps:
+        blocker = _capability_blocker(
+            action, key or run_id or action, required_caps,
+            desc.supported_capabilities or ())
+        if blocker is not None:
+            return out("BLOCKED_CAPABILITY",
+                       f"FRAMEWORK_CAPABILITY_BLOCKER: executor {action!r} does "
+                       f"not advertise {blocker['unmet_requirements']}")
 
     # (6) idempotency check
     if key and idempotency.seen(key):

@@ -98,25 +98,78 @@ def _exec_build_uncertainty_report(proposal):
     seeds = sorted(int(model["seed"]) for model in committee["models"])
     if len(seeds) < 2:
         raise ValueError("uncertainty requires a committee of at least two seeds")
-    population_path = Path(p["population_frames"]).resolve()
-    frames = read(str(population_path), index=":")
+    aggregate = p.get("aggregate", "max")
+
+    def _frame_disagreement(frames_list):
+        scores = []
+        values = []
+        for index, atoms in enumerate(frames_list):
+            per_seed = []
+            for seed in seeds:
+                field = f"student_forces_seed{seed:02d}"
+                if field not in atoms.arrays:
+                    raise ValueError(f"population frame {index} is missing committee forces: {field}")
+                per_seed.append(np.asarray(atoms.arrays[field], dtype=float))
+            _, frame_score = committee_force_std(np.stack(per_seed), aggregate=aggregate)
+            frame_id = str(atoms.info.get("structure_id", index))
+            scores.append({"frame_id": frame_id, "u_frame": float(frame_score)})
+            values.append(float(frame_score))
+        return scores, values
+
+    # Governed calibration/eval isolation: when an access-partition contract is bound, the
+    # uncertainty report's PRIMARY population is the disjoint ``uncertainty_calibration_fit``
+    # role, and the disjoint ``uncertainty_calibration_eval`` role is summarized separately as an
+    # independent held-out disagreement check. Both roles are access-enforced and their
+    # disjointness is re-verified from the replayed contract -- calibration-fit and
+    # calibration-eval can never share a frame.
+    governed_partition = None
+    access_partition_path = p.get("access_partition_path")
+    if access_partition_path:
+        from validation.access_partition import (
+            ROLE_CALIBRATION_FIT, ROLE_CALIBRATION_EVAL, enforce_and_materialize,
+        )
+        source_population = Path(p["population_frames"]).resolve()
+        report_dir = Path(p["report_path"]).parent
+        fit_role = p.get("calibration_fit_role", ROLE_CALIBRATION_FIT)
+        eval_role = p.get("calibration_eval_role", ROLE_CALIBRATION_EVAL)
+        if fit_role == eval_role:
+            raise ValueError("calibration fit and eval roles must be distinct")
+        fit = enforce_and_materialize(
+            access_partition_path, "uncertainty", fit_role, source_population,
+            p.get("calibration_fit_out", report_dir / "uncertainty_calibration_fit.extxyz"),
+            require_committee_seeds=seeds,
+            expected_reference_id=p.get("expected_reference_id"),
+            expected_structures_sha256=p.get("expected_structures_sha256"))
+        ev = enforce_and_materialize(
+            access_partition_path, "uncertainty", eval_role, source_population,
+            p.get("calibration_eval_out", report_dir / "uncertainty_calibration_eval.extxyz"),
+            require_committee_seeds=seeds,
+            expected_reference_id=p.get("expected_reference_id"),
+            expected_structures_sha256=p.get("expected_structures_sha256"))
+        if fit["frame_fingerprints_sha256"] == ev["frame_fingerprints_sha256"]:
+            raise ValueError("calibration fit and eval slices are identical; partition is not disjoint")
+        population_path = Path(fit["path"]).resolve()
+        frames = read(str(population_path), index=":")
+        eval_frames = read(str(Path(ev["path"]).resolve()), index=":")
+        eval_scores, eval_values = _frame_disagreement(eval_frames)
+        governed_partition = {
+            "access_partition_path": str(Path(access_partition_path).resolve()),
+            "partition_assignment_sha256": fit["contract"].get("partition_assignment_sha256"),
+            "calibration_fit": {"role": fit_role, "path": fit["path"], "n_frames": fit["n_frames"],
+                                "frame_fingerprints_sha256": fit["frame_fingerprints_sha256"]},
+            "calibration_eval": {"role": eval_role, "path": ev["path"], "n_frames": ev["n_frames"],
+                                 "frame_fingerprints_sha256": ev["frame_fingerprints_sha256"],
+                                 "holdout_disagreement_summary": {
+                                     "mean": sum(eval_values) / len(eval_values),
+                                     "max": max(eval_values)}},
+            "fit_eval_disjoint": True,
+        }
+    else:
+        population_path = Path(p["population_frames"]).resolve()
+        frames = read(str(population_path), index=":")
     if not frames:
         raise ValueError("uncertainty population_frames is empty")
-    aggregate = p.get("aggregate", "max")
-    frame_scores = []
-    u_values = []
-    for index, atoms in enumerate(frames):
-        per_seed = []
-        for seed in seeds:
-            key = f"{seed:02d}"
-            field = f"student_forces_seed{key}"
-            if field not in atoms.arrays:
-                raise ValueError(f"population frame {index} is missing committee forces: {field}")
-            per_seed.append(np.asarray(atoms.arrays[field], dtype=float))
-        _, frame_score = committee_force_std(np.stack(per_seed), aggregate=aggregate)
-        frame_id = str(atoms.info.get("structure_id", index))
-        frame_scores.append({"frame_id": frame_id, "u_frame": float(frame_score)})
-        u_values.append(float(frame_score))
+    frame_scores, u_values = _frame_disagreement(frames)
     calibration_evidence = p.get("calibration_evidence")
     if calibration_evidence:
         calibration = {"status": "calibrated", "caveat": p.get(
@@ -132,9 +185,11 @@ def _exec_build_uncertainty_report(proposal):
                _evidence("population", population_path)]
     if calibration_evidence:
         evidence.append(_evidence("calibration_evidence", calibration_evidence))
+    default_role = (governed_partition["calibration_fit"]["role"] if governed_partition
+                    else "held_out_evaluation_population")
     report = {
         "schema_version": 1,
-        "population": {"role": p.get("population_role", "held_out_evaluation_population"),
+        "population": {"role": p.get("population_role", default_role),
                        "path": str(population_path), "n_frames": len(frames)},
         "committee_manifest_path": str(committee_manifest),
         "committee_manifest_sha256": sha256_file(committee_manifest),
@@ -145,6 +200,8 @@ def _exec_build_uncertainty_report(proposal):
         "limitations": list(p.get("limitations") or []),
         "evidence": evidence,
     }
+    if governed_partition is not None:
+        report["governed_partition"] = governed_partition
     report_path = Path(p["report_path"])
     report_path.parent.mkdir(parents=True, exist_ok=True)
     report_path.write_text(json.dumps(report, indent=2) + "\n")
@@ -178,13 +235,34 @@ def _exec_generate_group_split(proposal):
             )
             dataset = p["merged_dataset"]
             generated.extend([p["merged_dataset"], p["merge_manifest"], p["protection_audit_path"]])
+        # Deterministic locked-policy propagation (mirrors data_coverage/teacher_baseline). When
+        # this run has a frozen validation contract, the split parameters are sourced VERBATIM from
+        # the locked dataset_split_policy.value -- they are never re-authored by a proposal or a
+        # later recovery attempt. split_dataset still hash-checks them, so a drift fails closed.
+        split_kwargs = {
+            "seed": int(p.get("seed", 2026)),
+            "validation_fraction": float(p.get("validation_fraction", 0.1)),
+            "test_fraction": float(p.get("test_fraction", 0.1)),
+            "grouping_key": p.get("grouping_key", "parent_structure_id"),
+        }
+        split_contract_path = _resolve_validation_contract_path(p, p["manifest"])
+        if split_contract_path is not None and split_contract_path.is_file():
+            locked_policy = (json.loads(split_contract_path.read_text()).get("components")
+                             or {}).get("dataset_split_policy")
+            if not isinstance(locked_policy, dict) or "value" not in locked_policy:
+                raise ValueError(
+                    "validation contract is bound but has no dataset_split_policy.value; "
+                    "cannot deterministically source dataset split parameters")
+            locked_value = locked_policy["value"]
+            for key in split_kwargs:
+                if key in locked_value:
+                    split_kwargs[key] = locked_value[key]
         manifest = split_dataset(dataset, p["output_dir"], p["manifest"],
-                                 seed=int(p.get("seed", 2026)),
-                                 validation_fraction=float(p.get("validation_fraction", 0.1)),
-                                 test_fraction=float(p.get("test_fraction", 0.1)),
-                                 grouping_key=p.get("grouping_key", "parent_structure_id"),
                                  allow_unique_parent_fallback=bool(p.get("allow_unique_parent_fallback", False)),
-                                 validation_contract_path=p.get("validation_contract_path"))
+                                 validation_contract_path=(str(split_contract_path)
+                                                           if split_contract_path is not None
+                                                           and split_contract_path.is_file() else None),
+                                 **split_kwargs)
         generated.extend([p["manifest"], *(record["path"] for record in manifest.get("splits", {}).values())])
         if protection_audit and p.get("reference_yaml"):
             from ase.io import read as _read_frames
@@ -325,6 +403,130 @@ def _exec_compute_coordination(proposal):
     return _artifact({"coordination": {k: float(v) for k, v in coord.items()}}, p.get("out_path"))
 
 
+def _load_physical_validation_policy_v2(params):
+    """Return the bound PhysicalValidationPolicyV2 dict, or None if the caller
+    is not opting into the typed path. Accepts either
+    ``physical_validation_policy_v2_dict`` (inline) or
+    ``physical_validation_policy_v2_ref`` (JSON path on disk).
+    """
+    policy = params.get("physical_validation_policy_v2_dict")
+    if policy is None and params.get("physical_validation_policy_v2_ref"):
+        policy = json.loads(Path(params["physical_validation_policy_v2_ref"]).read_text())
+    return policy
+
+
+def _emit_typed_observable(obs_spec, frames, params, energies_ctx):
+    """Given one ObservableSpec-shaped dict, compute the requested typed
+    observable and return a check-row (validation.report.make_check-shaped
+    dict). Fails-closed with a make_check(reason=...) row when the current
+    implementation cannot compute a specific ObservableSpec (no silent
+    fallback).
+    """
+    from validation.structure_dynamics import (
+        compute_rdf_v2, rdf_first_peak_and_minimum,
+        compute_species_coordination, compute_density,
+    )
+    from validation.report import make_check
+    kind = obs_spec.get("kind")
+    name = obs_spec.get("name")
+    units = obs_spec.get("units")
+    role = obs_spec.get("role")
+    thresholded = role == "thresholded"
+
+    def _threshold_from_spec():
+        # THRESHOLDED observables are expected to carry a numerical threshold
+        # via the policy's own criterion binding at gate time; the executor
+        # itself does not synthesize thresholds. For nve_drift, use the
+        # existing param binding.
+        return None
+
+    if kind == "rdf_peak_position":
+        center = obs_spec.get("center_species")
+        neighbor = obs_spec.get("neighbor_species")
+        r_max = float(obs_spec.get("_r_max_A", 6.0))
+        nbins = int(obs_spec.get("_nbins", 200))
+        rdf = compute_rdf_v2(frames, center, neighbor, r_max=r_max, nbins=nbins)
+        peakmin = rdf_first_peak_and_minimum(
+            rdf["r_A"], rdf["g_of_r"],
+            smoothing_window=int(obs_spec.get("_smoothing_window", 5)))
+        # Decide which position this observable requests: peak or first-min.
+        method = obs_spec.get("computation_method", "")
+        if "min" in method:
+            value = peakmin["r_first_min_A"]
+        else:
+            value = peakmin["r_first_peak_A"]
+        return make_check("structure", name, value=float(value), unit=units,
+                          criterion=_threshold_from_spec() if thresholded else None,
+                          details={"peakmin": peakmin,
+                                   "bin_width_A": rdf["bin_width_A"],
+                                   "r_max_A": rdf["r_max_A"], "nbins": rdf["nbins"]})
+    if kind == "rdf_peak_height":
+        center = obs_spec.get("center_species")
+        neighbor = obs_spec.get("neighbor_species")
+        r_max = float(obs_spec.get("_r_max_A", 6.0))
+        nbins = int(obs_spec.get("_nbins", 200))
+        rdf = compute_rdf_v2(frames, center, neighbor, r_max=r_max, nbins=nbins)
+        peakmin = rdf_first_peak_and_minimum(
+            rdf["r_A"], rdf["g_of_r"],
+            smoothing_window=int(obs_spec.get("_smoothing_window", 5)))
+        return make_check("structure", name, value=float(peakmin["g_first_peak"]),
+                          unit=units, criterion=None,
+                          details={"g_first_peak_raw": peakmin["g_first_peak_raw"],
+                                   "r_A": rdf["r_A"], "bin_width_A": rdf["bin_width_A"]})
+    if kind == "species_coordination":
+        center = obs_spec.get("center_species")
+        neighbor = obs_spec.get("neighbor_species")
+        cutoff_A = obs_spec.get("_cutoff_A")
+        if cutoff_A is None:
+            # Fail-closed: cutoff must have been resolved from the policy's
+            # cutoff_source_ref before this executor was invoked (the policy
+            # already asserted cutoff_frozen_before_student=True).
+            return make_check("structure", name, value=None, unit=units,
+                              criterion=None,
+                              reason=("cutoff_A not resolved from cutoff_source_ref; "
+                                       "policy must supply a numeric cutoff in "
+                                       "obs_spec._cutoff_A before executor invocation"))
+        method = obs_spec.get("computation_method", "")
+        cc = compute_species_coordination(frames, center, neighbor, float(cutoff_A),
+                                          cutoff_source_ref=obs_spec.get("cutoff_source_ref"),
+                                          cutoff_frozen_before_student=obs_spec.get("cutoff_frozen_before_student"))
+        # Emit either aggregate mean OR the requested topology-fraction target.
+        if "fraction_of_" in method and "_coord_eq_" in method:
+            # e.g. "fraction_of_si_atoms_with_coord_eq_4"
+            try:
+                target_cn = int(method.split("_coord_eq_")[-1])
+            except ValueError:
+                return make_check("structure", name, value=None, unit=units,
+                                  criterion=None,
+                                  reason=f"cannot parse target coordination from method {method!r}")
+            frac = cc["coordination_fractions"].get(target_cn, 0.0)
+            return make_check("structure", name, value=float(frac), unit=units,
+                              criterion=None, details=cc)
+        return make_check("structure", name,
+                          value=float(cc["aggregate_mean_coordination"]),
+                          unit=units, criterion=None, details=cc)
+    if kind == "density":
+        from validation.structure_dynamics import compute_density
+        mean_rho, std_rho = compute_density(frames)
+        return make_check("structure", name, value=float(mean_rho), unit=units,
+                          criterion=None,
+                          details={"standard_deviation": float(std_rho),
+                                   "ensemble_applicability": obs_spec.get("ensemble_applicability"),
+                                   "ensemble_interpretation":
+                                       ("inherited_state_variable"
+                                        if "NVT" in (obs_spec.get("ensemble_applicability") or [])
+                                        and "NPT" not in (obs_spec.get("ensemble_applicability") or [])
+                                        else "variable_cell_or_diagnostic")})
+    if kind == "nve_drift":
+        # Delegate to the existing energy_log_path / energies branch by
+        # returning a sentinel that tells the caller to consume that path.
+        return "__NVE_DRIFT_HANDLED_BY_EXISTING_ENERGY_LOG_BRANCH__"
+    # Unknown kind: fail-closed
+    return make_check("structure", name, value=None, unit=units,
+                      criterion=None,
+                      reason=f"executor cannot compute observable of kind {kind!r}")
+
+
 def _exec_build_physical_validation_report(proposal):
     """Composite simulation driver for the ``physical_validation`` production stage: composes the
     EXISTING validation.structure_dynamics RDF/coordination/density/MSD/NVE-drift computations into
@@ -342,6 +544,7 @@ def _exec_build_physical_validation_report(proposal):
     from validation.species_mapping import requires_specorder, validate_specorder
     from workflow.integrity import artifact_digest
     p = _params(proposal)
+    pv_policy_v2 = _load_physical_validation_policy_v2(p)
     profile_path = Path(p["validation_profile"]).resolve()
     profile = yaml.safe_load(profile_path.read_text())
     checks_cfg = {c["name"]: c for c in (profile.get("checks") or [])}
@@ -380,19 +583,28 @@ def _exec_build_physical_validation_report(proposal):
         checks.append(make_check(domain, name, value=value, unit=unit, criterion=criterion,
                                  details=details))
 
-    _, partial = compute_rdf(frames, elements, r_max=r_max, nbins=nbins)
-    for pair, values in partial.items():
-        e1, e2 = pair.split("-")
-        candidates = [f"rdf_{e1}_{e2}", f"rdf_{e2}_{e1}"]
-        name = next((c for c in candidates if c in checks_cfg), candidates[0])
-        emit(name, "structure", float(max(values)), "peak_g(r)")
+    # TYPED-OBSERVABLE PATH when PhysicalValidationPolicyV2 is bound.
+    if pv_policy_v2 is not None:
+        for obs in (pv_policy_v2.get("observables") or []):
+            row = _emit_typed_observable(obs, frames, p, energies_ctx=None)
+            if row == "__NVE_DRIFT_HANDLED_BY_EXISTING_ENERGY_LOG_BRANCH__":
+                continue  # NVE drift is emitted below by the existing branch
+            if isinstance(row, dict):
+                checks.append(row)
+    else:
+        _, partial = compute_rdf(frames, elements, r_max=r_max, nbins=nbins)
+        for pair, values in partial.items():
+            e1, e2 = pair.split("-")
+            candidates = [f"rdf_{e1}_{e2}", f"rdf_{e2}_{e1}"]
+            name = next((c for c in candidates if c in checks_cfg), candidates[0])
+            emit(name, "structure", float(max(values)), "peak_g(r)")
 
-    coordination = compute_coordination(frames, elements, cutoffs)
-    for element, value in coordination.items():
-        emit(f"coordination_{element}", "structure", float(value), "count")
+        coordination = compute_coordination(frames, elements, cutoffs)
+        for element, value in coordination.items():
+            emit(f"coordination_{element}", "structure", float(value), "count")
 
-    mean_density, std_density = compute_density(frames)
-    emit("density", "structure", float(mean_density), "g/cm3", details={"standard_deviation": std_density})
+        mean_density, std_density = compute_density(frames)
+        emit("density", "structure", float(mean_density), "g/cm3", details={"standard_deviation": std_density})
 
     if "msd_selfdiffusion" in checks_cfg:
         msd_series = compute_msd(frames)
@@ -403,11 +615,71 @@ def _exec_build_physical_validation_report(proposal):
         emit("msd_selfdiffusion", "dynamics", mean_final_msd, "Angstrom^2",
              details={"per_element_final_msd": {el: float(series[-1]) for el, series in msd_series.items()}})
 
+    # NVE drift observable. Two accepted param shapes:
+    #   (a) inline energies list bound directly in params (legacy path); or
+    #   (b) energy_log_path pointing at an authoritative NVE energy log written
+    #       by a preceding physical_validation_nve LAMMPS run — read via
+    #       validation.structure_dynamics.read_energy_log so the executor never
+    #       re-implements the log parser or reinterprets sampling.
+    nve_energy_log_evidence = None
+    # Stage-11 automatic consumption: when a dedicated NVE-segment MD manifest is bound, resolve
+    # its authoritative energy log from the manifest's own evidence (role ``nve_energy_log``)
+    # rather than requiring the log path to be hand-wired. This keeps the NVE energy-conservation
+    # metric sourced from the SEPARATE microcanonical segment, never the NVT production run.
+    if "energy_log_path" not in p and p.get("nve_md_manifest"):
+        nve_manifest = json.loads(Path(p["nve_md_manifest"]).read_text())
+        log_entry = next((e for e in (nve_manifest.get("evidence") or [])
+                          if e.get("role") == "nve_energy_log"), None)
+        if log_entry is None:
+            raise ValueError(
+                "nve_md_manifest carries no evidence entry with role 'nve_energy_log'; the NVE "
+                "segment run did not record its energy log")
+        from workflow.integrity import verify_artifact
+        verify_artifact(log_entry["path"], log_entry.get("integrity", {}))
+        p = {**p, "energy_log_path": log_entry["path"]}
     if "energies" in p:
-        drift, resid = compute_nve_drift([float(x) for x in p["energies"]],
-                                         float(p.get("timestep_fs", 1.0)), int(p["n_atoms"]),
-                                         sample_interval_steps=int(p.get("sample_interval_steps", 1)))
-        emit("nve_drift", "dynamics", float(drift), "meV/atom/ns", details={"residual_std": resid})
+        energies_for_drift = [float(x) for x in p["energies"]]
+        drift_steps = None
+        nve_sample_interval = int(p.get("sample_interval_steps", 1))
+    elif "energy_log_path" in p:
+        from validation.structure_dynamics import read_energy_log as _read_energy_log
+        energy_log_path = Path(p["energy_log_path"]).resolve()
+        step_arr, energy_arr = _read_energy_log(energy_log_path)
+        if len(step_arr) < 2:
+            raise ValueError("physical_validation energy_log_path yielded fewer than 2 samples")
+        energies_for_drift = [float(x) for x in energy_arr]
+        drift_steps = [int(x) for x in step_arr]
+        # sample_interval_steps in compute_nve_drift is used only when the caller
+        # does not supply `steps`; when we pass real steps, we still pass the
+        # nominal interval for reporting.
+        nve_sample_interval = int(p.get("sample_interval_steps",
+                                        int(step_arr[1] - step_arr[0]) if len(step_arr) >= 2 else 1))
+        nve_energy_log_evidence = _evidence("nve_energy_log", energy_log_path)
+    else:
+        energies_for_drift = None
+    if energies_for_drift is not None:
+        n_atoms_for_drift = int(p.get("n_atoms") or len(frames[0]))
+        timestep_fs = float(p.get("timestep_fs", 1.0))
+        drift_kwargs = {"sample_interval_steps": nve_sample_interval}
+        if drift_steps is not None:
+            drift_kwargs["steps"] = drift_steps
+        # compute_nve_drift returns slope in meV/atom/ns (see t_ns = steps*fs*1e-6).
+        # The pre-registered validation_profile threshold is declared in
+        # meV/atom/ps. Convert to meV/atom/ps here so the criterion evaluator
+        # (validation.report.criterion_passes) compares like-unit to like-unit;
+        # the threshold value 1.0 is not modified.
+        drift_ns, resid_ns = compute_nve_drift(energies_for_drift, timestep_fs, n_atoms_for_drift,
+                                               **drift_kwargs)
+        drift_ps = float(drift_ns) / 1000.0
+        emit("nve_drift", "dynamics", drift_ps, "meV/atom/ps", details={
+            "residual_std_meV_per_atom": float(resid_ns),
+            "n_atoms": n_atoms_for_drift,
+            "timestep_fs": timestep_fs,
+            "sample_interval_steps": nve_sample_interval,
+            "n_samples": len(energies_for_drift),
+            "signed_slope_meV_per_atom_per_ps": drift_ps,
+            "raw_slope_meV_per_atom_per_ns": float(drift_ns),
+        })
 
     declared_required = {name for name, cfg in checks_cfg.items() if cfg.get("required")}
     produced = {c["observable"] for c in checks}
@@ -417,6 +689,8 @@ def _exec_build_physical_validation_report(proposal):
                          ", ".join(sorted(missing)))
 
     evidence = [_evidence("validation_profile", profile_path), _evidence("frames", frames_path)]
+    if nve_energy_log_evidence is not None:
+        evidence.append(nve_energy_log_evidence)
     report = {
         "schema_version": 1,
         "profile": profile.get("kind", "physical_validation"),
@@ -439,6 +713,28 @@ def _exec_compare_coverage(proposal):
         p["manifest_path"], required_source_categories=p.get("required_source_categories"))
     return {"path": p["manifest_path"], "report": report,
             "sha256": (report.get("integrity", {}) or {}).get("sha256", "")}
+
+
+def _resolve_validation_contract_path(p, report_path):
+    """Locate the run's frozen validation contract deterministically.
+
+    Prefers an explicitly wired ``validation_contract_path`` param; otherwise derives the
+    canonical ``{run_dir}/validation_contract.json`` from ``run_dir`` (if provided) or from the
+    report path's grandparent (``{run_dir}/artifacts/<report>.json``). Returns a resolved Path
+    (which may not exist -- callers check ``.is_file()``) or None when no location is derivable.
+    This reads the run's OWN authoritative contract; it is not a fallback to a guessed domain.
+    """
+    contract_value = p.get("validation_contract_path")
+    if contract_value:
+        candidate = Path(contract_value).expanduser()
+        return candidate.resolve()
+    run_dir = p.get("run_dir")
+    if run_dir:
+        return (Path(run_dir).expanduser() / "validation_contract.json").resolve()
+    resolved_report = Path(report_path).expanduser().resolve()
+    if resolved_report.parent.name == "artifacts":
+        return (resolved_report.parent.parent / "validation_contract.json").resolve()
+    return None
 
 
 def _exec_build_data_coverage_report(proposal):
@@ -510,8 +806,14 @@ def _exec_build_data_coverage_report(proposal):
     dataset_policy = str(Path(dataset_policy).resolve())
 
     teacher_training_data_access = p.get("teacher_training_data_access", "representative")
-    coverage_status = p.get("coverage_status") or (
-        "NOT_ASSESSABLE" if teacher_training_data_access == "unavailable" else "PARTIAL")
+    # A proposal may declare ONLY a conservative status (PARTIAL / NOT_ASSESSABLE); it can
+    # never self-assert COMPLETE. Adequacy (COMPLETE) is earned below, deterministically,
+    # solely by satisfying a FROZEN coverage_requirement -- no LLM fabricates completeness.
+    proposed_status = p.get("coverage_status")
+    if proposed_status is not None and proposed_status not in ("PARTIAL", "NOT_ASSESSABLE"):
+        raise ValueError(
+            f"coverage_status may not be self-asserted as {proposed_status!r}; COMPLETE is "
+            "earned only by deterministically satisfying a frozen coverage_requirement")
     identified_gaps = list(p.get("identified_gaps") or (
         [] if teacher_training_data_access == "full" else
         ["Teacher training distribution is not independently re-verified in this run"]))
@@ -522,21 +824,84 @@ def _exec_build_data_coverage_report(proposal):
     evidence = [_evidence("dataset_policy", dataset_policy),
                _evidence(evidence_role, candidate_dataset),
                _evidence("acquisition_manifest", acquisition_manifest)]
+    report_path = Path(p["report_path"])
+
+    # Deterministic locked-domain propagation. When this run has a frozen validation
+    # contract, data_coverage.deployment_domain is sourced VERBATIM from the locked
+    # teacher_applicability_domain.value -- it is never re-authored by a proposal or by
+    # this run's workflow.yaml. This executor is the single deterministic producer of the
+    # field, so the strict contract hash-check in validate_data_coverage_report matches by
+    # construction. No scientific domain is invented here; a frozen value is copied.
+    contract_path = _resolve_validation_contract_path(p, report_path)
+    locked_deployment_domain = None
+    if contract_path is not None and contract_path.is_file():
+        contract_doc = json.loads(contract_path.read_text())
+        component = (contract_doc.get("components") or {}).get("teacher_applicability_domain")
+        if not isinstance(component, dict) or "value" not in component:
+            raise ValueError(
+                "validation contract is bound but has no teacher_applicability_domain.value; "
+                "cannot deterministically source data_coverage.deployment_domain"
+            )
+        locked_deployment_domain = component["value"]
+    if locked_deployment_domain is not None:
+        deployment_domain = locked_deployment_domain
+    else:
+        deployment_domain = p.get("deployment_domain") or {"structure_classes": ["default"]}
+
+    # Deterministic coverage adequacy. COMPLETE is earned ONLY by satisfying a FROZEN
+    # coverage_requirement carried by the (locked) deployment_domain -- a per-config_type
+    # minimum-frame map. The threshold is frozen scientific scope; this code merely evaluates
+    # the real per-config_type counts against it. Absent a frozen requirement, completeness is
+    # not assessable, so the status stays fail-closed: NOT_ASSESSABLE when the Teacher training
+    # distribution is unavailable, otherwise a proposal-declared conservative status or PARTIAL.
+    coverage_requirement = (deployment_domain.get("coverage_requirement")
+                            if isinstance(deployment_domain, dict) else None)
+    if teacher_training_data_access == "unavailable":
+        coverage_status = "NOT_ASSESSABLE"
+    elif isinstance(coverage_requirement, dict) and coverage_requirement.get("min_frames_by_config_type") is not None:
+        required = coverage_requirement["min_frames_by_config_type"]
+        if not isinstance(required, dict) or not required:
+            raise ValueError(
+                "coverage_requirement.min_frames_by_config_type must be a non-empty mapping")
+        unmet = []
+        for config_type, minimum in required.items():
+            if not isinstance(minimum, int) or isinstance(minimum, bool) or minimum < 0:
+                raise ValueError(
+                    f"coverage_requirement minimum for {config_type!r} must be a "
+                    "non-negative integer")
+            have = counts.get(config_type, 0)
+            if have < minimum:
+                unmet.append(
+                    f"config_type {config_type!r} has {have} frames; frozen coverage_requirement "
+                    f"needs >= {minimum}")
+        if unmet:
+            coverage_status = "PARTIAL"
+            identified_gaps = list(identified_gaps) + unmet
+        else:
+            coverage_status = "COMPLETE"
+    else:
+        coverage_status = proposed_status or "PARTIAL"
+
     report = {
         "schema_version": 1,
         "teacher_training_data_access": teacher_training_data_access,
         "coverage_status": coverage_status,
-        "deployment_domain": p.get("deployment_domain") or {"structure_classes": ["default"]},
+        "deployment_domain": deployment_domain,
         "dataset_sources": [source],
         "coverage_dimensions": dimensions,
         "replay_policy": p.get("replay_policy") or {"enabled": False},
         "identified_gaps": identified_gaps, "limitations": limitations,
         "dataset_policy": dataset_policy, "evidence": evidence,
     }
-    report_path = Path(p["report_path"])
     report_path.parent.mkdir(parents=True, exist_ok=True)
     report_path.write_text(json.dumps(report, indent=2) + "\n")
-    validate_data_coverage_report(report_path)
+    # Self-validate against the SAME locked contract the controller enforces, so a domain or
+    # split-policy drift fails fast in-process rather than only at the external contract gate.
+    validate_data_coverage_report(
+        report_path,
+        validation_contract_path=(str(contract_path) if contract_path is not None
+                                  and contract_path.is_file() else None),
+    )
     return {"path": str(report_path.resolve()), "report": report,
             "integrity": artifact_digest(report_path)}
 
@@ -784,6 +1149,261 @@ def _validate_acquisition_plan(plan, *, reference_yaml=None, seed_structures=Non
             "selected_parent_structure_ids": parents, "eligible_source_categories": categories,
             "n_parents": n_parents, "n_per_structure": n_per, "expected_output_count": expected,
             "_selected_source_records": _public_source_records(source_records)}
+
+
+# --------------------------------------------------------------------------------------------
+# FE-028 -- EXISTING_POOL_SELECTION execution (SELECT an existing subset, do NOT generate frames)
+# --------------------------------------------------------------------------------------------
+_REQUIRED_EXISTING_POOL_PLAN_FIELDS = {
+    "schema_version", "pool_path", "eligible_source_categories",
+    "selected_parent_structure_ids", "selected_source_global_indices", "n_selected",
+    "expected_output_count", "duplicate_handling", "labeling_population_sizing",
+    "protected_reference_exclusion_report",
+}
+
+
+def _is_existing_pool_plan(plan) -> bool:
+    """An acquisition plan is the existing-pool projection iff it carries a ``pool_path`` (the
+    perturbation legacy projection never does). This is how the single ``acquire_structures`` stage
+    executor discriminates the two projections without a new action_type (the workflow is authored
+    before the plan is autonomously designed)."""
+    return isinstance(plan, dict) and bool(plan.get("pool_path"))
+
+
+def _validate_existing_pool_plan(plan, *, reference_yaml=None,
+                                 proposal_selected_source_indices=None):
+    """Deterministically validate the EXISTING_POOL_SELECTION projection before execution.
+
+    Mirrors the fail-closed rigor of ``_validate_acquisition_plan`` for the perturbation path, but
+    for a selection (not generation) plan: unique non-negative global indices, equal-length parent
+    ids, counts derived from the deterministic labeling-population sizing, and a PASS
+    protected-reference exclusion report with DFT labels never used as selection scores."""
+    missing = sorted(_REQUIRED_EXISTING_POOL_PLAN_FIELDS - set(plan))
+    if missing:
+        raise _AcquisitionPlanError(
+            "existing-pool AcquisitionPlan missing required fields: " + ", ".join(missing))
+    if plan.get("schema_version") != 1:
+        raise _AcquisitionPlanError("existing-pool AcquisitionPlan requires schema_version=1")
+    parents = _nonempty_list(plan, "selected_parent_structure_ids")
+    selected = _nonempty_list(plan, "selected_source_global_indices")
+    categories = _nonempty_list(plan, "eligible_source_categories")
+    if any(isinstance(x, bool) or not isinstance(x, int) or x < 0 for x in selected):
+        raise _AcquisitionPlanError(
+            "existing-pool selected_source_global_indices must be non-negative integers")
+    if len(set(selected)) != len(selected):
+        raise _AcquisitionPlanError(
+            "existing-pool selected_source_global_indices must be unique")
+    if proposal_selected_source_indices is not None and list(proposal_selected_source_indices) != selected:
+        raise _AcquisitionPlanError(
+            "proposal selected_source_indices must exactly match existing-pool "
+            "selected_source_global_indices")
+    n_selected = int(plan.get("n_selected"))
+    expected = int(plan.get("expected_output_count"))
+    if n_selected <= 0:
+        raise _AcquisitionPlanError("existing-pool n_selected must be positive")
+    if n_selected != len(selected) or n_selected != len(parents):
+        raise _AcquisitionPlanError(
+            "existing-pool n_selected must match selected index/parent counts")
+    if expected != n_selected:
+        raise _AcquisitionPlanError(
+            "existing-pool expected_output_count must equal n_selected")
+    if not all(isinstance(x, str) and x.strip() for x in parents + categories):
+        raise _AcquisitionPlanError(
+            "existing-pool parent/category values must be non-empty strings")
+    sizing = plan.get("labeling_population_sizing")
+    if not isinstance(sizing, dict) or not sizing:
+        raise _AcquisitionPlanError(
+            "existing-pool plan missing labeling_population_sizing evidence")
+    rec = sizing.get("recommended_population_size")
+    if rec is not None and int(rec) != n_selected:
+        raise _AcquisitionPlanError(
+            "existing-pool sizing recommended_population_size must equal n_selected")
+    report = plan.get("protected_reference_exclusion_report")
+    if not isinstance(report, dict) or report.get("status") != "PASS":
+        raise _AcquisitionPlanError(
+            "existing-pool protected_reference_exclusion_report must be a PASS record")
+    if report.get("dft_labels_used_as_selection_scores") is not False:
+        raise _AcquisitionPlanError(
+            "existing-pool plan must record DFT labels were not used as selection scores")
+    if reference_yaml:
+        from validation.protected_reference import assert_source_indices_allowed, validate_reference_config
+        protection = validate_reference_config(reference_yaml)
+        assert_source_indices_allowed(selected, protection["protected_source_indices"])
+        if report.get("reference_id") and report.get("reference_id") != protection["reference_id"]:
+            raise _AcquisitionPlanError(
+                "existing-pool protection report reference_id does not match run-bound reference")
+    return {**plan, "selected_source_global_indices": selected,
+            "selected_parent_structure_ids": [str(x) for x in parents],
+            "eligible_source_categories": [str(x) for x in categories],
+            "n_selected": n_selected, "expected_output_count": expected}
+
+
+def _load_pool_frames_global_order(pool_path):
+    """Reproduce the pre-campaign planner's GLOBAL pool ordering from the source-pool manifest.
+
+    The autonomous planner sizes/selects over ``framework_v2.acquisition.generic_representation.
+    load_pool`` order: manifest ``categories`` order x per-category ASE read order. This reads the
+    SAME manifest and concatenates the SAME category files in the SAME order, so the plan's
+    ``selected_source_global_indices`` name exactly the frames the planner scored. Returns a list of
+    ``(global_index, category, atoms)`` and the manifest dict."""
+    from ase.io import read as ase_read
+    manifest_path = Path(pool_path).expanduser().resolve()
+    if not manifest_path.is_file():
+        raise _AcquisitionPlanError(f"existing-pool manifest is missing: {manifest_path}")
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    cats = manifest.get("categories")
+    if not isinstance(cats, list) or not cats:
+        raise _AcquisitionPlanError(
+            f"existing-pool manifest {manifest_path} has no categories list")
+    manifest_dir = manifest_path.parent
+    ordered = []
+    gidx = 0
+    for cat in cats:
+        category = str(cat["category"])
+        rel = str(cat["sanitized_file"])
+        fpath = (manifest_dir / rel)
+        if not fpath.is_file():
+            raise _AcquisitionPlanError(
+                f"existing-pool manifest references a missing structure file: {fpath}")
+        atoms_list = ase_read(str(fpath), index=":")
+        if not isinstance(atoms_list, list):
+            atoms_list = [atoms_list]
+        for atoms in atoms_list:
+            ordered.append((gidx, category, atoms))
+            gidx += 1
+    return ordered, manifest
+
+
+def _exec_select_existing_pool(proposal, progress_cb=None):
+    """Execute an EXISTING_POOL_SELECTION acquisition plan: SELECT (never generate) a representative
+    existing subset for canonical Teacher labeling.
+
+    No Teacher inference happens here -- selection is descriptor/geometry work whose size and members
+    were fixed deterministically by the pre-campaign planner. Any prior energies/forces/stress are
+    STRIPPED so a historical label can never leak into training; the ONLY labels come from the
+    downstream canonical teacher_labeling stage. The manifest emits the same n_frames/elements
+    lineage contract the data_coverage reader consumes, so the existing-pool path is indistinguishable
+    downstream from the perturbation path."""
+    from workflow.integrity import artifact_digest
+    p = _params(proposal)
+    plan = _validate_existing_pool_plan(
+        _acquisition_plan_payload(p.get("acquisition_plan") or p.get("acquisition_plan_path")),
+        reference_yaml=p.get("reference_yaml"),
+        proposal_selected_source_indices=p.get("selected_source_indices"))
+    if p.get("acquisition_plan_sha256") and p["acquisition_plan_sha256"] != plan["_plan_sha256"]:
+        raise _AcquisitionPlanError("proposal acquisition_plan_sha256 does not match AcquisitionPlan")
+
+    out_path = p.get("out_path")
+    if not out_path:
+        raise _AcquisitionPlanError("existing-pool selection requires out_path")
+    manifest_path = p.get("manifest_path")
+    reference_yaml = p.get("reference_yaml")
+    audit_path = Path(p.get("protection_audit_path")
+                      or Path(manifest_path or out_path).with_name("acquisition_protection_audit.json"))
+    created_paths = [out_path, manifest_path, str(audit_path)]
+    try:
+        from ase.io import write as ase_write
+
+        ordered, pool_manifest = _load_pool_frames_global_order(plan["pool_path"])
+        pool_size = len(ordered)
+        selected = list(plan["selected_source_global_indices"])
+        parents = list(plan["selected_parent_structure_ids"])
+        eligible = {str(x) for x in plan["eligible_source_categories"]}
+
+        out_atoms = []
+        selected_records = []
+        for parent_id, gindex in zip(parents, selected):
+            if gindex < 0 or gindex >= pool_size:
+                raise _AcquisitionPlanError(
+                    f"existing-pool selected_source_global_index {gindex} out of range for a pool "
+                    f"of {pool_size} frames")
+            gidx, category, atoms = ordered[gindex]
+            geom = atoms.copy()
+            geom.calc = None
+            for k in ("energy", "forces", "stress", "free_energy", "dft_energy", "dft_forces"):
+                geom.info.pop(k, None)
+            geom.arrays.pop("forces", None)
+            # Lineage: an existing-pool frame IS its own source row, so its top-level parent is that
+            # global seed-pool index (the format the protected-reference lineage guard requires).
+            geom.info["parent_structure_id"] = f"seed-pool:{int(gindex)}"
+            geom.info["source_global_index"] = int(gindex)
+            geom.info["pool_item_id"] = str(parent_id)
+            geom.info["source_category"] = category
+            geom.info["generation_backend"] = "existing_pool_selection.ase"
+            geom.info["exploration_only"] = True
+            out_atoms.append(geom)
+            selected_records.append({
+                "source_index": int(gindex),
+                "structure_id": str(parent_id),
+                "categories": [category]})
+
+        Path(out_path).parent.mkdir(parents=True, exist_ok=True)
+        ase_write(str(out_path), out_atoms, format="extxyz")
+
+        # Protected-reference exclusion: selection is Teacher-free, so protection reduces to
+        # (a) none of the selected global indices is a protected source row and (b) no selected
+        # geometry matches a protected reference fingerprint. Lineage-descendant checking does not
+        # apply (these are source frames, not perturbation children), so require_lineage is False.
+        _protect_dataset(out_path, reference_yaml, selected_source_indices=selected,
+                         require_lineage=False)
+
+        elements = sorted({s for atoms in out_atoms for s in atoms.get_chemical_symbols()})
+        n_frames = len(out_atoms)
+        if n_frames != int(plan["expected_output_count"]):
+            raise _AcquisitionPlanError(
+                f"existing-pool output count mismatch: expected {plan['expected_output_count']}, "
+                f"got {n_frames}")
+
+        audit_result = None
+        if reference_yaml:
+            audit_result = _write_acquisition_protection_audit(
+                audit_path, reference_yaml=reference_yaml, result_path=out_path,
+                selected_source_indices=selected)
+
+        artifact = {"path": str(Path(out_path).resolve()),
+                    "integrity": artifact_digest(out_path)}
+        if manifest_path:
+            manifest = {
+                "schema_version": 1,
+                "operation": "select_existing_pool",
+                "stage": p.get("stage", "acquisition"),
+                "acquisition_plan": str(Path(plan["_plan_path"]).resolve()) if plan.get("_plan_path") else None,
+                "acquisition_plan_sha256": plan["_plan_sha256"],
+                "pool_path": str(Path(plan["pool_path"]).expanduser().resolve()),
+                "pool_manifest_sha256": pool_manifest.get("sanitized_pool_manifest_sha256"),
+                "reference_yaml": str(Path(reference_yaml).resolve()) if reference_yaml else None,
+                "reference_yaml_integrity": artifact_digest(reference_yaml) if reference_yaml else None,
+                "selected_parent_structure_ids": list(parents),
+                "selected_source_global_indices": list(selected),
+                "eligible_source_categories": sorted(eligible),
+                "selected_source_records": selected_records,
+                "expected_output_count": int(plan["expected_output_count"]),
+                "actual_output_count": int(n_frames),
+                "n_frames": int(n_frames),
+                "elements": elements,
+                "duplicate_handling": plan["duplicate_handling"],
+                "dft_labels_used_as_selection_scores": False,
+                "labeling_population_sizing": plan["labeling_population_sizing"],
+                "protected_reference_exclusion_report": plan["protected_reference_exclusion_report"],
+                "performs_teacher_inference": False,
+                "output": artifact["path"],
+                "output_integrity": artifact["integrity"],
+            }
+            if reference_yaml:
+                manifest["protection_audit"] = str(audit_path.resolve())
+                manifest["protection_audit_integrity"] = artifact_digest(audit_path)
+                manifest["protection_audit_result"] = audit_result
+            Path(manifest_path).parent.mkdir(parents=True, exist_ok=True)
+            Path(manifest_path).write_text(json.dumps(manifest, indent=2) + "\n", encoding="utf-8")
+            artifact["manifest_path"] = str(Path(manifest_path).resolve())
+            artifact["manifest_integrity"] = artifact_digest(manifest_path)
+            if reference_yaml:
+                artifact["protection_audit_path"] = str(audit_path.resolve())
+                artifact["protection_audit_integrity"] = artifact_digest(audit_path)
+        return artifact
+    except Exception:
+        _quarantine_acquisition_outputs(created_paths)
+        raise
 
 
 def _executable_config_path(params, plan):
@@ -1116,12 +1736,33 @@ def _exec_build_teacher_baseline(proposal):
         raise ValueError("Teacher baseline produced no finite energies")
     report_path = Path(p["report_path"])
     report_path.parent.mkdir(parents=True, exist_ok=True)
-    required = ["deployment_domain", "applicability_status", "applicability_limitations",
-               "teacher_md_sanity"]
+    required = ["applicability_status", "applicability_limitations", "teacher_md_sanity"]
     missing = [name for name in required if name not in p]
     if missing:
         raise ValueError("Teacher baseline requires explicit deployment/applicability evidence: " + ", ".join(missing))
-    deployment_domain = p["deployment_domain"]
+    # Deterministic locked-domain propagation (mirrors data_coverage). When this run has a frozen
+    # validation contract, teacher_baseline.deployment_domain is sourced VERBATIM from the locked
+    # teacher_applicability_domain.value -- it is never re-authored by a proposal. A re-executed
+    # teacher_baseline (e.g. via recovery) may only run under the SAME frozen Teacher applicability
+    # domain, never a redefined one; a genuine domain change requires a new run.
+    contract_path = _resolve_validation_contract_path(p, report_path)
+    locked_deployment_domain = None
+    if contract_path is not None and contract_path.is_file():
+        contract_doc = json.loads(contract_path.read_text())
+        component = (contract_doc.get("components") or {}).get("teacher_applicability_domain")
+        if not isinstance(component, dict) or "value" not in component:
+            raise ValueError(
+                "validation contract is bound but has no teacher_applicability_domain.value; "
+                "cannot deterministically source teacher_baseline.deployment_domain"
+            )
+        locked_deployment_domain = component["value"]
+    if locked_deployment_domain is not None:
+        deployment_domain = locked_deployment_domain
+    elif "deployment_domain" in p:
+        deployment_domain = p["deployment_domain"]
+    else:
+        raise ValueError(
+            "Teacher baseline requires explicit deployment/applicability evidence: deployment_domain")
     applicability_status = p["applicability_status"]
     limitations = list(p["applicability_limitations"])
     species_mapping = label_manifest_payload.get("species_mapping_evidence") or {}
@@ -1177,7 +1818,13 @@ def _exec_build_teacher_baseline(proposal):
         ],
     }
     report_path.write_text(json.dumps(report, indent=2) + "\n")
-    validate_teacher_baseline_report(report_path)
+    # Self-validate against the SAME locked contract the controller enforces, so a re-authored or
+    # drifted deployment_domain fails fast in-process rather than only at the external contract gate.
+    validate_teacher_baseline_report(
+        report_path,
+        validation_contract_path=(str(contract_path) if contract_path is not None
+                                  and contract_path.is_file() else None),
+    )
     return {"path": str(report_path.resolve()), "report": report,
             "integrity": artifact_digest(report_path),
             "labeled_output": str(Path(labeled_output).resolve()),
@@ -1189,6 +1836,12 @@ def _exec_acquire_structures(proposal, progress_cb=None):
     from adapters.acquisition import acquire
     from workflow.integrity import artifact_digest
     p = _params(proposal)
+    # Discriminate the two executable acquisition projections on the plan's own shape: an
+    # EXISTING_POOL_SELECTION plan carries a ``pool_path`` (SELECT an existing subset, no Teacher
+    # inference); the legacy perturbation plan does not (GENERATE new frames via the Teacher).
+    _raw_plan = _acquisition_plan_payload(p.get("acquisition_plan") or p.get("acquisition_plan_path"))
+    if _is_existing_pool_plan(_raw_plan):
+        return _exec_select_existing_pool(proposal, progress_cb=progress_cb)
     plan = _validate_acquisition_plan(
         _acquisition_plan_payload(p.get("acquisition_plan") or p.get("acquisition_plan_path")),
         reference_yaml=p.get("reference_yaml"),
@@ -1212,6 +1865,14 @@ def _exec_acquire_structures(proposal, progress_cb=None):
         result = acquire(executable_cfg, load_config(p["teacher_config"]),
                          p["seed_structures"], p["out_path"], progress_cb=progress_cb)
         n_frames = _validate_acquisition_output(result, plan)
+        # Emit the data-coverage lineage contract (n_frames + real elements) directly from the
+        # produced artifact, so the acquisition manifest is self-sufficient for the downstream
+        # data_coverage reader. Derived from the actual accepted output frames -- never asserted,
+        # never element-list hardcoded -- so it generalizes to any chemistry.
+        from ase.io import read as _ase_read
+        _produced_frames = _ase_read(str(result), index=":")
+        acquisition_elements = sorted(
+            {s for atoms in _produced_frames for s in atoms.get_chemical_symbols()})
         audit_result = _write_acquisition_protection_audit(
             audit_path, reference_yaml=p["reference_yaml"], result_path=result,
             selected_source_indices=plan["selected_source_global_indices"])
@@ -1239,6 +1900,8 @@ def _exec_acquire_structures(proposal, progress_cb=None):
                 "selected_source_records": list(plan.get("_selected_source_records") or []),
                 "expected_output_count": int(plan["expected_output_count"]),
                 "actual_output_count": int(n_frames),
+                "n_frames": int(n_frames),
+                "elements": acquisition_elements,
                 "duplicate_handling": plan["duplicate_handling"],
                 "dft_labels_used_as_selection_scores": False,
                 "executable_config": str(executable_path),
@@ -1269,19 +1932,270 @@ def _exec_label_with_teacher(proposal):
     from adapters.acquisition import label_with_teacher
     from workflow.integrity import artifact_digest
     p = _params(proposal)
-    _protect_dataset(p.get("structures_path", p.get("structures")), p.get("reference_yaml"),
-                     p.get("selected_source_indices"), require_lineage=True)
+    structures_path = p.get("structures_path", p.get("structures"))
+    reference_yaml = p.get("reference_yaml")
+    selected_source_indices = p.get("selected_source_indices")
+    _protect_dataset(structures_path, reference_yaml, selected_source_indices, require_lineage=True)
     manifest = label_with_teacher(
         load_config(p["teacher_config"]),
-        p.get("structures_path", p.get("structures")),
+        structures_path,
         p.get("out_path", p.get("labeled_output")),
         p["manifest_path"],
         bool(p.get("include_stress", False)),
     )
-    return {"path": manifest["output"], "sha256": manifest["sha256"],
-            "manifest_path": str(Path(p["manifest_path"]).resolve()),
-            "manifest_integrity": artifact_digest(p["manifest_path"])}
+    result = {"path": manifest["output"], "sha256": manifest["sha256"],
+              "manifest_path": str(Path(p["manifest_path"]).resolve()),
+              "manifest_integrity": artifact_digest(p["manifest_path"])}
+    # Persist the protected-reference exclusion audit that this stage declares as an output and
+    # gates on: the in-memory _protect_dataset check above proves the labeled population, but the
+    # durable audit artifact is what record_gate's validation_manifest contract re-verifies. The
+    # labeled output (not the pre-label input) is the audited dataset -- labeling only attaches
+    # Teacher energies/forces, preserving every frame's geometry and parent lineage.
+    if reference_yaml:
+        labeled_output = Path(manifest["output"]).resolve()
+        audit_path = Path(p.get("protection_audit_path")
+                          or Path(p["manifest_path"]).with_name("teacher_labeling_protection_audit.json"))
+        _write_teacher_labeling_protection_audit(
+            audit_path, reference_yaml=reference_yaml, labeled_output=labeled_output,
+            selected_source_indices=selected_source_indices)
+        result["protection_audit_path"] = str(audit_path.resolve())
+        result["protection_audit_integrity"] = artifact_digest(audit_path)
+    return result
 
+
+def _write_teacher_labeling_protection_audit(path, *, reference_yaml, labeled_output,
+                                             selected_source_indices=None):
+    from validation.protected_reference import write_protection_audit, validate_protection_audit_report
+    write_protection_audit("teacher_labeling", reference_yaml,
+                           [f"teacher_labeled={Path(labeled_output).resolve()}"],
+                           path, selected_source_indices=[int(x) for x in (selected_source_indices or [])])
+    return validate_protection_audit_report(
+        path, reference_yaml=reference_yaml,
+        submitted_artifacts=[Path(path).resolve(), Path(labeled_output).resolve()])
+
+
+
+class _ReferenceReuseBlocked(RuntimeError):
+    """Raised when VERIFIED_HISTORICAL_REUSE cannot deterministically verify the
+    historical Teacher-vs-reference evidence. Fail-closed: never fall back to fresh
+    Teacher inference during a no-Teacher-inference campaign."""
+
+
+def _reference_validation_verified_reuse(proposal, p, protection, teacher_cfg,
+                                         teacher_config, reference_yaml,
+                                         predictions_path, report_path,
+                                         historical_report_path, historical_predictions_path):
+    """Complete the historical Stage-1/2 evidence reuse path for reference_validation.
+
+    Deterministically verify that an ALREADY-EXISTING Teacher-vs-reference artifact is
+    identity-, provenance-, and scope-compatible with THIS run's authoritative reference
+    contract and Teacher identity, then re-derive the Teacher-vs-DFT metrics from that
+    verified artifact WITHOUT any fresh Teacher inference. Every required identity /
+    provenance / condition / compatibility check must pass or the run is BLOCKED with the
+    exact mismatch."""
+    import shutil
+    from ase.io import read
+    from adapters.teacher import teacher_model_reference
+    from validation.four_channel_audit import channel
+    from validation.reference_validation import validate_reference_validation_report
+    from workflow.integrity import artifact_digest, sha256_file
+
+    if not historical_predictions_path:
+        raise _ReferenceReuseBlocked(
+            "AUTONOMOUS_REPRODUCIBLE_12_STAGE_WORKFLOW_BLOCKED: verified reuse requires "
+            "'historical_predictions' alongside 'historical_report'")
+    hist_report_path = Path(historical_report_path).expanduser().resolve()
+    hist_pred_path = Path(historical_predictions_path).expanduser().resolve()
+    if not hist_report_path.is_file():
+        raise _ReferenceReuseBlocked(
+            f"AUTONOMOUS_REPRODUCIBLE_12_STAGE_WORKFLOW_BLOCKED: historical report not found: {hist_report_path}")
+    if not hist_pred_path.is_file():
+        raise _ReferenceReuseBlocked(
+            f"AUTONOMOUS_REPRODUCIBLE_12_STAGE_WORKFLOW_BLOCKED: historical predictions not found: {hist_pred_path}")
+    hist = json.loads(hist_report_path.read_text())
+
+    verified = []
+
+    def require(cond_id, description, expected, actual):
+        if expected != actual:
+            raise _ReferenceReuseBlocked(
+                "AUTONOMOUS_REPRODUCIBLE_12_STAGE_WORKFLOW_BLOCKED: reference_validation "
+                f"verified-reuse check {cond_id} failed ({description}): "
+                f"expected {expected!r} != actual {actual!r}")
+        verified.append({"check": cond_id, "description": description,
+                         "expected": expected, "actual": actual, "status": "VERIFIED"})
+
+    teacher_config_path = Path(teacher_config).expanduser().resolve()
+    cur_config_sha = sha256_file(teacher_config_path)
+    model_value = teacher_model_reference(teacher_cfg)
+    model_path = Path(model_value).expanduser().resolve() if model_value else None
+    if not (model_path and model_path.is_file()):
+        raise _ReferenceReuseBlocked(
+            "AUTONOMOUS_REPRODUCIBLE_12_STAGE_WORKFLOW_BLOCKED: current Teacher model file "
+            f"is not resolvable for identity verification: {model_value!r}")
+    cur_model_sha = sha256_file(model_path)
+    hist_teacher = hist.get("teacher") or {}
+    hist_lm = hist_teacher.get("label_manifest") or {}
+    hist_ref = hist.get("reference") or {}
+    hist_pred_meta = hist.get("prediction_artifact") or {}
+
+    # 1. exact Teacher model identity/hash + config identity match
+    require("1a", "Teacher model sha256 identity",
+            (hist_teacher.get("model_sha256")), cur_model_sha)
+    require("1b", "Teacher config sha256 identity",
+            (hist_teacher.get("config_integrity") or {}).get("sha256"), cur_config_sha)
+    # 2. exact protected-reference structure hash match
+    cur_ref_struct = artifact_digest(protection["reference_path"])
+    require("2", "protected reference structures sha256 identity",
+            (hist_ref.get("structures_integrity") or {}).get("sha256"),
+            cur_ref_struct.get("sha256"))
+    # 3. exact reference population + membership match
+    require("3a", "reference_id identity", hist_ref.get("reference_id"), protection["reference_id"])
+    require("3b", "logical frame count identity", int(hist_ref.get("logical_frames")),
+            int(protection["logical_frames"]))
+    require("3c", "protected source row count identity",
+            int(hist_ref.get("protected_source_rows")), int(protection["protected_source_rows"]))
+    # 4. historical Teacher prediction artifact identity/hash is known + matches
+    cur_hist_pred_sha = sha256_file(hist_pred_path)
+    require("4a", "historical prediction sha256 recorded in report",
+            (hist_pred_meta.get("integrity") or {}).get("sha256"), cur_hist_pred_sha)
+    declared_hist_sha = ((_load_reference_yaml(reference_yaml).get("historical_teacher_prediction") or {})
+                         .get("sha256"))
+    require("4b", "historical prediction sha256 declared in reference contract",
+            declared_hist_sha, cur_hist_pred_sha)
+    # 5. original Teacher-inference provenance known and valid
+    require("5a", "label manifest Teacher model provenance",
+            hist_lm.get("teacher_model_sha256"), cur_model_sha)
+    require("5b", "label manifest Teacher config provenance",
+            hist_lm.get("teacher_config_sha256"), cur_config_sha)
+    require("5c", "label manifest frame count provenance",
+            int(hist_lm.get("n_frames")), int(protection["logical_frames"]))
+    if not hist_lm.get("source_sha256"):
+        raise _ReferenceReuseBlocked(
+            "AUTONOMOUS_REPRODUCIBLE_12_STAGE_WORKFLOW_BLOCKED: reference_validation "
+            "verified-reuse check 5d failed (original inference source provenance missing)")
+    verified.append({"check": "5d", "description": "original inference source provenance present",
+                     "expected": "non-empty", "actual": hist_lm.get("source_sha256"),
+                     "status": "VERIFIED"})
+    # 6. DFT/reference labels present + complete (re-derive channel metrics; no Teacher call)
+    frames = read(str(hist_pred_path), index=":")
+    require("6a", "prediction frame count identity", len(frames), int(protection["logical_frames"]))
+    metrics_raw = channel(frames, "dft", "teacher", per_config_type=True, require_complete=True)
+    if not metrics_raw or "all" not in metrics_raw:
+        raise _ReferenceReuseBlocked(
+            "AUTONOMOUS_REPRODUCIBLE_12_STAGE_WORKFLOW_BLOCKED: reference_validation "
+            "verified-reuse check 6b failed (Teacher-vs-DFT metrics not recomputable)")
+    verified.append({"check": "6b", "description": "Teacher-vs-DFT labels complete + metrics recomputed",
+                     "expected": "complete", "actual": "complete", "status": "VERIFIED"})
+    # 7. scientific conditions compatible (units/normalization)
+    hist_metrics = hist.get("metrics") or {}
+    require("7a", "energy normalization compatibility", hist_metrics.get("energy_normalization"), "per_atom")
+    require("7b", "energy unit compatibility", hist_metrics.get("energy_unit"), "meV/atom")
+    require("7c", "force unit compatibility", hist_metrics.get("force_unit"), "eV/Angstrom")
+    # 8. current DeploymentScope/ValidationProfile does not make it inapplicable
+    #    (current reference contract resolved AVAILABLE + frame identity above)
+    require("8", "protected reference use compatibility",
+            hist.get("protected_reference_use"), "teacher_vs_dft_reference_validation_only")
+    # 9. no blind/reference access rule violated (validate_reference_config already enforced
+    #    protection; reference_validation is an allowed consumer)
+    verified.append({"check": "9", "description": "protected reference access rules enforced",
+                     "expected": "enforced", "actual": "enforced", "status": "VERIFIED"})
+
+    def metric_subset(src):
+        return {
+            "n_frames": int(src["n_frames"]), "n_atoms": int(src["n_atoms"]),
+            "energy_mae": float(src["e_raw_mae_meV"]), "energy_rmse": float(src["e_raw_rmse_meV"]),
+            "force_component_mae": float(src["f_mae"]), "force_component_rmse": float(src["f_rmse"]),
+        }
+
+    by_config_type = {k: metric_subset(v) for k, v in metrics_raw.items() if k != "all"}
+    # Materialize this run's own artifact as a byte-identical copy (SHA preserved).
+    shutil.copyfile(hist_pred_path, predictions_path)
+    if sha256_file(predictions_path) != cur_hist_pred_sha:
+        raise _ReferenceReuseBlocked(
+            "AUTONOMOUS_REPRODUCIBLE_12_STAGE_WORKFLOW_BLOCKED: reference_validation "
+            "verified-reuse artifact copy did not preserve SHA")
+    domain_fields = {"config_type": "present" if by_config_type else "absent"}
+    for field in p.get("domain_fields", ["structural_domain"]):
+        if field != "config_type":
+            domain_fields[field] = "present" if any(field in a.info for a in frames) else "absent"
+    m_all = metric_subset(metrics_raw["all"])
+    report = {
+        "schema_version": 1,
+        "profile": "teacher_reference_validation",
+        "stage": "reference_validation",
+        "protected_reference_use": "teacher_vs_dft_reference_validation_only",
+        "evidence_source": "VERIFIED_HISTORICAL_REUSE",
+        "historical_prediction_policy": "VERIFIED_HISTORICAL_REUSE",
+        "reuse_verification": {
+            "historical_report": {"path": str(hist_report_path),
+                                  "sha256": sha256_file(hist_report_path)},
+            "historical_predictions": {"path": str(hist_pred_path), "sha256": cur_hist_pred_sha},
+            "conditions": verified,
+        },
+        "teacher": {
+            "config": str(teacher_config_path),
+            "config_integrity": artifact_digest(teacher_config_path),
+            "model": str(model_path),
+            "model_integrity": artifact_digest(model_path),
+            "model_sha256": cur_model_sha,
+            "label_manifest": hist_lm,
+        },
+        "reference": {
+            "reference_id": protection["reference_id"],
+            "reference_yaml": str(Path(reference_yaml).expanduser().resolve()),
+            "structures_path": str(protection["reference_path"]),
+            "logical_frames": int(protection["logical_frames"]),
+            "protected_source_rows": int(protection["protected_source_rows"]),
+            "structures_integrity": cur_ref_struct,
+        },
+        "prediction_artifact": {
+            "path": str(predictions_path),
+            "integrity": artifact_digest(predictions_path),
+            "n_frames": len(frames),
+            "labels": ["teacher_energy", "teacher_forces", "dft_energy", "dft_forces"],
+        },
+        "metrics": {
+            "energy_normalization": "per_atom", "energy_unit": "meV/atom", "force_unit": "eV/Angstrom",
+            "global": m_all, "by_config_type": by_config_type, "domain_fields": domain_fields,
+        },
+        "checks": [
+            {"domain": "teacher_reference", "observable": "verified_historical_reuse",
+             "status": "VERIFIED", "value": len(verified), "unit": "conditions", "criterion": None},
+            {"domain": "teacher_reference", "observable": "logical_frame_count", "status": "RECORDED",
+             "value": int(protection["logical_frames"]), "unit": "frames", "criterion": None},
+            {"domain": "teacher_reference", "observable": "energy_mae", "status": "RECORDED",
+             "value": m_all["energy_mae"], "unit": "meV/atom", "criterion": None},
+            {"domain": "teacher_reference", "observable": "energy_rmse", "status": "RECORDED",
+             "value": m_all["energy_rmse"], "unit": "meV/atom", "criterion": None},
+            {"domain": "teacher_reference", "observable": "force_component_mae", "status": "RECORDED",
+             "value": m_all["force_component_mae"], "unit": "eV/Angstrom", "criterion": None},
+            {"domain": "teacher_reference", "observable": "force_component_rmse", "status": "RECORDED",
+             "value": m_all["force_component_rmse"], "unit": "eV/Angstrom", "criterion": None},
+        ],
+        "evidence": [
+            _evidence("teacher_config", teacher_config),
+            _evidence("protected_reference_config", reference_yaml),
+            _evidence("protected_reference_structures", protection["reference_path"]),
+            _evidence("teacher_reference_predictions", predictions_path),
+        ],
+    }
+    report_path.parent.mkdir(parents=True, exist_ok=True)
+    report_path.write_text(json.dumps(report, indent=2) + "\n")
+    validate_reference_validation_report(report_path, reference_yaml=reference_yaml,
+                                         teacher_config=teacher_config,
+                                         submitted_artifacts=[report_path, predictions_path],
+                                         reuse_verified_historical=True)
+    return {"path": str(report_path), "report": report, "integrity": artifact_digest(report_path),
+            "predictions_path": str(predictions_path),
+            "predictions_integrity": artifact_digest(predictions_path),
+            "evidence_source": "VERIFIED_HISTORICAL_REUSE",
+            "reuse_verification": report["reuse_verification"]}
+
+
+def _load_reference_yaml(reference_yaml):
+    import yaml
+    return yaml.safe_load(Path(reference_yaml).expanduser().read_text(encoding="utf-8")) or {}
 
 
 def _exec_validate_teacher_reference(proposal):
@@ -1291,17 +2205,25 @@ def _exec_validate_teacher_reference(proposal):
     from adapters.acquisition import label_with_teacher
     from adapters.teacher import teacher_model_reference
     from validation.four_channel_audit import channel
-    from validation.protected_reference import validate_reference_config
+    from validation.protected_reference import assert_reference_provides_dft_labels
     from validation.reference_validation import validate_reference_validation_report
     from workflow.integrity import artifact_digest, sha256_file
     p = _params(proposal)
     reference_yaml = p["reference_yaml"]
     teacher_config = p["teacher_config"]
-    protection = validate_reference_config(reference_yaml)
+    # Teacher-vs-DFT reference_validation reads the reference's own DFT/Teacher labels, so it is
+    # an EVALUATION-reference consumer. Fail closed (rather than surface an obscure
+    # missing-label error later) if a PROTECTION-ONLY structure-identity reference -- which must
+    # never expose label truth to the early Student route -- is misrouted to this label path.
+    protection = assert_reference_provides_dft_labels(reference_yaml)
     predictions_path = Path(p["predictions_path"]).resolve()
     report_path = Path(p["report_path"]).resolve()
     predictions_path.parent.mkdir(parents=True, exist_ok=True)
     teacher_cfg = load_config(teacher_config)
+    if p.get("historical_report"):
+        return _reference_validation_verified_reuse(
+            proposal, p, protection, teacher_cfg, teacher_config, reference_yaml,
+            predictions_path, report_path, p["historical_report"], p.get("historical_predictions"))
     with tempfile.TemporaryDirectory(prefix="teacher-reference-labels-") as tmp:
         label_manifest_path = Path(tmp) / "teacher_labels.manifest.json"
         label_with_teacher(teacher_cfg, protection["reference_path"], predictions_path,
@@ -1405,7 +2327,9 @@ def _exec_train_committee(proposal):
     _protect_dataset(p["dataset"], p.get("reference_yaml"),
                      p.get("selected_source_indices"), require_lineage=True)
     manifest = train_committee(p["student_config"], p["dataset"], p["output_dir"],
-                               p["manifest_path"])
+                               p["manifest_path"],
+                               continue_from=p.get("continue_from"),
+                               total_epoch_override=p.get("total_epoch_override"))
     return {"path": str(Path(p["manifest_path"]).resolve()), "manifest": manifest,
             "integrity": artifact_digest(p["manifest_path"])}
 
@@ -1414,12 +2338,42 @@ def _exec_evaluate_committee(proposal):
     from workflow.steps import evaluate_committee
     from workflow.integrity import artifact_digest
     p = _params(proposal)
+    # Governed protected-reference isolation: when an access-partition contract is bound, the
+    # Stage-8 fidelity claim is restricted to the ``protected_stage8_evaluation`` role, while
+    # committee predictions are still embedded on the full evaluated population so Stage-9 can
+    # slice the disjoint calibration roles from the same labeled artifact.
+    report_fingerprints = None
+    partition_provenance = None
+    access_partition_path = p.get("access_partition_path")
+    if access_partition_path:
+        from validation.access_partition import (
+            ROLE_STUDENT_FINAL_EVALUATION, validate_access_partition_contract,
+            assert_stage_partition_access, resolve_partition_fingerprints,
+        )
+        role = p.get("partition_role", ROLE_STUDENT_FINAL_EVALUATION)
+        contract = validate_access_partition_contract(
+            access_partition_path,
+            expected_reference_id=p.get("expected_reference_id"),
+            expected_structures_sha256=p.get("expected_structures_sha256"),
+        )
+        assert_stage_partition_access(contract, "evaluation", role)
+        report_fingerprints = resolve_partition_fingerprints(contract, role)
+        partition_provenance = {
+            "access_partition_path": str(Path(access_partition_path).resolve()),
+            "partition_assignment_sha256": contract.get("partition_assignment_sha256"),
+            "role": role,
+            "role_n_frames": (contract.get("partitions") or {}).get(role, {}).get("n_frames"),
+        }
     report = evaluate_committee(
         p["student_config"], p["committee_manifest"], p["frames_path"],
-        p["labeled_output"], p["report_path"], p.get("required_channels"))
-    return {"path": str(Path(p["report_path"]).resolve()), "report": report,
-            "integrity": artifact_digest(p["report_path"]),
-            "labeled_output": str(Path(p["labeled_output"]).resolve())}
+        p["labeled_output"], p["report_path"], p.get("required_channels"),
+        report_fingerprints=report_fingerprints)
+    result = {"path": str(Path(p["report_path"]).resolve()), "report": report,
+              "integrity": artifact_digest(p["report_path"]),
+              "labeled_output": str(Path(p["labeled_output"]).resolve())}
+    if partition_provenance is not None:
+        result["governed_partition"] = partition_provenance
+    return result
 
 
 def _exec_run_student_md(proposal):
@@ -1432,6 +2386,87 @@ def _exec_run_student_md(proposal):
         p.get("committee_manifest"), p.get("selected_seed"), p.get("evidence_paths"))
     return {"path": str(Path(p["manifest_path"]).resolve()), "manifest": manifest,
             "integrity": artifact_digest(p["manifest_path"])}
+
+
+def _exec_resolve_deployment_checkpoint(proposal):
+    """Resolve the canonical deployed Student checkpoint (Stage-10) from the committee manifest.
+
+    Selecting the deployed member is a governed decision (``selected_seed`` explicit, or a
+    ``select_by`` policy fully determined by the manifest); the checkpoint path and sha256 are
+    then DERIVED from the manifest -- never hand-typed into a proposal. Writes a
+    ``deployment_provenance.json`` carrying the resolved Student identity (+ starting-structure
+    identity + ensemble role) so Stage-10 C2b identity checks can bind approved-vs-realized.
+
+    When ``expected_committee_manifest_sha256`` is supplied (the sha256 of the committee manifest
+    the training stage PUBLISHED in this run, derived by
+    ``validation.deployment_resolution.resolve_published_committee_manifest``), the consumed
+    manifest must be byte-identical to it -- this is the run-binding that makes it impossible to
+    deploy a checkpoint the training stage never published.
+    """
+    from validation.deployment_resolution import (
+        resolve_selected_checkpoint, build_deployment_provenance)
+    from workflow.integrity import sha256_file, artifact_digest
+    p = _params(proposal)
+    student_identity = resolve_selected_checkpoint(
+        p["committee_manifest"], selected_seed=p.get("selected_seed"),
+        select_by=p.get("select_by"),
+        expected_manifest_sha256=p.get("expected_committee_manifest_sha256"))
+    datafile = Path(p["starting_structure"]).resolve()
+    if not datafile.is_file():
+        raise ValueError(f"deployment starting_structure does not exist: {datafile}")
+    starting_structure = {
+        "path": str(datafile),
+        "sha256": sha256_file(datafile),
+        "provenance_role": p.get("starting_structure_role", "deployment_starting_structure"),
+        "leakage_check": p.get("leakage_check"),
+    }
+    provenance = build_deployment_provenance(
+        student_identity, starting_structure=starting_structure,
+        ensemble_role=p.get("ensemble_role", "deployment_md"),
+        shared_md_protocol=p.get("shared_md_protocol"),
+        extra=p.get("provenance_extra"))
+    out_path = Path(p["out_path"])
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    out_path.write_text(json.dumps(provenance, indent=2) + "\n")
+    return {"path": str(out_path.resolve()), "student": student_identity,
+            "provenance": provenance, "integrity": artifact_digest(out_path)}
+
+
+def _exec_build_deployment_context(proposal):
+    """Produce the LAMMPS deployment context.yaml (Stage-10) from the frozen shared MD protocol.
+
+    ``ensemble='nvt'`` renders the thermostatted production-trajectory context;
+    ``ensemble='nve'`` renders the dedicated microcanonical energy-conservation segment context
+    (distinct from production) whose total-energy drift is a valid NVE metric. Every step count
+    is derived from the frozen ``shared_md_protocol`` -- no hand-tuned numbers. The derived NVE
+    protocol + autonomous-choice rationale is returned and, for NVE, also embedded as a
+    ``_nve_protocol`` comment-safe key inside the returned payload (NOT written into the plain
+    template context).
+    """
+    import yaml
+    from validation.deployment_resolution import (
+        load_shared_md_protocol, build_deployment_context)
+    from workflow.integrity import sha256_file
+    p = _params(proposal)
+    if p.get("shared_md_protocol") is not None:
+        shared = p["shared_md_protocol"]
+    else:
+        shared = load_shared_md_protocol(p["validation_profile"])
+    ensemble = p["ensemble"]
+    context = build_deployment_context(
+        shared, ensemble, p["starting_structure"],
+        velocity_seed=int(p["velocity_seed"]), mpi_ranks=int(p.get("mpi_ranks", 1)),
+        dump_file=p.get("dump_file"), energy_log=p.get("energy_log"),
+        nve_segment_ps=p.get("nve_segment_ps"))
+    nve_protocol = context.pop("_nve_protocol", None)
+    out_path = Path(p["out_path"])
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    out_path.write_text(yaml.safe_dump(context, sort_keys=True))
+    result = {"path": str(out_path.resolve()), "context": context,
+              "ensemble": ensemble, "sha256": sha256_file(out_path)}
+    if nve_protocol is not None:
+        result["nve_protocol"] = nve_protocol
+    return result
 
 
 def _ready(action, role, backing, contract, out, fn, validator="", cost="light"):
@@ -1541,6 +2576,20 @@ BINDINGS: dict[str, ExecutorBinding] = {b.action_type: b for b in [
          "md_config,teacher_config,seed_structures,out_path", "teacher MD snapshots", ""),
     _hpc("run_student_md", "simulation", "workflow.steps.run_md / adapters.md_backend.run",
          "md_cfg,student_cfg,checkpoint,...", "MD trajectory + manifest", ""),
+    _ready("resolve_deployment_checkpoint", "simulation",
+           "validation.deployment_resolution.resolve_selected_checkpoint",
+           "committee_manifest,starting_structure,out_path[,selected_seed,select_by,ensemble_role,"
+           "expected_committee_manifest_sha256]",
+           "deployment_provenance.json (resolved Student + starting-structure identity)",
+           _exec_resolve_deployment_checkpoint,
+           validator="committee-manifest checkpoint cross-check"),
+    _ready("build_deployment_context", "simulation",
+           "validation.deployment_resolution.build_deployment_context",
+           "ensemble,starting_structure,velocity_seed,out_path[,validation_profile,"
+           "shared_md_protocol,mpi_ranks,dump_file,energy_log,nve_segment_ps]",
+           "LAMMPS deployment context.yaml (NVT production or dedicated NVE segment)",
+           _exec_build_deployment_context,
+           validator="frozen shared_md_protocol derivation"),
     _ready("compute_rdf", "simulation", "validation.structure_dynamics.compute_rdf",
            "frames_path,elements[,r_max,nbins]", "partial RDF peaks", _exec_compute_rdf),
     _ready("compute_coordination", "simulation", "validation.structure_dynamics.compute_coordination",
@@ -1559,7 +2608,8 @@ BINDINGS: dict[str, ExecutorBinding] = {b.action_type: b for b in [
     _ready("build_physical_validation_report", "simulation",
            "validation.structure_dynamics.{compute_rdf,compute_coordination,compute_density,"
            "compute_msd,compute_nve_drift} against the frozen validation_profile.yaml",
-           "validation_profile,frames_path[,elements,cutoffs,energies,n_atoms,timestep_fs]",
+           "validation_profile,frames_path[,elements,cutoffs,energies,n_atoms,timestep_fs,"
+           "energy_log_path,nve_md_manifest]",
            "physical validation report (schema_version=1, threshold-bound)",
            _exec_build_physical_validation_report,
            validator="validation.report.validate_validation_report"),

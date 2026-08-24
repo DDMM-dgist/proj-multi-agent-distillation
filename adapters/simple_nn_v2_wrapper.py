@@ -61,6 +61,11 @@ def _parse_args(argv=None):
                    choices=("none", "c_size_normalized_bounded"),
                    help="per-structure SIMPLE-NN struct_weight: none=uniform 1.0; "
                         "c_size_normalized_bounded=clip((1/N)/geomean(1/N),1/sqrt8,sqrt8) [training only]")
+    p.add_argument("--continue-from", default=None,
+                   help="path to a SIMPLE-NN v2 .pth.tar checkpoint for TRUE RESUME: restores "
+                        "model + optimizer + scale + pca and sets start_epoch from the checkpoint "
+                        "(clear_prev_status=clear_prev_optimizer=False). --epochs is then the "
+                        "MAXIMUM total epoch budget, not a fresh count. Absent => fresh training.")
     return p.parse_args(argv)
 
 
@@ -181,6 +186,21 @@ def _build_input_yaml(rendered: dict, args, descriptor_params: dict,
     nn["total_epoch"] = int(args.epochs)
     nn["double_precision"] = (args.precision == "double")
     nn["stress_loss_weight"] = float(args.stress_loss_weight)
+    # TRUE RESUME: point SIMPLE-NN v2 at the prior .pth.tar checkpoint. With
+    # clear_prev_status/clear_prev_optimizer both False, run.py restores the model,
+    # optimizer, scale_factor and pca from the checkpoint and sets start_epoch =
+    # checkpoint['epoch'], so the loop `range(start_epoch, total_epoch+1)` continues
+    # rather than restarting from epoch 0. total_epoch (from --epochs) is thus the
+    # MAXIMUM budget. `continue: 'weights'` (warm-start from LAMMPS weights only,
+    # fresh optimizer/epoch 0) is deliberately NOT used here.
+    continue_from = getattr(args, "continue_from", None)
+    if continue_from:
+        resolved = str(Path(continue_from).resolve())
+        if not Path(resolved).is_file():
+            raise FileNotFoundError(f"--continue-from checkpoint not found: {resolved}")
+        nn["continue"] = resolved
+        nn["clear_prev_status"] = False
+        nn["clear_prev_optimizer"] = False
     # Ensure GPU/CPU is honored automatically. use_gpu default is True; if no
     # CUDA is available, SIMPLE-NN falls back to CPU.
     nn.setdefault("use_gpu", True)

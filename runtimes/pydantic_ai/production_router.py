@@ -41,6 +41,8 @@ class RouteResult:
     error: Optional[str]
     provenance_path: Path
     detail: object = None  # validated payload (judge/typed) or ActionOutcome (producer)
+    error_category: Optional[str] = None  # e.g. "judge_output_invalid" for a hard judge-vote
+    # schema/structural validation failure (distinct from a provider/infrastructure failure)
 
 
 @dataclass
@@ -162,7 +164,13 @@ def _accept_via_exchange(invocation, spec, task, context, mode, strategy) -> Rou
         rec.accepted = True
         rec.controller_mutated = True   # exchange acceptance is the recorded state for this path
     path = _write_provenance(context, invocation)
-    return RouteResult(strategy, accepted, rec.controller_mutated, error, path, validated)
+    # A hard schema/structural validation failure of a JUDGE vote (e.g. a REVISE/FAIL verdict with
+    # an empty required_fix) is a malformed Judge OUTPUT -- not a provider/infrastructure failure.
+    # Classify it so the gate can route it through the canonical INVALID_JUDGE_OUTPUT bounded retry
+    # (same decision/spec/packet/lens/rubric) instead of crashing the campaign.
+    error_category = "judge_output_invalid" if (error is not None and strategy == "judge_gate") else None
+    return RouteResult(strategy, accepted, rec.controller_mutated, error, path, validated,
+                       error_category=error_category)
 
 
 def _accept_via_dispatch(invocation, spec, context, controller, registry, mode,

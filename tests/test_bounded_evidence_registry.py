@@ -352,5 +352,98 @@ class SourceSplitLineageRegressionTests(unittest.TestCase):
         self.assertEqual(summary["missing_lineage_frames"], 1)
 
 
+class FourChannelAccuracyReportAdapterTests(unittest.TestCase):
+    """Stage-8 evidence surfacing: the four-channel accuracy_report.json (see
+    validation.four_channel_audit / workflow.steps.evaluate_committee) must be surfaced to the
+    evaluation Judges as directly readable, deterministic per-channel metrics -- the exact
+    evaluation population, the three fidelity channels, aggregate energy/force metrics, and the
+    domain/configuration-family-resolved per-group metrics -- with explicit units, so the Judges
+    never have to re-derive fidelity from a large extxyz artifact. The lineage/hash binding is the
+    artifact's own top-level `integrity` sha256. This is the defect behind the recovery-004
+    evidence gap: the generic _json_summary had surfaced only top-level key names."""
+
+    def _report(self) -> dict:
+        def group(nf, na, e_mae, f_mae, f_r2):
+            return {
+                "n_frames": nf, "n_atoms": na,
+                "e_raw_mae_meV": e_mae + 1.0, "e_raw_rmse_meV": e_mae + 5.0,
+                "e_alignment_shift_meV": -1.0, "e_mae_meV": e_mae, "e_rmse_meV": e_mae + 4.0,
+                "f_mae": f_mae, "f_rmse": f_mae + 0.1, "f_r2": f_r2,
+            }
+        return {
+            "teacher_vs_dft": {
+                "all": group(100, 5000, 17.0, 0.15, 0.94),
+                "bulk_cryst": group(60, 3000, 3.0, 0.03, 0.99),
+                "cluster": group(40, 2000, 108.0, 0.38, -1.14),
+            },
+            "student_vs_teacher": {
+                "all": group(100, 5000, 61.0, 0.23, 0.90),
+                "bulk_cryst": group(60, 3000, 22.0, 0.12, 0.98),
+                "cluster": group(40, 2000, 503.0, 0.46, 0.25),
+            },
+            "student_vs_dft": {
+                "all": group(100, 5000, 74.0, 0.27, 0.92),
+                "bulk_cryst": group(60, 3000, 24.0, 0.12, 0.98),
+                "cluster": group(40, 2000, 588.0, 0.52, 0.78),
+            },
+        }
+
+    def test_adapter_recognizes_and_surfaces_three_channels(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "accuracy_report.json"
+            path.write_text(json.dumps(self._report()))
+            summary = summarize_artifact(path)
+        fc = summary["four_channel_accuracy_report"]
+        self.assertEqual(fc["channels_present"],
+                         ["student_vs_dft", "student_vs_teacher", "teacher_vs_dft"])
+        # lineage/hash binding is the artifact's own integrity sha256.
+        self.assertIn("sha256", summary["integrity"])
+
+    def test_aggregate_and_population_are_directly_readable_per_channel(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "accuracy_report.json"
+            path.write_text(json.dumps(self._report()))
+            summary = summarize_artifact(path)
+        svd = summary["four_channel_accuracy_report"]["channels"]["student_vs_dft"]
+        self.assertEqual(svd["population"], {"n_frames": 100, "n_atoms": 5000})
+        self.assertEqual(svd["aggregate"]["e_mae_meV"], 74.0)
+        self.assertEqual(svd["aggregate"]["f_mae"], 0.27)
+        self.assertEqual(svd["aggregate"]["f_r2"], 0.92)
+
+    def test_domain_resolved_per_group_metrics_are_exposed(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "accuracy_report.json"
+            path.write_text(json.dumps(self._report()))
+            summary = summarize_artifact(path)
+        svd = summary["four_channel_accuracy_report"]["channels"]["student_vs_dft"]
+        self.assertEqual(svd["n_groups"], 2)
+        # Columnar Judge-facing layout: a fixed group_order plus one array per metric column,
+        # index-aligned to it. All groups and all metric columns are retained.
+        self.assertEqual(svd["group_order"], ["bulk_cryst", "cluster"])
+        e_mae = svd["by_group_columnar"]["e_mae_meV"]
+        # a domain where the Student tracks DFT well vs one where it does not, both visible.
+        self.assertEqual(e_mae[svd["group_order"].index("bulk_cryst")], 24.0)
+        self.assertEqual(e_mae[svd["group_order"].index("cluster")], 588.0)
+
+    def test_units_and_committee_mean_aggregation_are_stated_explicitly(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "accuracy_report.json"
+            path.write_text(json.dumps(self._report()))
+            summary = summarize_artifact(path)
+        fc = summary["four_channel_accuracy_report"]
+        self.assertIn("meV/atom", fc["units"]["energy_metrics"])
+        self.assertIn("eV/Angstrom", fc["units"]["force_metrics"])
+        # stage separation is stated: metrics are committee-MEAN; per-seed disagreement is Stage 9.
+        self.assertIn("committee-MEAN", fc["aggregation"])
+        self.assertIn("Stage-9", fc["aggregation"])
+
+    def test_plain_json_without_channel_shape_gets_no_adapter_key(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "plain.json"
+            path.write_text(json.dumps({"schema_version": 1, "status": "PASS"}))
+            summary = summarize_artifact(path)
+        self.assertNotIn("four_channel_accuracy_report", summary)
+
+
 if __name__ == "__main__":
     unittest.main()

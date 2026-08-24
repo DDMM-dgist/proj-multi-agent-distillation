@@ -19,7 +19,8 @@ import yaml
 from orchestration.exchange import (FileExchangeRuntime, TaskPacketConflictError,
                                     atomic_write_text)
 from orchestration.specs import load_agent_specs
-from runtimes.pydantic_ai.cli import JudgeResumeConflictError, _judge_task, run_three_judge_gate
+from runtimes.pydantic_ai.cli import (JudgeInvalidOutputBlocker, JudgeResumeConflictError,
+                                      _judge_task, run_three_judge_gate)
 from runtimes.pydantic_ai.mock_runtime import MockAgentRuntime
 from runtimes.pydantic_ai.models import RuntimeContext
 from runtimes.pydantic_ai.production_router import run_role
@@ -350,6 +351,113 @@ class JudgeGateResumeTests(unittest.TestCase):
                 run_three_judge_gate(
                     c, "s", specs, _counting_runtime_factory(call_log), _ctx_factory(run_dir), evidence)
             self.assertEqual(call_log, [])
+
+
+def _valid_pass_vote(task, index):
+    return json.dumps({
+        "review_lens": task["context"]["review_lens"], "verdict": "PASS",
+        "criteria_checked": [{"criterion": cr, "value_read": "ok", "ok": True}
+                             for cr in task["criteria"]],
+        "rationale": f"judge {index} checked frozen evidence", "required_fix": "",
+    })
+
+
+def _malformed_revise_vote(task, index):
+    # A REVISE verdict with an EMPTY required_fix: schema-valid Pydantic shape, but it trips the
+    # exchange structural validator ("REVISE/FAIL judge votes require a concrete fix",
+    # orchestration/exchange.py) -- the exact C12F dataset_split crash. This is a hard Judge OUTPUT
+    # validation failure, NOT a provider/infrastructure failure.
+    return json.dumps({
+        "review_lens": task["context"]["review_lens"], "verdict": "REVISE",
+        "criteria_checked": [{"criterion": cr, "value_read": "read", "ok": False}
+                             for cr in task["criteria"]],
+        "rationale": f"judge {index} wants changes but omitted the concrete fix",
+        "required_fix": "",
+    })
+
+
+def _malformed_then_valid_factory(call_log, *, bad_index, bad_attempts):
+    """Runtime factory: the ``bad_index`` lens emits a malformed REVISE (empty required_fix) for its
+    first ``bad_attempts`` invocations, then a valid PASS; every other lens PASSes immediately."""
+    seen = {}
+
+    def factory(index):
+        def responder(task, spec, toolset):
+            call_log.append(index)
+            n = seen.get(index, 0) + 1
+            seen[index] = n
+            if index == bad_index and n <= bad_attempts:
+                return _malformed_revise_vote(task, index), (0, 0)
+            return _valid_pass_vote(task, index), (0, 0)
+        return MockAgentRuntime(responder)
+    return factory
+
+
+class JudgeInvalidOutputBoundedRetryTests(unittest.TestCase):
+    """C12F blocker: a hard Judge schema/structural validation failure (a REVISE/FAIL vote with an
+    empty required_fix) must follow the SAME canonical INVALID_JUDGE_OUTPUT bounded per-lens retry
+    as a closure-invalid vote -- it must never crash the campaign, never enter Gate aggregation, and
+    exhaust to a terminal JUDGE_INVALID_BLOCKER (not a scientific REVISE)."""
+
+    def test_malformed_revise_is_classified_judge_output_invalid_not_infra_failure(self):
+        # Unit-level: the router classifies a malformed judge vote as ``judge_output_invalid`` so the
+        # gate can route it to retry, while leaving the vote unaccepted (never in aggregation).
+        specs = _agent_specs()
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            c, evidence = _setup_gate_stage(root)
+            run_dir = root / "run"
+            gate_context = c.gate_context("s")
+            lens = gate_context["review_lenses"][0]
+            task = _judge_task("s", 1, lens, gate_context, evidence, c)
+            exchange = FileExchangeRuntime(str(run_dir / "exchange"))
+            exchange.dispatch(specs["judge"], task)
+
+            def responder(task_, spec, toolset):
+                return _malformed_revise_vote(task_, 1), (0, 0)
+
+            res = run_role(MockAgentRuntime(responder), task, specs["judge"],
+                           _ctx_factory(run_dir)(1), mode="primary")
+            self.assertIsNotNone(res.error)
+            self.assertFalse(res.accepted)
+            self.assertIsNone(res.detail)
+            self.assertEqual(res.error_category, "judge_output_invalid")
+
+    def test_single_malformed_output_then_valid_retry_never_crashes_and_reaches_pass(self):
+        # One malformed REVISE from lens 3, then a valid PASS on retry: the gate must NOT crash, must
+        # keep lenses 1 and 2 (invoked once each), retry ONLY lens 3, and reach unanimous PASS.
+        specs = _agent_specs()
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            c, evidence = _setup_gate_stage(root)
+            run_dir = root / "run"
+            call_log = []
+            decision, path = run_three_judge_gate(
+                c, "s", specs,
+                _malformed_then_valid_factory(call_log, bad_index=3, bad_attempts=1),
+                _ctx_factory(run_dir), evidence)
+            self.assertEqual(decision, "PASS")
+            # lens 1 + 2 once each; lens 3 twice (initial malformed + valid retry).
+            self.assertEqual(call_log, [1, 2, 3, 3])
+            bundle = json.loads(path.read_text(encoding="utf-8"))
+            self.assertEqual([v["verdict"] for v in bundle["votes"]], ["PASS", "PASS", "PASS"])
+
+    def test_repeated_malformed_output_exhausts_to_judge_invalid_blocker(self):
+        # A lens that keeps emitting a malformed REVISE past the bounded retry limit terminates as a
+        # JUDGE_INVALID_BLOCKER -- never a crash, never a Gate REVISE.
+        specs = _agent_specs()
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            c, evidence = _setup_gate_stage(root)
+            run_dir = root / "run"
+            call_log = []
+            with self.assertRaises(JudgeInvalidOutputBlocker):
+                run_three_judge_gate(
+                    c, "s", specs,
+                    _malformed_then_valid_factory(call_log, bad_index=3, bad_attempts=99),
+                    _ctx_factory(run_dir), evidence)
+            # lens 3 invoked exactly the bounded number of attempts (initial + 2 retries = 3).
+            self.assertEqual(call_log, [1, 2, 3, 3, 3])
 
 
 if __name__ == "__main__":  # pragma: no cover

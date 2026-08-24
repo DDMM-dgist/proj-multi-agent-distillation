@@ -368,10 +368,212 @@ def _validate_recovered_holdout_reference_config(reference_yaml, cfg):
     }
 
 
+# --------------------------------------------------------------------------------------
+# PROTECTION REFERENCE vs EVALUATION REFERENCE (framework-level separation)
+# --------------------------------------------------------------------------------------
+# Two distinct concepts share the reference.yaml surface but need different information and
+# obey different access-control invariants:
+#
+#   PROTECTION REFERENCE  -- used by acquisition / teacher_labeling / dataset_split /
+#     training (early stages 1-7) purely to verify that a Student-side population does NOT
+#     overlap a protected population. It needs ONLY structure identity: source-pool indices
+#     and/or geometry (species/positions/cell/pbc) fingerprints. It MUST NOT carry, and this
+#     module MUST NOT read, DFT/Teacher energy/force/stress truth -- exposing those at an
+#     early stage would leak protected labels into the blind Student route.
+#
+#   EVALUATION REFERENCE  -- used ONLY at Stage 8 (evaluation) / Stage 9 (uncertainty) to
+#     compute actual DFT fidelity and uncertainty calibration. It legitimately carries and
+#     reads finite DFT/Teacher labels, under the frozen access policy that restricts label
+#     access to those late stages.
+#
+# `protected-existing-dft` and `recovered-original-holdout` are EVALUATION references (they
+# materialize a DFT-labeled structures file). `protected-structure-identity` is a
+# PROTECTION-ONLY reference (identity + geometry, no labels). The classification is made
+# first-class below so callers can require the correct capability rather than assuming every
+# reference kind carries labels.
+PROTECTION_ONLY_STRUCTURE_IDENTITY_REFERENCE_CLASS = "PROTECTION_ONLY_STRUCTURE_IDENTITY"
+
+# Info/array keys that would constitute DFT/Teacher *truth* (as opposed to structure
+# identity). A protection-only reference carrying any of these is rejected fail-closed so a
+# geometry-only protection manifest can never indirectly expose label truth to early stages.
+_FORBIDDEN_LABEL_INFO_KEYS = frozenset({
+    "dft_energy", "dft_free_energy", "dft_stress", "dft_virial",
+    "teacher_energy", "teacher_free_energy", "teacher_stress", "teacher_virial",
+    "energy", "free_energy", "stress", "virial",
+})
+_FORBIDDEN_LABEL_ARRAY_KEYS = frozenset({
+    "dft_forces", "teacher_forces", "forces", "stress", "stresses",
+})
+_FORBIDDEN_CALC_RESULT_KEYS = frozenset({
+    "energy", "free_energy", "forces", "stress",
+})
+
+
+def _assert_frame_carries_no_label_truth(atoms, index):
+    """Fail closed if a protection-only reference frame carries DFT/Teacher label truth.
+
+    Only key *presence* is inspected; label values are never read. This enforces the
+    access-control invariant that a protection manifest exposes structure identity only.
+    """
+    present_info = _FORBIDDEN_LABEL_INFO_KEYS & set(atoms.info)
+    if present_info:
+        raise ValueError(
+            f"protection-only reference frame {index} carries forbidden label field(s) "
+            f"{sorted(present_info)} -- a protection reference must expose structure identity "
+            "only, never DFT/Teacher energy/force/stress truth"
+        )
+    present_arrays = _FORBIDDEN_LABEL_ARRAY_KEYS & set(atoms.arrays)
+    if present_arrays:
+        raise ValueError(
+            f"protection-only reference frame {index} carries forbidden label array(s) "
+            f"{sorted(present_arrays)} -- a protection reference must expose structure identity "
+            "only, never DFT/Teacher energy/force/stress truth"
+        )
+    calc = getattr(atoms, "calc", None)
+    if calc is not None:
+        results = getattr(calc, "results", None) or {}
+        present_calc = _FORBIDDEN_CALC_RESULT_KEYS & set(results)
+        if present_calc:
+            raise ValueError(
+                f"protection-only reference frame {index} carries attached calculator results "
+                f"{sorted(present_calc)} -- a protection reference must expose structure identity "
+                "only, never DFT/Teacher energy/force/stress truth"
+            )
+
+
+def _validate_protection_only_structure_identity_reference(reference_yaml, cfg):
+    """Validate a ``kind: protected-structure-identity`` reference.yaml: a PROTECTION-ONLY
+    reference that expresses a protected population by STRUCTURE IDENTITY (source-pool indices
+    + geometry fingerprints) and carries NO DFT/Teacher labels.
+
+    This is the generic, material-agnostic representation the early-stage disjointness checks
+    (acquisition / teacher_labeling / dataset_split / training) actually need. It never requires
+    a DFT label to exist, never reads energy/force/stress, and is explicitly separated from the
+    DFT-labeled EVALUATION references (``protected-existing-dft`` / ``recovered-original-holdout``)
+    consumed only at Stages 8/9.
+
+    Nothing about a particular material, campaign, frame count, or split name is hardcoded:
+    ``protected_source_indices_file`` (newline-separated integer source-pool rows) and a
+    geometry-only ``structures`` file are both read from ``cfg`` and cross-checked against their
+    declared sha256 + counts, and every frame is asserted to carry NO label truth.
+    """
+    if cfg.get("reference_class") != PROTECTION_ONLY_STRUCTURE_IDENTITY_REFERENCE_CLASS:
+        raise ValueError(
+            f"reference_class must be {PROTECTION_ONLY_STRUCTURE_IDENTITY_REFERENCE_CLASS!r}"
+        )
+    if cfg.get("status") != "IDENTITY_AVAILABLE_AND_PROTECTED":
+        raise ValueError(
+            "protection-only reference is not marked IDENTITY_AVAILABLE_AND_PROTECTED"
+        )
+    if not cfg.get("reference_id"):
+        raise ValueError("protection-only reference must declare a non-empty reference_id")
+
+    indices_path = Path(cfg["protected_source_indices_file"]).resolve()
+    if not indices_path.is_file():
+        raise FileNotFoundError(indices_path)
+    observed_indices_sha = sha256_file(indices_path)
+    if observed_indices_sha != cfg.get("protected_source_indices_sha256"):
+        raise RuntimeError(
+            "protected_source_indices_file SHA-256 mismatch: "
+            f"{observed_indices_sha} != {cfg.get('protected_source_indices_sha256')}"
+        )
+    protected_indices = load_protected_indices(indices_path)
+    if len(protected_indices) != int(cfg["protected_source_rows"]):
+        raise ValueError(
+            "protected source-index count does not match protected_source_rows"
+        )
+
+    structures = cfg.get("structures")
+    if not isinstance(structures, dict):
+        raise ValueError("reference.structures must be a mapping")
+    ref_path = Path(structures["path"]).resolve()
+    if not ref_path.is_file():
+        raise FileNotFoundError(ref_path)
+    observed_sha = sha256_file(ref_path)
+    if structures.get("sha256") != observed_sha:
+        raise RuntimeError(
+            f"protection-only structures SHA-256 mismatch: {observed_sha} != {structures.get('sha256')}"
+        )
+
+    frames = read(str(ref_path), index=":")
+    expected_count = int(structures.get("logical_frames", -1))
+    if len(frames) != expected_count:
+        raise ValueError("structures.logical_frames does not match the structures file")
+
+    for index, atoms in enumerate(frames):
+        _assert_frame_carries_no_label_truth(atoms, index)
+
+    prohibited = set(cfg.get("prohibited_uses", []))
+    missing = RECOVERED_HOLDOUT_REQUIRED_PROHIBITIONS - prohibited
+    if missing:
+        raise ValueError(
+            "protection-only reference is missing prohibited uses: " + ", ".join(sorted(missing))
+        )
+
+    fingerprints = [_structure_fingerprint(a) for a in frames]
+    if len(fingerprints) != len(set(fingerprints)):
+        raise ValueError(
+            "protection-only reference itself contains duplicate geometries"
+        )
+
+    return {
+        "reference_id": cfg["reference_id"],
+        "logical_frames": len(frames),
+        "protected_source_rows": len(protected_indices),
+        "protected_source_indices": protected_indices,
+        "reference_fingerprints": set(fingerprints),
+        "reference_path": ref_path,
+    }
+
+
 _REFERENCE_KIND_VALIDATORS = {
     "protected-existing-dft": _validate_protected_existing_dft_reference,
     "recovered-original-holdout": _validate_recovered_holdout_reference_config,
+    "protected-structure-identity": _validate_protection_only_structure_identity_reference,
 }
+
+# Capability classification: which reference kinds carry DFT/Teacher label truth (EVALUATION
+# references, Stages 8/9 only) versus identity-only PROTECTION references (safe for Stages 1-7).
+_PROTECTION_ONLY_REFERENCE_KINDS = frozenset({"protected-structure-identity"})
+_EVALUATION_REFERENCE_KINDS = frozenset({"protected-existing-dft", "recovered-original-holdout"})
+
+
+def reference_kind_provides_dft_labels(kind):
+    """True iff ``kind`` is a DFT-labeled EVALUATION reference (usable at Stages 8/9)."""
+    if kind in _EVALUATION_REFERENCE_KINDS:
+        return True
+    if kind in _PROTECTION_ONLY_REFERENCE_KINDS:
+        return False
+    raise ValueError(
+        f"reference.kind {kind!r} is not a recognized reference kind "
+        f"(known kinds: {sorted(_REFERENCE_KIND_VALIDATORS)})"
+    )
+
+
+def reference_kind_of(reference_yaml):
+    reference_yaml = Path(reference_yaml).resolve()
+    cfg = yaml.safe_load(reference_yaml.read_text(encoding="utf-8")) or {}
+    return cfg.get("kind")
+
+
+def assert_reference_is_protection_capable(reference_yaml):
+    """Every recognized kind can back an early-stage disjointness (protection) check, because
+    all validators return protected_source_indices + reference_fingerprints. Returns the
+    validated protection dict. This is the accessor early stages (1-7) should use."""
+    return validate_reference_config(reference_yaml)
+
+
+def assert_reference_provides_dft_labels(reference_yaml):
+    """Guard for the EVALUATION path (Stages 8/9): fail closed if the run-bound reference is a
+    protection-only identity reference that carries no DFT labels. Early stages must never route
+    through here."""
+    kind = reference_kind_of(reference_yaml)
+    if not reference_kind_provides_dft_labels(kind):
+        raise ValueError(
+            f"reference.kind {kind!r} is a protection-only structure-identity reference and "
+            "carries no DFT/Teacher labels; it cannot be used as a Stage-8/9 evaluation reference"
+        )
+    return validate_reference_config(reference_yaml)
 
 
 def assert_source_indices_allowed(selected_indices, protected_indices):

@@ -87,7 +87,8 @@ def _run_cli_with_responses(run_dir: Path, responses: list[dict], *, approve=Tru
     from workflow.controller import RunController
     calls = {"n": 0}
 
-    def fake_train_committee(student_config, dataset, output_dir, manifest_path):
+    def fake_train_committee(student_config, dataset, output_dir, manifest_path,
+                             *, continue_from=None, total_epoch_override=None):
         calls["n"] += 1
         out_dir = Path(output_dir)
         out_dir.mkdir(parents=True, exist_ok=True)

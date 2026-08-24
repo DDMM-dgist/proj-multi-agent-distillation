@@ -66,7 +66,7 @@ distill-agent = "orchestration.cli:main"
 distill-agent-run = "runtimes.pydantic_ai.cli:main"
 
 [tool.setuptools]
-packages = ["adapters", "orchestration", "validation", "workflow", "runtimes.pydantic_ai", "coverage"]
+packages = ["adapters", "orchestration", "validation", "workflow", "runtimes.pydantic_ai", "coverage", "framework_v2"]
 
 [tool.setuptools.data-files]
 "share/distillation-agents/agent_specs" = ["agent_specs/*.yaml"]

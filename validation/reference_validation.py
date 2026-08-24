@@ -81,8 +81,16 @@ def validate_reference_validation_report(
     submitted_artifacts=None,
     allowed_evidence=None,
     enforce_required_pass=False,
+    reuse_verified_historical=False,
 ):
-    """Validate Teacher-vs-DFT reference validation without relying on report claims."""
+    """Validate Teacher-vs-DFT reference validation without relying on report claims.
+
+    ``reuse_verified_historical`` selects the VERIFIED_HISTORICAL_REUSE mode: instead of
+    rejecting a prediction whose SHA equals the reference contract's declared historical
+    Teacher prediction (the fresh-inference guard below), it REQUIRES that identity -- the
+    Teacher-vs-DFT result is the already-existing, provenance-verified historical artifact,
+    re-derived deterministically (no fresh Teacher inference). Every other structural check
+    (reference/teacher blocks, recomputed metrics, frame labels, evidence roles) is unchanged."""
     manifest_path = Path(manifest_path).resolve()
     payload = json.loads(manifest_path.read_text(encoding="utf-8"))
     if payload.get("schema_version") != 1:
@@ -127,10 +135,20 @@ def validate_reference_validation_report(
     if artifact_digest(pred_path) != prediction["integrity"]:
         raise ValueError("prediction artifact integrity mismatch")
     hist_path, hist_sha = _historical_prediction_sha(reference_yaml)
-    if hist_path and pred_path == Path(hist_path):
-        raise ValueError("historical Teacher prediction path cannot be accepted as fresh output")
-    if hist_sha and prediction["integrity"].get("sha256") == hist_sha:
-        raise ValueError("historical Teacher prediction SHA cannot be accepted as fresh output")
+    if reuse_verified_historical:
+        if not hist_sha:
+            raise ValueError(
+                "verified historical reuse requires the reference contract to declare "
+                "historical_teacher_prediction.sha256")
+        if prediction["integrity"].get("sha256") != hist_sha:
+            raise ValueError(
+                "verified historical reuse: prediction SHA does not match the declared "
+                f"historical Teacher prediction: {prediction['integrity'].get('sha256')!r} != {hist_sha!r}")
+    else:
+        if hist_path and pred_path == Path(hist_path):
+            raise ValueError("historical Teacher prediction path cannot be accepted as fresh output")
+        if hist_sha and prediction["integrity"].get("sha256") == hist_sha:
+            raise ValueError("historical Teacher prediction SHA cannot be accepted as fresh output")
 
     frames = read(str(pred_path), index=":")
     if len(frames) != protection["logical_frames"]:
@@ -186,7 +204,9 @@ def validate_reference_validation_report(
         raise ValueError("reference validation report claims Student-training semantics")
     if payload.get("protected_reference_use") != "teacher_vs_dft_reference_validation_only":
         raise ValueError("protected reference use is not validation-only")
-    if payload.get("historical_prediction_policy") != "PROVENANCE_ONLY_NOT_USED_AS_FRESH_RESULT":
+    expected_policy = ("VERIFIED_HISTORICAL_REUSE" if reuse_verified_historical
+                       else "PROVENANCE_ONLY_NOT_USED_AS_FRESH_RESULT")
+    if payload.get("historical_prediction_policy") != expected_policy:
         raise ValueError("historical prediction policy is not preserved")
 
     roles = validate_evidence(manifest_path, payload.get("evidence"), submitted_artifacts,
