@@ -3539,6 +3539,32 @@ def _run_campaign_loop(controller, *, runtime, agent_specs_dir="agent_specs", ex
                 "corrective_action")
             return_stage = trigger["return_stage"]
             if corrective_action and c.stage(return_stage)["status"] != "completed":
+                # FE-043: a recovery whose return_stage re-runs the ``acquire_structures`` route
+                # action fail-closes with PLAN_INPUT_REQUIRED unless a fresh AcquisitionPlan is bound
+                # first. ``start_iteration`` has already SUPERSEDED the stale plan (it retires the
+                # bound plan precisely so a coverage-deficit re-acquisition re-plans with gap-driven
+                # sizing instead of regenerating byte-identical candidates), so re-enter the SAME
+                # canonical lazy-planner path the forward loop uses below: the production Stage-3
+                # planner reads this run's already-bound FE-042/FE-039 recovery evidence + cumulative
+                # acquired population and binds a fresh, coverage-gap-targeted superseding plan, which
+                # the corrective dispatch then executes ``acquire_structures`` against. This keeps the
+                # Stage-3 planner the single canonical AcquisitionPlan source (no recovery-specific
+                # planner). Idempotent: once a plan is bound the provider's ``applies`` is False, so a
+                # resumed/re-looped recovery iteration is a no-op and never re-plans.
+                if _stage_route_action(c, return_stage) == "acquire_structures":
+                    from .default_acquisition_provider import (
+                        maybe_install_default_acquisition_provider)
+                    maybe_install_default_acquisition_provider(c)
+                    from .acquisition_planner import plan_acquisition_via_reasoning_roles
+                    plan_result = plan_acquisition_via_reasoning_roles(
+                        c, runtime=runtime, agent_specs_dir=agent_specs_dir,
+                        exchange_dir=exchange_dir, repo_root=repo_root,
+                        mock_producer_response=mock_acquisition_response, emitter=emitter)
+                    if plan_result is not None:
+                        return plan_result
+                    c = RunController(c.run_dir)
+                    recovery = next(r for r in c.state["recoveries"]
+                                    if r["id"] == trigger["recovery_id"])
                 result = _dispatch_recovery_corrective_action(
                     c, trigger, recovery, corrective_action, registry=recovery_action_registry,
                     emitter=emitter)
