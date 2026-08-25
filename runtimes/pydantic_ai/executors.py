@@ -753,6 +753,34 @@ def _discover_acquisition_plan(explicit_path, acquisition_manifest_path):
     return None
 
 
+def _resolve_frozen_structure_class_label_map(p, deployment_domain):
+    """Resolve the run's FROZEN, human-authored config_type->canonical structure-class ``label_map``
+    for the FE-039 gap-based Stage-4 occupancy gate, or ``None`` when none is deterministically bound
+    (per-class support then stays honestly NOT_ASSESSABLE -- never fabricated).
+
+    Two provenance-faithful sources, in priority: (1) the locked deployment domain may carry the map
+    inline as ``structure_class_label_map`` (a fresh contract that embeds its own scope classification);
+    (2) a bound frozen ``DeploymentScopeContractV2`` JSON referenced by ``scope_classification_evidence_path``
+    (the same ``{raw_label, canonical_domain, claim_role}`` label_map ``acquisition_readiness`` resolves).
+    This function INVENTS no mapping: it only reads a frozen artifact's own entries."""
+    inline = (deployment_domain.get("structure_class_label_map")
+              if isinstance(deployment_domain, dict) else None)
+    if isinstance(inline, list) and inline:
+        return inline
+    evidence_path = p.get("scope_classification_evidence_path")
+    if evidence_path:
+        scope_path = Path(evidence_path)
+        if not scope_path.is_absolute():
+            scope_path = Path(str(p.get("project_dir") or Path.cwd())) / scope_path
+        scope_path = scope_path.resolve()
+        if scope_path.is_file():
+            scope_doc = json.loads(scope_path.read_text())
+            label_map = scope_doc.get("label_map")
+            if isinstance(label_map, list) and label_map:
+                return label_map
+    return None
+
+
 def _coverage_assessment_block(*, p, counts, deployment_domain, acquisition_manifest,
                                acquisition, candidate_elements, n_candidate_frames,
                                teacher_training_data_access, limitations):
@@ -795,19 +823,19 @@ def _coverage_assessment_block(*, p, counts, deployment_domain, acquisition_mani
             reason=("no frozen coverage_requirement.min_frames_by_config_type in the locked "
                     "deployment domain; per-config_type frame counts are surfaced but adequacy is "
                     "not assessable without an evaluable criterion")))
-    # One record per DECLARED deployment structure class. No per-structure-class support metric or
-    # criterion exists in the frozen inputs, so these are honestly NOT_ASSESSABLE -- never an
-    # invented quota and never a false insufficiency.
-    for structure_class in (deployment_domain.get("structure_classes") or []
-                            if isinstance(deployment_domain, dict) else []):
-        dimensions.append(make_dimension(
-            dimension_id=f"structure_class:{structure_class}",
-            declared_target={"structure_class": structure_class},
-            metric="frame_support_by_structure_class", criterion_provenance="absent",
-            observed_support={"note": "no per-structure-class support metric is computed",
-                              "config_type_counts": counts},
-            reason=("declared deployment structure class carries no frozen or derivable coverage "
-                    "criterion; support is not assessable")))
+    # One record per DECLARED deployment structure class (FE-039 gap-based Stage-4 gate). When the
+    # run carries the FROZEN, human-authored config_type->canonical structure-class label_map, each
+    # declared class gets a definitional occupancy PRESENCE criterion (provenance
+    # frozen_deployment_domain): PASS iff >=1 acquired frame maps to it, FAIL (zero-occupancy =>
+    # structurally UNSUPPORTED) otherwise. This is presence/absence, NOT an invented min-N or quota.
+    # Absent a frozen label_map, per-class support is honestly NOT_ASSESSABLE (unchanged behavior) --
+    # never a fabricated PASS, never a false insufficiency.
+    from validation.coverage_gap_assessment import build_structure_class_dimensions
+    declared_structure_classes = (deployment_domain.get("structure_classes") or []
+                                  if isinstance(deployment_domain, dict) else [])
+    structure_class_label_map = _resolve_frozen_structure_class_label_map(p, deployment_domain)
+    dimensions.extend(build_structure_class_dimensions(
+        declared_structure_classes, counts, structure_class_label_map))
 
     manifest_sha = sha256_file(Path(acquisition_manifest))
     lineage = {
@@ -1029,6 +1057,22 @@ def _exec_build_data_coverage_report(proposal):
         acquisition_manifest=acquisition_manifest, acquisition=acquisition,
         candidate_elements=candidate_elements, n_candidate_frames=len(frames),
         teacher_training_data_access=teacher_training_data_access, limitations=limitations)
+
+    # FE-039 Stage-4 gap gate -> recovery routing. When the typed occupancy gate finds a declared
+    # deployment structure class with ZERO acquired representatives, the coverage is structurally
+    # INSUFFICIENT: name each UNSUPPORTED class as a concrete identified gap (so a recovery RootCause
+    # names exactly the classes the gate found unsupported, never a re-derived guess) and never let the
+    # legacy coverage_status assert COMPLETE over an unsupported region. This adds no quota and invents
+    # no frame count; it only reports the definitional zero-occupancy absences the gate already found.
+    from validation.coverage_gap_assessment import unsupported_structure_classes
+    structurally_unsupported = unsupported_structure_classes(coverage_assessment.get("dimensions") or [])
+    if coverage_assessment.get("assessment_status") == "COVERAGE_INSUFFICIENT" and structurally_unsupported:
+        if coverage_status == "COMPLETE":
+            coverage_status = "PARTIAL"
+        identified_gaps = list(identified_gaps) + [
+            f"declared deployment structure class {sc!r} has zero acquired representatives "
+            "(structurally UNSUPPORTED; targeted reacquisition required)"
+            for sc in structurally_unsupported]
 
     report = {
         "schema_version": 1,
