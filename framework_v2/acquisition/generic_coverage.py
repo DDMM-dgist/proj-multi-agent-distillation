@@ -146,27 +146,37 @@ def _marginal_novelty_curve(vectors: list[dict], axes: list[str], scales: dict[s
     """Deterministic farthest-point traversal. Start at index 0 (frames arrive in stable pool
     order); each subsequent step picks the point maximizing its min-distance to the chosen set,
     ties broken by lowest index. Returns the list of those chosen min-distances (marginal novelty),
-    excluding the seed."""
+    excluding the seed.
+
+    Complexity is O(n^2 * d): an O(1) boolean chosen-mask replaces the earlier O(len(chosen)) list
+    membership scans, and the min-distance-to-chosen-set is carried incrementally. Distances use the
+    identical per-axis pure-Python ``_distance`` (same missing-axis handling, same float arithmetic
+    and summation order), so the emitted sequence -- seed at index 0, argmax with lowest-index
+    tie-breaking, curve values -- is bit-identical to the naive traversal it replaces."""
     n = len(vectors)
     if n < 2:
         return []
-    chosen = [0]
-    min_dist = [_distance(vectors[i], vectors[0], axes, scales) for i in range(n)]
+    chosen_mask = [False] * n
+    chosen_mask[0] = True
+    v0 = vectors[0]
+    min_dist = [_distance(vectors[i], v0, axes, scales) for i in range(n)]
     curve: list[float] = []
     for _ in range(n - 1):
         best_i, best_d = -1, -1.0
         for i in range(n):
-            if i in chosen:
+            if chosen_mask[i]:
                 continue
-            if min_dist[i] > best_d:
-                best_d, best_i = min_dist[i], i
+            di = min_dist[i]
+            if di > best_d:
+                best_d, best_i = di, i
         if best_i < 0:
             break
         curve.append(best_d)
-        chosen.append(best_i)
+        chosen_mask[best_i] = True
+        vb = vectors[best_i]
         for i in range(n):
-            if i not in chosen:
-                d = _distance(vectors[i], vectors[best_i], axes, scales)
+            if not chosen_mask[i]:
+                d = _distance(vectors[i], vb, axes, scales)
                 if d < min_dist[i]:
                     min_dist[i] = d
     return curve
