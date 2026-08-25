@@ -1027,6 +1027,116 @@ def _bind_acquisition_plan_for_stage(controller, proposal):
     return proposal
 
 
+def _scope_classification_label_map_artifacts(controller, project_dir):
+    """Enumerate the DISTINCT frozen config_type->structure-class ``label_map`` artifacts the run's
+    closure-bound ``DeploymentScopeContractV2`` regions reference (via ``membership_evidence``), keyed
+    by ``label_map`` content SHA -> ``{path, sha256}``. This is the SAME artifact set
+    ``acquisition_readiness._load_scope_classification_evidence`` selects the first of; enumerating all
+    lets the data-coverage binder fail closed on conflicting frozen mappings rather than silently
+    binding the first. Reads only frozen artifacts on disk; invents nothing."""
+    import hashlib as _hashlib
+    from .acquisition_readiness import _resolve as _resolve_ref
+
+    v2_state = controller._v2_state() if hasattr(controller, "_v2_state") else {}
+    scope_sha = (v2_state or {}).get("scope_contract_sha256")
+    if not scope_sha:
+        return {}
+    scope_dict = controller.v2_contract(scope_sha)
+    if not isinstance(scope_dict, dict):
+        return {}
+    seen_refs: set[str] = set()
+    artifacts: dict[str, dict] = {}
+    for region in scope_dict.get("regions", []) or []:
+        if not isinstance(region, dict):
+            continue
+        for ref in region.get("membership_evidence", []) or []:
+            if not isinstance(ref, str) or ref in seen_refs:
+                continue
+            seen_refs.add(ref)
+            path = _resolve_ref(project_dir, ref)
+            if not path.is_file():
+                continue
+            try:
+                obj = json.loads(path.read_text(encoding="utf-8"))
+            except (ValueError, OSError):
+                continue
+            label_map = obj.get("label_map") if isinstance(obj, dict) else None
+            if not (isinstance(label_map, list) and label_map):
+                continue
+            content_sha = _hashlib.sha256(
+                json.dumps(label_map, sort_keys=True, separators=(",", ":"),
+                           ensure_ascii=False).encode("utf-8")).hexdigest()
+            artifacts.setdefault(content_sha, {"path": str(path),
+                                               "file_sha256": _hashlib.sha256(
+                                                   path.read_bytes()).hexdigest()})
+    return artifacts
+
+
+def _bind_scope_classification_for_data_coverage(controller, proposal):
+    """Automatically resolve and propagate the run's FROZEN, human-authored config_type->canonical
+    structure-class ``label_map`` to the Stage-4 data-coverage adequacy gate (FE-039), from
+    authoritative run-bound inputs, so a fresh successor workflow reaches the gate WITHOUT a human
+    manually passing ``scope_classification_evidence_path``. The label_map artifact is the SAME one
+    ``acquisition_readiness`` (FE-033) resolves from the closure-bound ``DeploymentScopeContractV2``
+    regions' ``membership_evidence`` -- no new source, no hard-coded path, no material conditional.
+
+    Fail-closed contract (requirement 5):
+      * no authoritative mapping deterministically resolvable -> inject nothing; Stage 4 then reports
+        per-class support NOT_ASSESSABLE (the honest FE-038/FE-039 behavior -- never a fabricated PASS
+        nor a false insufficiency);
+      * MULTIPLE CONFLICTING frozen label_map artifacts -> raise ``SCOPE_CLASSIFICATION_CONFLICT``;
+      * a resolved artifact that does not validate as a ``DeploymentScopeContractV2`` label_map is not
+        usable and is simply not bound (covered by the canonical resolver).
+
+    Never overrides an explicit inline ``deployment_domain.structure_class_label_map`` nor a
+    pre-supplied ``scope_classification_evidence_path`` (a fresh contract that embeds its own scope
+    classification, or an explicit human path, wins). Preserves provenance (artifact identity, sha256,
+    source contract identity + sha, resolution path) as an audited run event (requirement 4)."""
+    if proposal.get("action_type") != "build_data_coverage_report":
+        return proposal
+    params = dict(proposal.get("parameters") or {})
+    if params.get("scope_classification_evidence_path"):
+        return proposal
+    deployment_domain = params.get("deployment_domain")
+    if isinstance(deployment_domain, dict) and deployment_domain.get("structure_class_label_map"):
+        return proposal
+
+    from .acquisition_readiness import _load_scope_classification_evidence
+    from workflow.controller import now as _now
+
+    project_dir = str(controller.state.get("project_dir") or Path.cwd())
+    scope_v2, binding = _load_scope_classification_evidence(controller, project_dir)
+    if scope_v2 is None:
+        # No authoritative mapping resolvable -> bind nothing; Stage 4 reports NOT_ASSESSABLE.
+        return proposal
+
+    artifacts = _scope_classification_label_map_artifacts(controller, project_dir)
+    if len(artifacts) > 1:
+        raise ValueError(
+            "SCOPE_CLASSIFICATION_CONFLICT: the closure-bound DeploymentScopeContractV2 regions "
+            f"reference {len(artifacts)} conflicting frozen config_type->structure-class label_map "
+            f"artifacts ({sorted(a['path'] for a in artifacts.values())}); the frozen scope "
+            "classification is ambiguous and cannot be auto-bound")
+
+    evidence_path = binding["classification_evidence_path"]
+    file_sha = next((a["file_sha256"] for a in artifacts.values()
+                     if a["path"] == evidence_path), None)
+    params["scope_classification_evidence_path"] = evidence_path
+    proposal["parameters"] = params
+
+    controller.state.setdefault("events", []).append({
+        "at": _now(),
+        "type": "scope_classification_auto_bound_for_data_coverage",
+        "stage": proposal.get("stage"),
+        "scope_contract_sha256": binding.get("scope_contract_sha256"),
+        "scope_contract_id": binding.get("scope_contract_id"),
+        "classification_evidence_path": evidence_path,
+        "classification_evidence_sha256": file_sha,
+    })
+    controller.save()
+    return proposal
+
+
 _BOUND_PROPOSAL_FIELDS = {
     "run_id", "stage", "requested_by_role", "action_type", "approval_boundary",
     "idempotency_key", "expected_outputs", "parameters",
@@ -2031,10 +2141,13 @@ def run_production_stage(controller, stage_name, *, runtime, agent_specs_dir="ag
     proposal, role = _proposal_from_stage(c, stage_name, stage_cfg)
     try:
         proposal = _bind_acquisition_plan_for_stage(c, proposal)
+        proposal = _bind_scope_classification_for_data_coverage(c, proposal)
     except ValueError as exc:
         message = str(exc)
         if message.startswith("PLAN_INPUT_REQUIRED"):
             return StageRunResult("PLAN_INPUT_REQUIRED", EXIT_VALIDATION_REJECTED, message)
+        if message.startswith("SCOPE_CLASSIFICATION_CONFLICT"):
+            return StageRunResult("VALIDATION_REJECTED", EXIT_VALIDATION_REJECTED, message)
         raise
     evidence_path = c.run_dir / "exchange" / "bounded_evidence" / f"{stage_name}.json"
     own_outputs = [c.run_dir / rel for rel in c.stage(stage_name).get("outputs", [])]
