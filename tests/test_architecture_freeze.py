@@ -1024,7 +1024,25 @@ FREEZE_REVISION = (
     "the pending coverage_adequacy block into the recovery Analyst's recovery_evidence context so the "
     "diagnosis routes to targeted reacquisition. schema_version UNCHANGED; no stage set, gate-vote, "
     "recovery-taxonomy, capability-routing, protected-reference, approval-boundary, or Judge change; "
-    "every other frozen file is untouched."
+    "every other frozen file is untouched. "
+    "fe045-verify-inputs-superseded-source (FE-045) re-freezes workflow/controller.py "
+    "11aa89390906353c83120908886482e593e9cca7e42f210be9ee528be13e7579 -> "
+    "2cb69859af792d5d7007c9808abd1ad7a8da53c0883055f7718fd9d0ebb5fac0 for a single scoping change to "
+    "verify_inputs(): the per-input SOURCE-byte re-check (verify_artifact(source, source_integrity), "
+    "which raises 'declared workflow input changed after initialization' on mismatch) is now gated "
+    "behind `if not record.get('superseded')`, mirroring the existing active/superseded semantics of "
+    "active_inputs(). A superseded acquisition_plan input and its superseding plan legitimately share "
+    "ONE mutable source path (acquisition/plans/<run_id>.acquisition_plan.json -- the canonical "
+    "Stage-3 planner writes a fixed filename), so binding the superseding plan overwrites that source "
+    "with the new bytes; re-verifying the shared mutable source against a superseded record's frozen "
+    "historical bytes turned a legitimate supersession into a false invariant failure that blocked the "
+    "acquisition re-gate immediately after a corrective reacquisition executed (the live ffv4t-eng1 "
+    "blocker). The snapshot-integrity check above the gate is UNCHANGED and still fail-closes EVERY "
+    "input (superseded or active) against its immutable content-addressed snapshot, so frozen-provenance "
+    "integrity is fully preserved; source-byte equality remains mandatory and fail-closed for every "
+    "ACTIVE input. No stage set, gate-vote, recovery-taxonomy, capability-routing, protected-reference, "
+    "schema_version, approval-boundary, threshold, or Judge change; no science, acquisition, coverage, "
+    "or recovery logic touched; every other frozen file is untouched."
 )
 FROZEN_MODEL = "qwen2.5-7b-instruct"
 
@@ -1054,7 +1072,7 @@ FROZEN = {
     "orchestration/specs.py":
         "4b6dc829fe2b6b594cc87e8a62bd944ea9df181cd7f420ae3732c861ce8e43cb",
     "workflow/controller.py":
-        "11aa89390906353c83120908886482e593e9cca7e42f210be9ee528be13e7579",
+        "2cb69859af792d5d7007c9808abd1ad7a8da53c0883055f7718fd9d0ebb5fac0",
     "orchestration/schema/agent_result.schema.json":
         "a38afea9c06c21e647376efd835dec32a16b2f247583a090560cb1843e0eda31",
     "orchestration/schema/agent_spec.schema.json":

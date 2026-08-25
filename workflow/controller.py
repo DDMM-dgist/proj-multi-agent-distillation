@@ -1151,12 +1151,21 @@ class RunController:
                 snapshot = Path(record["snapshot"])
                 if not snapshot.is_file() or sha256_file(snapshot) != record["sha256"]:
                     raise RuntimeError(f"run input snapshot integrity check failed: {snapshot}")
-            try:
-                verify_artifact(source, record.get("source_integrity", {"kind": "file",
-                                                                        "size": record["size"],
-                                                                        "sha256": record["source_sha256"]}))
-            except (FileNotFoundError, RuntimeError):
-                raise RuntimeError(f"declared workflow input changed after initialization: {source}")
+            # FE-045: a superseded input is provenance-only. Its immutable frozen snapshot (verified
+            # just above) preserves its historical bytes, but its SOURCE path is legitimately mutable:
+            # a superseded acquisition_plan and its superseding plan share the SAME
+            # acquisition/plans/<run_id>.acquisition_plan.json path, so binding the superseding plan
+            # overwrites that source. Re-verifying the shared mutable source against the superseded
+            # record's historical bytes turns a legitimate supersession into a false "declared workflow
+            # input changed" failure. Source-byte equality is therefore required only for ACTIVE inputs
+            # (mirroring active_inputs()); the snapshot check above still fail-closes EVERY input.
+            if not record.get("superseded"):
+                try:
+                    verify_artifact(source, record.get("source_integrity", {"kind": "file",
+                                                                            "size": record["size"],
+                                                                            "sha256": record["source_sha256"]}))
+                except (FileNotFoundError, RuntimeError):
+                    raise RuntimeError(f"declared workflow input changed after initialization: {source}")
 
     def rebind_inputs(self):
         """Explicitly accept changed inputs and invalidate all prior stage results."""
