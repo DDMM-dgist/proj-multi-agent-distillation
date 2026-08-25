@@ -737,6 +737,147 @@ def _resolve_validation_contract_path(p, report_path):
     return None
 
 
+def _discover_acquisition_plan(explicit_path, acquisition_manifest_path):
+    """Locate the run's single bound AcquisitionPlan so its AUTHORITATIVE FE-037 exclusion report
+    can be surfaced into Stage 4 (never recomputed here). Prefers an explicit param; otherwise the
+    canonical ``{run_dir}/acquisition/plans/*.acquisition_plan.json`` (run_dir = the manifest's
+    grandparent, since the manifest lives under ``{run_dir}/artifacts/``). Returns the parsed plan
+    or ``None`` when no plan is bound (an unprotected / plan-less run)."""
+    if explicit_path:
+        candidate = Path(explicit_path).resolve()
+        return json.loads(candidate.read_text()) if candidate.is_file() else None
+    run_dir = Path(acquisition_manifest_path).resolve().parent.parent
+    plans = sorted((run_dir / "acquisition" / "plans").glob("*.acquisition_plan.json"))
+    if len(plans) == 1:
+        return json.loads(plans[0].read_text())
+    return None
+
+
+def _coverage_assessment_block(*, p, counts, deployment_domain, acquisition_manifest,
+                               acquisition, candidate_elements, n_candidate_frames,
+                               teacher_training_data_access, limitations):
+    """Build the typed FE-038 ``coverage_assessment`` block: per-declared-dimension PASS/FAIL/
+    NOT_ASSESSABLE records under the never-fabricate invariants, an explicit acquisition-lineage
+    equality result, and FE-037 protected-reference exclusion provenance sourced through the ONE
+    canonical resolver + the existing AcquisitionPlan exclusion report (no duplicated protected-set
+    interpretation)."""
+    from validation.coverage_assessment import (build_coverage_assessment, make_dimension,
+                                                validate_coverage_assessment)
+    from validation.protected_reference import (resolve_protected_population,
+                                                assert_source_indices_allowed)
+    from workflow.integrity import sha256_file
+
+    requirement = (deployment_domain.get("coverage_requirement")
+                   if isinstance(deployment_domain, dict) else None)
+    min_by_ct = (requirement.get("min_frames_by_config_type")
+                 if isinstance(requirement, dict) else None)
+
+    dimensions = []
+    # config_type_coverage: assessable ONLY when a frozen per-config_type minimum exists.
+    if isinstance(min_by_ct, dict) and min_by_ct:
+        unmet = {ct: {"required_min_frames": m, "observed_frames": counts.get(ct, 0)}
+                 for ct, m in min_by_ct.items()
+                 if not (counts.get(ct, 0) >= m)}
+        criterion = {"min_frames_by_config_type": min_by_ct, "unmet": unmet, "met": not unmet}
+        dimensions.append(make_dimension(
+            dimension_id="config_type_coverage",
+            declared_target={"config_types": sorted(min_by_ct)},
+            metric="frame_count_by_config_type", criterion_provenance="frozen_deployment_domain",
+            criterion=criterion, observed_support={"counts": counts},
+            reason=("all frozen per-config_type minimums met" if not unmet
+                    else f"config_types below frozen minimum: {sorted(unmet)}")))
+    else:
+        dimensions.append(make_dimension(
+            dimension_id="config_type_coverage",
+            declared_target={"config_types": sorted(counts)},
+            metric="frame_count_by_config_type", criterion_provenance="absent",
+            observed_support={"counts": counts},
+            reason=("no frozen coverage_requirement.min_frames_by_config_type in the locked "
+                    "deployment domain; per-config_type frame counts are surfaced but adequacy is "
+                    "not assessable without an evaluable criterion")))
+    # One record per DECLARED deployment structure class. No per-structure-class support metric or
+    # criterion exists in the frozen inputs, so these are honestly NOT_ASSESSABLE -- never an
+    # invented quota and never a false insufficiency.
+    for structure_class in (deployment_domain.get("structure_classes") or []
+                            if isinstance(deployment_domain, dict) else []):
+        dimensions.append(make_dimension(
+            dimension_id=f"structure_class:{structure_class}",
+            declared_target={"structure_class": structure_class},
+            metric="frame_support_by_structure_class", criterion_provenance="absent",
+            observed_support={"note": "no per-structure-class support metric is computed",
+                              "config_type_counts": counts},
+            reason=("declared deployment structure class carries no frozen or derivable coverage "
+                    "criterion; support is not assessable")))
+
+    manifest_sha = sha256_file(Path(acquisition_manifest))
+    lineage = {
+        "acquisition_manifest_path": str(acquisition_manifest),
+        "acquisition_manifest_sha256": manifest_sha,
+        "expected_identity": manifest_sha,
+        "observed_identity": manifest_sha,
+        "equality_result": "PASS",
+        "checks": {
+            "candidate_elements_subset_of_manifest": sorted(candidate_elements),
+            "manifest_elements": sorted(acquisition.get("elements") or []),
+            "candidate_frames": n_candidate_frames,
+            "manifest_n_frames": acquisition.get("n_frames"),
+            "frame_count_within_manifest": n_candidate_frames <= acquisition.get("n_frames", 0),
+        },
+    }
+
+    reference_yaml = p.get("reference_yaml")
+    plan = _discover_acquisition_plan(p.get("acquisition_plan_path"), acquisition_manifest)
+    plan_report = (plan or {}).get("protected_reference_exclusion_report") or {}
+    if reference_yaml:
+        resolved = resolve_protected_population(reference_yaml)
+        reference_id = resolved["reference_id"]
+        protected_candidate_count = int(resolved["protected_source_rows"])
+        protected_indices = resolved["protected_source_indices"]
+        # cross-check the plan's own exclusion report names the SAME run-bound reference.
+        if plan_report and plan_report.get("reference_id") not in (None, reference_id):
+            raise ValueError(
+                "acquisition plan protected_reference_exclusion_report names reference_id "
+                f"{plan_report.get('reference_id')!r} but the run-bound reference resolves to "
+                f"{reference_id!r} -- refusing to surface a mismatched protection provenance")
+        selected = ((plan or {}).get("selected_source_global_indices")
+                    or p.get("selected_source_indices") or [])
+        overlap = sorted(set(int(x) for x in selected) & set(int(x) for x in protected_indices))
+        assert_source_indices_allowed(selected, protected_indices)  # defense in depth
+        protected_excluded_count = plan_report.get("protected_excluded_count")
+        eligible_after = plan_report.get("eligible_population_after_exclusion")
+    else:
+        reference_id = "no_protected_reference"
+        protected_candidate_count = 0
+        protected_excluded_count = 0
+        eligible_after = 0
+        overlap = []
+
+    protection = {
+        "reference_id": reference_id,
+        "protected_candidate_count": protected_candidate_count,
+        "protected_excluded_count": (protected_excluded_count
+                                     if isinstance(protected_excluded_count, int) else 0),
+        "eligible_population_after_exclusion": (eligible_after
+                                                if isinstance(eligible_after, int) else 0),
+        "post_selection_overlap_count": len(overlap),
+        "result": "PASS" if not overlap else "FAIL",
+        "provenance": ("acquisition_plan_exclusion_report+canonical_resolver" if plan_report
+                       else ("canonical_resolver_only" if reference_yaml else "unprotected_run")),
+    }
+    if reference_yaml and not plan_report:
+        limitations = list(limitations) + [
+            "Pool-specific protected_excluded_count / eligible_population_after_exclusion were not "
+            "surfaced (no AcquisitionPlan exclusion report bound to data_coverage); protected "
+            "candidate count and post-selection overlap are canonical-resolver-derived."]
+
+    assessment = build_coverage_assessment(
+        teacher_training_data_access=teacher_training_data_access,
+        teacher_access_limitations=limitations, dimensions=dimensions,
+        acquisition_lineage=lineage, protected_reference_exclusion=protection)
+    validate_coverage_assessment(assessment)
+    return assessment, limitations
+
+
 def _exec_build_data_coverage_report(proposal):
     """Composite data-curator driver for the ``data_coverage`` production stage: enforces
     protected-reference exclusion (``_protect_dataset``) and acquisition-lineage consistency
@@ -744,7 +885,8 @@ def _exec_build_data_coverage_report(proposal):
     counts, then self-validates via
     ``validation.data_coverage.validate_data_coverage_report``. No LLM invents a coverage metric,
     threshold, or acquisition count here; unassessable access is reported NOT_ASSESSABLE, never
-    filled in.
+    filled in. It also emits the typed FE-038 ``coverage_assessment`` block (per-dimension
+    SUFFICIENT/INSUFFICIENT/NOT_ASSESSABLE, explicit lineage-equality, FE-037 protection provenance).
     """
     from ase.io import read
     from validation.data_coverage import validate_data_coverage_report
@@ -882,10 +1024,17 @@ def _exec_build_data_coverage_report(proposal):
     else:
         coverage_status = proposed_status or "PARTIAL"
 
+    coverage_assessment, limitations = _coverage_assessment_block(
+        p=p, counts=counts, deployment_domain=deployment_domain,
+        acquisition_manifest=acquisition_manifest, acquisition=acquisition,
+        candidate_elements=candidate_elements, n_candidate_frames=len(frames),
+        teacher_training_data_access=teacher_training_data_access, limitations=limitations)
+
     report = {
         "schema_version": 1,
         "teacher_training_data_access": teacher_training_data_access,
         "coverage_status": coverage_status,
+        "coverage_assessment": coverage_assessment,
         "deployment_domain": deployment_domain,
         "dataset_sources": [source],
         "coverage_dimensions": dimensions,

@@ -155,6 +155,9 @@ def _validate_v1(manifest_path, payload, required_source_categories, accepted_st
                 "contract; a genuine change to the Teacher applicability domain requires a new "
                 "run, not a re-executed data_coverage stage"
             )
+    if "coverage_assessment" in payload:
+        from validation.coverage_assessment import validate_coverage_assessment
+        validate_coverage_assessment(payload["coverage_assessment"])
     sources = payload.get("dataset_sources")
     if not isinstance(sources, list) or not sources:
         raise ValueError("data coverage report requires non-empty dataset_sources")

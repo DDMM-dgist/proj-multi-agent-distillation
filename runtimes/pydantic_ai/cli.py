@@ -2927,11 +2927,19 @@ def _propose_recovery_via_reasoning_roles(controller, *, runtime, agent_specs_di
                                      exc.message, stage=failed_stage)
 
     def plan_proposal_validator(proposal):
+        # The return stage is chosen by the proposal itself, so its route facts (the same three the
+        # controller's no-op materialization guard reads) can only be resolved once we have the
+        # proposal in hand -- resolved here from the controller so acceptance rejects an
+        # unmaterializable plan BEFORE binding, not at propose_recovery's exit-2 backstop (FE-038).
+        return_stage = proposal.return_stage
         return validate_recovery_plan_proposal(
             proposal, expected_failed_stage=failed_stage, expected_diagnosis_sha256=diagnosis_sha256,
             capability_roster=roster, valid_stage_names=stage_names,
             dft_comparison_evidence_present=dft_comparison_evidence_present,
-            gate_alleges_accuracy_disagreement=gate_alleges_accuracy_disagreement)
+            gate_alleges_accuracy_disagreement=gate_alleges_accuracy_disagreement,
+            return_stage_route_action=c._stage_route_action(return_stage),
+            return_stage_route_parameters=c._stage_route_parameters(return_stage),
+            return_stage_replans=c._return_stage_replans_on_recovery(return_stage))
 
     emitter.emit("role_invocation_started", stage=failed_stage, role="orchestrator",
                 action="recovery_plan_proposal")

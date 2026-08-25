@@ -272,7 +272,10 @@ def validate_recovery_plan_proposal(proposal: RecoveryPlanProposal, *, expected_
                                     expected_diagnosis_sha256: str, capability_roster: dict,
                                     valid_stage_names,
                                     dft_comparison_evidence_present: bool = True,
-                                    gate_alleges_accuracy_disagreement: bool = True
+                                    gate_alleges_accuracy_disagreement: bool = True,
+                                    return_stage_route_action=None,
+                                    return_stage_route_parameters=None,
+                                    return_stage_replans=None,
                                     ) -> RecoveryPlanProposal:
     """Contextual, fail-closed validation beyond Pydantic shape (mirrors
     ``root_cause.validate_root_cause_classification``'s role for ``RootCauseClassification``).
@@ -296,6 +299,24 @@ def validate_recovery_plan_proposal(proposal: RecoveryPlanProposal, *, expected_
     more evidence (e.g. "validate_teacher_reference" / extracting failing frames): only the three
     named authorizations above are gated, since those are the ones a genuine evidence gap can never
     itself justify.
+
+    ``return_stage_route_action`` / ``return_stage_route_parameters`` / ``return_stage_replans``:
+    the SAME three deterministic, caller-computed route facts about ``proposal.return_stage`` that
+    ``workflow.controller._validate_recovery_materialization`` reads (the return stage's route
+    ``action_type``, its DECLARED typed route ``parameters``, and whether returning there supersedes
+    that stage's bound plan). When supplied, this validator runs the identical
+    ``recovery_taxonomy.classify_recovery_materialization`` the controller's own backstop runs, but
+    at ACCEPTANCE time -- BEFORE the proposal is bound or any corrective action is dispatched. If the
+    classification is a provable deterministic no-op (``None``) and the return stage's route action is
+    known, the proposal is rejected here as a capability mismatch: its selected corrective action
+    (e.g. a ``build_data_coverage_report`` whose ``requirements=[...]`` is opaque free text superseding
+    no declared typed route input) provably cannot materialize any changed artifact, so binding it
+    would only surface later as ``propose_recovery``'s exit-2 ``RECOVERY_EXECUTION_UNVERIFIED`` guard.
+    This does NOT weaken that guard -- it is preserved unchanged as the backstop; this merely fails
+    the same condition earlier and steers the re-proposal toward a materializing action (a distinct
+    evidence-producing executor, a real typed-input override, an authorized scientific recompute, or a
+    reroute to a replanning stage such as re-acquisition). When any of the three facts is ``None``
+    (route unknown for this run), no rejection is made here and the controller backstop stands.
 
     ``gate_alleges_accuracy_disagreement``: a second, independent signal
     (``cli._gate_alleges_accuracy_disagreement``), computed from the actual Judge vote bundle's
@@ -351,6 +372,43 @@ def validate_recovery_plan_proposal(proposal: RecoveryPlanProposal, *, expected_
                 "evidence-gathering corrective_action instead (e.g. extract failing frames / "
                 "validate_teacher_reference) and re-diagnose once real Teacher-vs-DFT accuracy "
                 "evidence exists")
+
+    # Capability-aware acceptance (FE-038): reject an unmaterializable plan BEFORE it is bound or
+    # dispatched, using the same deterministic taxonomy the controller's no-op guard uses as a
+    # backstop. Only runs when the caller supplies the return stage's route facts.
+    if (return_stage_route_action is not None and return_stage_route_parameters is not None
+            and return_stage_replans is not None):
+        corrective = proposal.corrective_action
+        corrective_action_type = corrective.action_type if corrective is not None else None
+        corrective_params = dict(corrective.parameters) if corrective is not None else {}
+        corrective_supersedes_bound_input = any(
+            key in return_stage_route_parameters
+            and corrective_params[key] != return_stage_route_parameters[key]
+            for key in corrective_params)
+        transition = recovery_taxonomy.classify_recovery_materialization(
+            return_stage_route_action=return_stage_route_action,
+            corrective_action_type=corrective_action_type,
+            return_stage_supersedes_inputs=bool(return_stage_replans),
+            authorizes_scientific_recompute=bool(
+                proposal.labeling.new_dft or proposal.labeling.teacher_relabel
+                or proposal.student_training.retrain),
+            corrective_supersedes_bound_input=corrective_supersedes_bound_input)
+        if transition is None:
+            opaque = sorted(k for k in corrective_params if k not in return_stage_route_parameters)
+            opaque_note = (
+                f" its corrective_action.parameters keys {opaque} are opaque free text the return "
+                f"stage's route executor {return_stage_route_action!r} declares no typed channel for "
+                "and cannot consume" if opaque else "")
+            raise RecoveryPlanValidationError(
+                f"recovery plan is not materializable: returning to stage {proposal.return_stage!r} "
+                f"would re-run its own deterministic route action {return_stage_route_action!r} on "
+                f"unchanged inputs, provably re-emitting a byte-identical artifact.{opaque_note}. "
+                "Before this plan can be bound it must materialize a changed artifact: dispatch a "
+                "corrective_action whose action_type differs from the return stage's route action, "
+                "override one of that stage's DECLARED typed route parameters with a different value, "
+                "authorize a genuine scientific recompute, or reroute to a stage whose bound plan is "
+                "superseded (e.g. re-acquisition). Rejected at acceptance rather than surfacing later "
+                "as the propose_recovery no-op guard's RECOVERY_EXECUTION_UNVERIFIED exit.")
     return proposal
 
 

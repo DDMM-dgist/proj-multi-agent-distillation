@@ -468,8 +468,33 @@ def _data_coverage_report_summary(payload: dict) -> dict:
                 "required_min_frames": minimum, "observed_frames": have,
                 "met": isinstance(minimum, int) and not isinstance(minimum, bool) and have >= minimum,
             }
+    assessment = payload.get("coverage_assessment") if isinstance(payload.get("coverage_assessment"), dict) else None
+    assessment_summary = None
+    if assessment is not None:
+        assessment_summary = {
+            "assessment_status": assessment.get("assessment_status"),
+            "teacher_training_data_access": assessment.get("teacher_training_data_access"),
+            "dimensions": [
+                {"dimension_id": d.get("dimension_id"), "assessment_status": d.get("assessment_status"),
+                 "criterion_provenance": d.get("criterion_provenance"),
+                 "metric": d.get("metric"), "reason": d.get("reason")}
+                for d in (assessment.get("dimensions") or []) if isinstance(d, dict)
+            ],
+            "acquisition_lineage": {
+                k: (assessment.get("acquisition_lineage") or {}).get(k)
+                for k in ("equality_result", "expected_identity", "observed_identity",
+                          "acquisition_manifest_sha256")
+            },
+            "protected_reference_exclusion": {
+                k: (assessment.get("protected_reference_exclusion") or {}).get(k)
+                for k in ("reference_id", "result", "protected_candidate_count",
+                          "protected_excluded_count", "eligible_population_after_exclusion",
+                          "post_selection_overlap_count", "provenance")
+            },
+        }
     return {
         "coverage_status": payload.get("coverage_status"),
+        "coverage_assessment": assessment_summary,
         "adequacy_basis": ("frozen_coverage_requirement" if requirement_check is not None
                            else "not_assessable_without_frozen_requirement"),
         "teacher_training_data_access": payload.get("teacher_training_data_access"),
