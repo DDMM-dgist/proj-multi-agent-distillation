@@ -2931,6 +2931,12 @@ def _propose_recovery_via_reasoning_roles(controller, *, runtime, agent_specs_di
                        "valid_recovery_targets": sorted(stage_names),
                        "dft_comparison_evidence_present": dft_comparison_evidence_present,
                        "gate_alleges_accuracy_disagreement": gate_alleges_accuracy_disagreement,
+                       # FE-042: present iff a deterministic Stage-4 coverage-adequacy control
+                       # (not the Judges) forced this REVISE. It names the declared deployment
+                       # structure classes with ZERO acquired representatives and the recommended
+                       # return_stage, so the diagnosis routes to targeted reacquisition rather than
+                       # a byte-identical data_coverage re-run.
+                       "coverage_adequacy": pending.get("coverage_adequacy"),
                        "gate_votes": [
                            {"review_lens": vote.get("review_lens"), "verdict": vote.get("verdict"),
                             "rationale": vote.get("rationale"),

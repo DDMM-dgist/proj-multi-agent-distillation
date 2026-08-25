@@ -998,7 +998,33 @@ FREEZE_REVISION = (
     "the data_coverage Judge adapter (executors.py, bounded_evidence.py). No existing controller "
     "method is changed except the single additive start_iteration block; no stage set, gate, "
     "recovery-taxonomy, capability-routing, protected-reference, schema_version, approval-boundary, "
-    "or Judge-vote change; every other frozen file is untouched."
+    "or Judge-vote change; every other frozen file is untouched. "
+    "fe042-stage4-coverage-adequacy-gate-control (FE-042) re-freezes workflow/controller.py "
+    "5f510e590caa1f957a09a18c3260c9b7283b22a37f71b6c6b9ff9aac96415a42 -> "
+    "11aa89390906353c83120908886482e593e9cca7e42f210be9ee528be13e7579 for a single additive "
+    "deterministic Stage-4 gate control. The three data_coverage Judges review report HONESTY "
+    "(access mode, per-config_type counts, lineage, protected-test exclusion), not "
+    "configuration-space ADEQUACY, so after FE-041 made the report honest a truthful "
+    "COVERAGE_INSUFFICIENT report can earn a unanimous 3/3 PASS while a declared deployment "
+    "structure class still has ZERO acquired representatives -- the live ffv4r defect (a PASS gate "
+    "would advance to Stage 5 teacher_labeling over structurally unsupported regions). record_gate "
+    "gains ONE additive branch: a would-be PASS on a stage whose registered coverage report carries "
+    "coverage_assessment.assessment_status == 'COVERAGE_INSUFFICIENT' is downgraded to a scientific "
+    "REVISE that flows through the UNCHANGED invalidate_from + pending_recovery path, additionally "
+    "recording a coverage_adequacy block (the unsupported declared classes read via the existing "
+    "validation.coverage_gap_assessment.unsupported_structure_classes, and recommended_return_stage="
+    "'acquisition') on both the gate event and pending_recovery. The determination is READ-ONLY over "
+    "the status the FE-038/FE-039 gap gate already computed and wrote into the report -- it invents "
+    "no threshold, quota, size, or coverage/acquisition science, and the new additive read-only "
+    "helper _coverage_adequacy_control returns None (inert) for COVERAGE_SUFFICIENT / NOT_ASSESSABLE "
+    "/ any stage with no coverage report, so every non-coverage gate is byte-for-byte unaffected. The "
+    "gate-verdict-from-votes recomputation in _validate_vote_bundle, the vote bundle, and all PASS-only "
+    "preconditions are UNCHANGED (the downgrade happens before them, exactly as any other non-PASS "
+    "verdict). runtimes/pydantic_ai/cli.py (NOT a frozen file) gained only the additive surfacing of "
+    "the pending coverage_adequacy block into the recovery Analyst's recovery_evidence context so the "
+    "diagnosis routes to targeted reacquisition. schema_version UNCHANGED; no stage set, gate-vote, "
+    "recovery-taxonomy, capability-routing, protected-reference, approval-boundary, or Judge change; "
+    "every other frozen file is untouched."
 )
 FROZEN_MODEL = "qwen2.5-7b-instruct"
 
@@ -1028,7 +1054,7 @@ FROZEN = {
     "orchestration/specs.py":
         "4b6dc829fe2b6b594cc87e8a62bd944ea9df181cd7f420ae3732c861ce8e43cb",
     "workflow/controller.py":
-        "5f510e590caa1f957a09a18c3260c9b7283b22a37f71b6c6b9ff9aac96415a42",
+        "11aa89390906353c83120908886482e593e9cca7e42f210be9ee528be13e7579",
     "orchestration/schema/agent_result.schema.json":
         "a38afea9c06c21e647376efd835dec32a16b2f247583a090560cb1843e0eda31",
     "orchestration/schema/agent_spec.schema.json":

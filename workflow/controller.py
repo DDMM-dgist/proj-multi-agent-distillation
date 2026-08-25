@@ -1649,6 +1649,19 @@ class RunController:
             raise ValueError("PASS requires --votes with three validated judge votes")
         if verdict not in {"PASS", "REVISE", "FAIL"}:
             raise ValueError("verdict must be PASS, REVISE, or FAIL")
+        # FE-042 deterministic Stage-4 coverage-adequacy control. The data_coverage Judges review
+        # report HONESTY (access mode, per-config_type counts, lineage, protected-test exclusion),
+        # not configuration-space ADEQUACY, so a truthful report can earn 3/3 PASS while a declared
+        # deployment structure class still has ZERO acquired representatives. Adequacy is the
+        # deterministic assessment_status the FE-038/FE-039 gap gate already computed and wrote into
+        # the registered coverage report -- never an LLM judgment -- so a would-be PASS is downgraded
+        # here to a scientific REVISE that routes to targeted reacquisition. This reads the status the
+        # gap gate already derived; it adds no threshold, quota, or coverage science.
+        coverage_adequacy = None
+        if verdict == "PASS":
+            coverage_adequacy = self._coverage_adequacy_control(name)
+            if coverage_adequacy is not None:
+                verdict = "REVISE"
         stage = self.stage(name)
         if verdict == "PASS":
             if stage["status"] != "completed":
@@ -1697,6 +1710,8 @@ class RunController:
                       "vote_bundle": bundle}
         if v2_gate_facts:
             gate_event["framework_v2"] = v2_gate_facts
+        if coverage_adequacy:
+            gate_event["coverage_adequacy"] = coverage_adequacy
         if scientific_adequacy_summary:
             gate_event["scientific_adequacy"] = scientific_adequacy_summary
             stage["scientific_adequacy"] = scientific_adequacy_summary
@@ -1715,6 +1730,7 @@ class RunController:
                 "gate_recorded_at": gate_time,
                 "artifact_sha256": artifact_hashes,
                 "votes_integrity": artifact_digest(saved_votes) if saved_votes else None,
+                "coverage_adequacy": coverage_adequacy,
             }
         self.save()
 
@@ -1724,6 +1740,44 @@ class RunController:
             raise RuntimeError(
                 "a REVISE/FAIL recovery is pending; propose, approve, and start the next iteration"
             )
+
+    def _coverage_adequacy_control(self, name):
+        """FE-042 deterministic Stage-4 coverage-adequacy control.
+
+        The data_coverage Judges review report HONESTY, not configuration-space ADEQUACY, so a
+        truthful report can earn 3/3 PASS while a declared deployment structure class still has ZERO
+        acquired representatives. Adequacy is the deterministic ``coverage_assessment.assessment_status``
+        the FE-038/FE-039 gap gate already computed and wrote into the registered coverage report --
+        never an LLM judgment. Return a control block (which routes recovery to targeted reacquisition)
+        iff a registered artifact of this stage carries ``assessment_status == "COVERAGE_INSUFFICIENT"``;
+        return ``None`` for COVERAGE_SUFFICIENT / NOT_ASSESSABLE / no coverage report, leaving the layer
+        inert for every non-coverage stage. It reads only what the gap gate derived; it invents no
+        threshold, quota, or size.
+        """
+        from validation.coverage_gap_assessment import unsupported_structure_classes
+        for record in self.stage_artifacts(name):
+            path = Path(record["path"])
+            if not path.is_file():
+                continue
+            try:
+                report = json.loads(path.read_text())
+            except (ValueError, OSError):
+                continue
+            assessment = (report or {}).get("coverage_assessment")
+            if not isinstance(assessment, dict):
+                continue
+            if assessment.get("assessment_status") != "COVERAGE_INSUFFICIENT":
+                continue
+            unsupported = unsupported_structure_classes(assessment.get("dimensions") or [])
+            return {
+                "control": "fe042_coverage_adequacy",
+                "assessment_status": "COVERAGE_INSUFFICIENT",
+                "unsupported_structure_classes": unsupported,
+                "recommended_return_stage": "acquisition",
+                "report_path": record["path"],
+                "report_sha256": record["sha256"],
+            }
+        return None
 
     # ------------------------------------------------------------------
     # Scientific-adequacy layer (framework_v2.scientific_gate)
