@@ -3162,6 +3162,25 @@ def _dispatch_recovery_corrective_action(controller, trigger, recovery, correcti
         "idempotency_key": base_proposal["idempotency_key"],
         "parameters": params,
     }
+    # FE-044: resolve this corrective proposal's approval boundary through the SAME canonical typed-
+    # effect binding the forward acquisition path uses (run_production_stage ->
+    # _bind_acquisition_plan_for_stage). Without it a corrective ``acquire_structures`` carries no
+    # ``performs_teacher_inference`` effect signal, so actions.resolve_action_approval_boundary fail-
+    # closes and a geometry-only / existing-pool reacquisition spuriously trips the
+    # ``costly_teacher_labeling`` gate even though forward dispatch of the IDENTICAL bound plan does
+    # not. The bound AcquisitionPlan stays authoritative: a Teacher-driven recipe still classifies
+    # True and keeps the costly boundary; only an effect the framework proves Teacher-free is relaxed.
+    # A no-op for every non-``acquire_structures`` corrective action (the binder returns unchanged).
+    try:
+        proposal = _bind_acquisition_plan_for_stage(c, proposal)
+    except ValueError as exc:
+        # The stage has not begun execution yet (begin_stage_execution runs inside
+        # dispatch_via_controller below), so a binding rejection is a clean pre-dispatch failure.
+        emitter.emit("executor_failed", stage=return_stage, role=role,
+                    detail={"status": "VALIDATION_REJECTED"})
+        return CampaignRunResult(
+            CAMPAIGN_FAILED, EXIT_VALIDATION_REJECTED,
+            f"recovery corrective action dispatch failed: {exc}", stage=return_stage)
     registry = registry if registry is not None else build_executor_registry()
     emitter.emit("executor_started", stage=return_stage, role=role,
                 action=corrective_action["action_type"])

@@ -47,11 +47,29 @@ FFV4S_UNSUPPORTED_CLASSES = [
 
 
 def _write_plan(path: Path, *, seed: int, n_per: int, n_parents: int = 2) -> Path:
+    """Write a VALID EXISTING_POOL_SELECTION AcquisitionPlan (the ffv4t projection: SELECT an existing
+    subset, no frame generation, no Teacher inference). It passes ``_validate_existing_pool_plan``
+    with no file I/O (``pool_path`` is a truthy marker, never read here) so the recovery corrective
+    dispatch's FE-044 ``_bind_acquisition_plan_for_stage`` call classifies it geometry-only
+    (``performs_teacher_inference=False``). ``seed`` makes the selected indices/SHA distinct so the
+    stale and fresh plans have different identities. ``n_per`` is unused by a selection plan (kept for
+    the caller signature); ``n_parents`` -> ``n_selected``."""
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(
-        {"kind": "augment-atoms", "seed": seed, "n_parents": n_parents,
-         "n_per_structure": n_per, "expected_output_count": n_parents * n_per,
-         "sigma_range_A": [0.02, 0.08], "cell_sigma": 0.0}))
+    selected = [seed * 100 + i for i in range(n_parents)]
+    path.write_text(json.dumps({
+        "schema_version": 1,
+        "pool_path": "existing_pool.extxyz",
+        "eligible_source_categories": ["amorphous_bulk_SiO2"],
+        "selected_parent_structure_ids": [f"parent-{seed}-{i}" for i in range(n_parents)],
+        "selected_source_global_indices": selected,
+        "n_selected": n_parents,
+        "expected_output_count": n_parents,
+        "duplicate_handling": "reject_duplicates",
+        "labeling_population_sizing": {"recommended_population_size": n_parents,
+                                       "method": "fixture-deterministic"},
+        "protected_reference_exclusion_report": {
+            "status": "PASS", "dft_labels_used_as_selection_scores": False},
+    }))
     return path
 
 
