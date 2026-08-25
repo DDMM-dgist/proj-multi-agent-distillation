@@ -742,6 +742,36 @@ def _protection_consuming_action(action):
     return action in {"acquire_structures", "label_with_teacher", "train_committee"}
 
 
+def _acquisition_protection_reference_yaml(controller):
+    """The EXACT ``reference_yaml`` the ``acquire_structures`` executor enforces protected-reference
+    disjointness against -- resolved controller-native so the autonomous acquisition PLANNER can
+    EXCLUDE the SAME protected population BEFORE selection that the executor re-checks AFTER.
+
+    This mirrors ``_proposal_from_stage``'s ``acquire_structures`` resolution EXACTLY (keep the two in
+    lock-step): a bound ``protected-existing-dft`` reference takes precedence (there it overrides the
+    stage param); otherwise the acquisition stage's own declared ``reference_yaml`` param, resolved
+    through the same ``{run_dir}`` / ``{artifacts_dir}`` / ``{project_dir}`` substitution. Returns
+    ``None`` only when the run declares no acquisition protection reference at all (an explicitly
+    unprotected campaign) -- never a silent empty protected set for a misconfigured one."""
+    protected_references = _protected_reference_from_inputs(controller)
+    protected = protected_references.get("protected-existing-dft")
+    if protected:
+        return protected
+    import yaml
+    cfg = yaml.safe_load(Path(controller.state["workflow_config"]).read_text()) or {}
+    subs = {"run_dir": str(controller.run_dir),
+            "artifacts_dir": str(controller.run_dir / "artifacts"),
+            "project_dir": controller.state["project_dir"]}
+    for stage in cfg.get("stages", []):
+        route = stage.get("pydantic_ai") or {}
+        if route.get("action") != "acquire_structures":
+            continue
+        ref = (route.get("parameters") or {}).get("reference_yaml")
+        if ref:
+            return str(Path(str(ref).format(**subs)).resolve())
+    return None
+
+
 def _resolve_teacher_reference_binding(controller, protected_references):
     """Which controller-bound reference config ``validate_teacher_reference`` must execute
     against, resolved from the run's own committed ``teacher_validation_plan`` -- never from

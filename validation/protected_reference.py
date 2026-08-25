@@ -576,6 +576,38 @@ def assert_reference_provides_dft_labels(reference_yaml):
     return validate_reference_config(reference_yaml)
 
 
+def resolve_protected_population(reference_yaml):
+    """THE ONE canonical resolution of a run-bound protected reference's protected source population.
+
+    Both the autonomous acquisition PLANNER (which must EXCLUDE these rows from the eligible pool
+    BEFORE descriptor/FPS selection and marginal-novelty sizing) and the acquisition EXECUTOR guard
+    (which independently re-checks the selected rows via ``assert_source_indices_allowed`` AFTER
+    selection) resolve the protected population through THIS function -- so the two enforcement paths
+    can never diverge from two independent hand-rolled interpretations of ``reference.yaml``. That
+    shared-object guarantee is exactly what the ffv4o Stage-3 defect violated: the planner fabricated
+    a PASS exclusion report with ``protected_excluded_count=0`` while the executor's own resolution
+    carried 1143 protected rows and fail-closed on the leaked overlap.
+
+    Returns a normalized dict:
+      - ``reference_id``             the run-bound reference identity (matched by the executor guard)
+      - ``reference_path``           the resolved on-disk reference config path
+      - ``protected_source_indices`` sorted unique non-negative seed-pool global rows to protect
+      - ``protected_source_rows``    authoritative protected row count (fail-closed: may exceed the
+                                     number of unique protected geometries when one geometry appears
+                                     at more than one seed-pool row)
+
+    Fails closed (propagates ``validate_reference_config``'s ``ValueError``) on any ambiguous or
+    incomplete lineage -- it NEVER silently returns an empty protected set for a malformed reference."""
+    protection = validate_reference_config(reference_yaml)
+    indices = sorted({int(x) for x in protection["protected_source_indices"]})
+    return {
+        "reference_id": protection["reference_id"],
+        "reference_path": protection.get("reference_path"),
+        "protected_source_indices": indices,
+        "protected_source_rows": int(protection.get("protected_source_rows", len(indices))),
+    }
+
+
 def assert_source_indices_allowed(selected_indices, protected_indices):
     """Fail if an acquisition plan selects any protected source-pool row."""
 

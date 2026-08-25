@@ -428,9 +428,23 @@ class FrameworkDefaultAcquisitionProvider:
             parent_ids=parent_ids,
             params={**dict(proposal.params), "n_per_structure": n_per})
 
+        # Canonical protected-reference enforcement for the generation backends: a perturbation/
+        # dynamics PARENT must never be a protected-reference source row (directive: "protected
+        # reference structures must not become selected parents"). Resolve the SAME canonical set the
+        # executor enforces and fail closed if any selected source-global parent is protected -- never
+        # a fabricated PASS.
+        protected_reference_id, protected_all = self._resolve_protected(controller)
+        selected_source_globals = {int(g) for g in proposal.selected_source_global_indices}
+        protected_parents = sorted(selected_source_globals & protected_all)
+
         def _disjointness_checker(selected_ids: list[str]) -> ProtectedDisjointnessReport:
-            # Candidates are freshly generated perturbations/frames disjoint from the protected
-            # reference by construction; DFT labels are never used as selection scores.
+            # Independent recompute (NOT fabricated): the selected source-global parents must be
+            # disjoint from the canonically-resolved protected population; DFT labels are never used
+            # as selection scores.
+            if protected_parents:
+                raise AcquisitionCapabilityGap(
+                    "generation backend selected protected-reference source rows as parents: "
+                    f"{protected_parents[:20]}", gap_kind="PROTECTED_PARENT_SELECTED")
             return ProtectedDisjointnessReport(
                 status="PASS", n_checked=len(selected_ids), n_overlaps=0,
                 dft_labels_used_as_selection_scores=False)
@@ -453,7 +467,9 @@ class FrameworkDefaultAcquisitionProvider:
                 protocol=protocol, selection_result=selection_result,
                 eligible_source_categories=list(m.eligible_source_categories),
                 selected_source_global_indices=list(proposal.selected_source_global_indices),
-                duplicate_handling=m.descriptor_evidence.duplicate_handling)
+                duplicate_handling=m.descriptor_evidence.duplicate_handling,
+                protected_reference_id=protected_reference_id,
+                protected_candidate_count=len(protected_all))
         else:
             dynamics_protocol_sha256 = protocol.content_sha256()
 
@@ -469,6 +485,22 @@ class FrameworkDefaultAcquisitionProvider:
         return RealizedAcquisition(
             generation_result=generation_result, selection_result=selection_result,
             labeling_request=labeling_request, plan=plan, legacy_projection=legacy_projection)
+
+    # -- canonical protected-reference resolution (shared by ALL acquisition backends) ---------
+    @staticmethod
+    def _resolve_protected(controller):
+        """Resolve the run's protected source population through the ONE canonical framework
+        resolver the acquisition EXECUTOR also enforces against, so every acquisition backend
+        (existing-pool, local-perturbation, teacher-driven MD) excludes/attests against the SAME
+        set the executor independently re-checks. Returns ``(reference_id, protected_globals)`` --
+        ``(None, set())`` only when the run declares no acquisition protection reference at all."""
+        from validation.protected_reference import resolve_protected_population
+        from .cli import _acquisition_protection_reference_yaml
+        reference_yaml = _acquisition_protection_reference_yaml(controller)
+        if not reference_yaml:
+            return None, set()
+        resolved = resolve_protected_population(reference_yaml)
+        return resolved["reference_id"], {int(g) for g in resolved["protected_source_indices"]}
 
     # -- EXISTING_POOL_SELECTION deterministic realization ------------------------------------
     @staticmethod
@@ -517,9 +549,21 @@ class FrameworkDefaultAcquisitionProvider:
         full_item_ids: list[str] = pc["item_ids"]
         if not full_item_ids:
             raise AcquisitionCapabilityGap(
-                "EXISTING_POOL_SELECTION has an empty eligible pool after protected-reference "
-                "exclusion; nothing admissible to label",
+                "EXISTING_POOL_SELECTION has an empty eligible pool; nothing admissible to label",
                 gap_kind="EMPTY_ELIGIBLE_POOL")
+
+        # -- CANONICAL protected-reference exclusion (ffv4o Stage-3 defect fix) --------------------
+        # Resolve the run's protected source population through the ONE canonical framework resolver
+        # the acquisition EXECUTOR also enforces against, then EXCLUDE those seed-pool global rows
+        # from the eligible pool BEFORE any descriptor/FPS selection or marginal-novelty sizing. A
+        # seed-pool global index IS the row's position in manifest-concatenation order, which is
+        # exactly ``full_item_ids`` order, so a protected global ``g`` names position ``g`` here.
+        # Planner and executor thus agree by construction; the executor's independent
+        # ``assert_source_indices_allowed`` stays as defense in depth and must now always find zero
+        # overlap. This is what the ffv4o defect violated -- the planner never loaded the run-bound
+        # 1143 protected rows and fabricated a PASS/protected_excluded_count=0 exclusion report.
+        protected_reference_id, protected_all = self._resolve_protected(controller)
+        protected_globals = {g for g in protected_all if 0 <= g < len(full_item_ids)}
 
         # Objective-conditioned admissible candidate population: restrict to the source families the
         # reasoning plane declared in-scope. selected_parent_ids is already gated (subset of the
@@ -533,27 +577,40 @@ class FrameworkDefaultAcquisitionProvider:
                 "objective-conditioned eligible population and will not fall back to the full pool",
                 gap_kind="SCOPE_ELIGIBILITY_UNDECIDABLE")
 
-        eligible_positions = [
+        admissible_positions = [
             i for i, iid in enumerate(full_item_ids)
             if self._source_category_of(iid) in admissible_categories]
-        if not eligible_positions:
+        if not admissible_positions:
             raise AcquisitionCapabilityGap(
                 "the scientifically admissible source families "
                 f"{sorted(admissible_categories)!r} map to zero frames in the eligible pool; "
                 "refusing to silently fall back to the full pool of all source families",
                 gap_kind="SCOPE_ELIGIBILITY_EMPTY")
 
-        # FPS/sizing operate ONLY over the admissible in-scope frames.
+        # Deterministic protected exclusion of the in-scope admissible frames. ``N`` is ALLOWED to
+        # change: sizing/selection below run over whatever admissible non-protected pool remains.
+        protected_excluded_count = sum(1 for i in admissible_positions if i in protected_globals)
+        eligible_positions = [i for i in admissible_positions if i not in protected_globals]
+        if not eligible_positions:
+            raise AcquisitionCapabilityGap(
+                "every admissible in-scope frame is a protected-reference row; the eligible pool is "
+                f"empty after canonical protected exclusion ({protected_excluded_count} excluded); "
+                "nothing admissible and non-protected to label",
+                gap_kind="EMPTY_ELIGIBLE_POOL")
+
+        # FPS/sizing operate ONLY over the admissible, in-scope, protected-EXCLUDED frames.
         vectors: list[list[float]] = [full_vectors[i] for i in eligible_positions]
         item_ids: list[str] = [full_item_ids[i] for i in eligible_positions]
         admissible_source_categories = sorted(admissible_categories)
+        full_pos = {iid: i for i, iid in enumerate(full_item_ids)}
 
-        # 1. Deterministic labeling-population sizing (size is an OUTPUT, no human N).
+        # 1. Deterministic labeling-population sizing (size is an OUTPUT, no human N). The REAL
+        #    protected_excluded_count is recorded (never the hardcoded 0 the ffv4o defect emitted).
         sizing = recommend_labeling_population_sizing(
             vectors, params=FrameworkSizingParams(),
             sizing_id=f"{m.frozen_artifact.evidence_id}-sizing",
             coverage_gap_sha256=m.coverage.content_sha256(),
-            protected_excluded_count=0,
+            protected_excluded_count=protected_excluded_count,
             target_labeled_population=None, max_teacher_label_calls=None)
         k = int(sizing.recommended_population_size)
 
@@ -572,9 +629,19 @@ class FrameworkDefaultAcquisitionProvider:
             n_requested=len(item_ids), n_generated=len(item_ids), n_rejected=0)
 
         def _disjointness_checker(selected_ids: list[str]) -> ProtectedDisjointnessReport:
-            # The eligible pool is already the protected-reference-EXCLUDED population (the descriptor
-            # provider removes protected frames before exposing it), so the selected subset is
-            # disjoint by construction; DFT labels are never used as selection scores.
+            # Independent recompute (NOT a fabricated PASS): map each selected candidate back to its
+            # seed-pool global row and intersect with the canonically-resolved protected population.
+            # The exclusion above guarantees zero overlap, so any hit here is a framework regression
+            # and fails closed loudly rather than being silently reported as PASS. DFT labels are
+            # never used as selection scores. This is the planner-side invariant that mirrors the
+            # executor's assert_source_indices_allowed on the SAME canonical protected set.
+            selected_globals = {full_pos[cid] for cid in selected_ids}
+            overlaps = sorted(selected_globals & protected_globals)
+            if overlaps:
+                raise AcquisitionCapabilityGap(
+                    "existing-pool selection produced protected-reference overlap AFTER canonical "
+                    f"exclusion (regression): {overlaps[:20]}",
+                    gap_kind="PROTECTED_EXCLUSION_REGRESSION")
             return ProtectedDisjointnessReport(
                 status="PASS", n_checked=len(selected_ids), n_overlaps=0,
                 dft_labels_used_as_selection_scores=False)
@@ -619,7 +686,11 @@ class FrameworkDefaultAcquisitionProvider:
             selected_source_global_indices=selected_source_global_indices,
             labeling_population_sizing=sizing.model_dump(mode="json"),
             selection_result=selection_result,
-            duplicate_handling=pc["duplicate_handling"])
+            duplicate_handling=pc["duplicate_handling"],
+            protected_reference_id=protected_reference_id,
+            protected_candidate_count=len(protected_globals),
+            protected_excluded_count=protected_excluded_count,
+            eligible_population_after_exclusion=len(eligible_positions))
 
         plan = assemble_plan_v2(
             plan_id=f"{m.frozen_artifact.evidence_id}-plan",

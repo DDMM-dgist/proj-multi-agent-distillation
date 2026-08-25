@@ -1136,11 +1136,19 @@ def _validate_acquisition_plan(plan, *, reference_yaml=None, seed_structures=Non
     if report.get("dft_labels_used_as_selection_scores") is not False:
         raise _AcquisitionPlanError("AcquisitionPlan must record DFT labels were not used as selection scores")
     if reference_yaml:
-        from validation.protected_reference import assert_source_indices_allowed, validate_reference_config
-        protection = validate_reference_config(reference_yaml)
+        from validation.protected_reference import (
+            assert_source_indices_allowed, resolve_protected_population)
+        protection = resolve_protected_population(reference_yaml)
         assert_source_indices_allowed(selected, protection["protected_source_indices"])
-        if report.get("reference_id") and report.get("reference_id") != protection["reference_id"]:
-            raise _AcquisitionPlanError("AcquisitionPlan protection report reference_id does not match run-bound reference")
+        if protection["protected_source_indices"]:
+            report_reference_id = report.get("reference_id")
+            if not report_reference_id:
+                raise _AcquisitionPlanError(
+                    "AcquisitionPlan protection report omits reference_id while the run binds a "
+                    "protected reference; an anonymous exclusion report cannot be authoritative")
+            if report_reference_id != protection["reference_id"]:
+                raise _AcquisitionPlanError(
+                    "AcquisitionPlan protection report reference_id does not match run-bound reference")
     source_records = []
     if seed_structures:
         source_records = _validate_selected_sources(plan, seed_structures=seed_structures,
@@ -1226,12 +1234,26 @@ def _validate_existing_pool_plan(plan, *, reference_yaml=None,
         raise _AcquisitionPlanError(
             "existing-pool plan must record DFT labels were not used as selection scores")
     if reference_yaml:
-        from validation.protected_reference import assert_source_indices_allowed, validate_reference_config
-        protection = validate_reference_config(reference_yaml)
+        # Defense in depth: resolve the protected population through the ONE canonical resolver the
+        # autonomous planner also consumes, then INDEPENDENTLY re-verify disjointness of the selected
+        # rows here (this guard is what fail-closed on the ffv4o leak). Keep this even though the
+        # planner now excludes up front -- the two must agree, and this proves it at bind time.
+        from validation.protected_reference import (
+            assert_source_indices_allowed, resolve_protected_population)
+        protection = resolve_protected_population(reference_yaml)
         assert_source_indices_allowed(selected, protection["protected_source_indices"])
-        if report.get("reference_id") and report.get("reference_id") != protection["reference_id"]:
-            raise _AcquisitionPlanError(
-                "existing-pool protection report reference_id does not match run-bound reference")
+        # When the run is genuinely protected, the plan's exclusion report must NAME the same
+        # reference it excluded against -- an anonymous PASS can no longer masquerade as an
+        # authoritative exclusion (ffv4o emitted a PASS with no reference_id and excluded nothing).
+        if protection["protected_source_indices"]:
+            report_reference_id = report.get("reference_id")
+            if not report_reference_id:
+                raise _AcquisitionPlanError(
+                    "existing-pool protection report omits reference_id while the run binds a "
+                    "protected reference; an anonymous exclusion report cannot be authoritative")
+            if report_reference_id != protection["reference_id"]:
+                raise _AcquisitionPlanError(
+                    "existing-pool protection report reference_id does not match run-bound reference")
     return {**plan, "selected_source_global_indices": selected,
             "selected_parent_structure_ids": [str(x) for x in parents],
             "eligible_source_categories": [str(x) for x in categories],

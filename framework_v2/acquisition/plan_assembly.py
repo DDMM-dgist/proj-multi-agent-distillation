@@ -54,17 +54,34 @@ def build_legacy_projection(
     eligible_source_categories: list[str],
     selected_source_global_indices: list[int],
     duplicate_handling: str,
+    protected_reference_id: Optional[str] = None,
+    protected_candidate_count: int = 0,
 ) -> dict[str, Any]:
     """Project a LOCAL_PERTURBATION plan into the 14-field legacy dict.
 
     All scientific values come from the autonomously-designed protocol +
     selection evidence -- nothing is invented here. The disjointness report is
-    carried straight through from the selector (status must be PASS)."""
+    carried straight through from the selector (status must be PASS).
+
+    ``protected_reference_id`` makes the exclusion report AUTHORITATIVE so the acquisition executor
+    can cross-check it against the run-bound reference identity -- a protected-run plan whose report
+    omits the reference_id is rejected as an anonymous (non-authoritative) attestation."""
     p = protocol.params
     parent_ids = list(protocol.parent_ids)
     n_parents = len(parent_ids)
     n_per_structure = int(p["n_per_structure"])
     report = selection_result.disjointness_report
+    exclusion_report: dict[str, Any] = {
+        "status": report.status,
+        "n_checked": report.n_checked,
+        "n_overlaps": report.n_overlaps,
+        "dft_labels_used_as_selection_scores": (
+            report.dft_labels_used_as_selection_scores
+        ),
+        "protected_candidate_count": int(protected_candidate_count),
+    }
+    if protected_reference_id is not None:
+        exclusion_report["reference_id"] = protected_reference_id
     projection = {
         "schema_version": 1,
         "eligible_source_categories": list(eligible_source_categories),
@@ -79,14 +96,7 @@ def build_legacy_projection(
         "seed": int(p["seed"]),
         "expected_output_count": n_parents * n_per_structure,
         "duplicate_handling": duplicate_handling,
-        "protected_reference_exclusion_report": {
-            "status": report.status,
-            "n_checked": report.n_checked,
-            "n_overlaps": report.n_overlaps,
-            "dft_labels_used_as_selection_scores": (
-                report.dft_labels_used_as_selection_scores
-            ),
-        },
+        "protected_reference_exclusion_report": exclusion_report,
     }
     return projection
 
@@ -115,6 +125,10 @@ def build_existing_pool_projection(
     labeling_population_sizing: dict[str, Any],
     selection_result: CandidateSelectionResult,
     duplicate_handling: str,
+    protected_reference_id: Optional[str] = None,
+    protected_candidate_count: int = 0,
+    protected_excluded_count: int = 0,
+    eligible_population_after_exclusion: Optional[int] = None,
 ) -> dict[str, Any]:
     """Project an EXISTING_POOL_SELECTION plan into its executable dict.
 
@@ -122,13 +136,35 @@ def build_existing_pool_projection(
     their global indices into ``pool_path`` (stable pool order) and their parent ids.
     Every count is DERIVED from the deterministic ``labeling_population_sizing``
     evidence, never invented. The disjointness report is carried straight through
-    from the selector (status must be PASS)."""
+    from the selector (status must be PASS).
+
+    The ``protected_*`` arguments make the ``protected_reference_exclusion_report``
+    AUTHORITATIVE (ffv4o Stage-3 defect fix): ``protected_reference_id`` is the run-bound
+    reference identity the acquisition executor independently cross-checks (executors.
+    ``_validate_existing_pool_plan``), and the counts are the REAL population figures from the
+    canonical protected exclusion the planner applied BEFORE selection -- never a hardcoded
+    ``protected_excluded_count=0`` on a false 'the pool is already excluded' assumption."""
     report = selection_result.disjointness_report
     n_selected = len(selected_source_global_indices)
     if len(selected_parent_structure_ids) != n_selected:
         raise ValueError(
             "build_existing_pool_projection: selected_parent_structure_ids and "
             "selected_source_global_indices must have equal length")
+    exclusion_report: dict[str, Any] = {
+        "status": report.status,
+        "n_checked": report.n_checked,
+        "n_overlaps": report.n_overlaps,
+        "dft_labels_used_as_selection_scores": (
+            report.dft_labels_used_as_selection_scores
+        ),
+        "protected_candidate_count": int(protected_candidate_count),
+        "protected_excluded_count": int(protected_excluded_count),
+    }
+    if protected_reference_id is not None:
+        exclusion_report["reference_id"] = protected_reference_id
+    if eligible_population_after_exclusion is not None:
+        exclusion_report["eligible_population_after_exclusion"] = int(
+            eligible_population_after_exclusion)
     return {
         "schema_version": 1,
         "pool_path": str(pool_path),
@@ -139,14 +175,7 @@ def build_existing_pool_projection(
         "expected_output_count": n_selected,
         "duplicate_handling": duplicate_handling,
         "labeling_population_sizing": dict(labeling_population_sizing),
-        "protected_reference_exclusion_report": {
-            "status": report.status,
-            "n_checked": report.n_checked,
-            "n_overlaps": report.n_overlaps,
-            "dft_labels_used_as_selection_scores": (
-                report.dft_labels_used_as_selection_scores
-            ),
-        },
+        "protected_reference_exclusion_report": exclusion_report,
     }
 
 
