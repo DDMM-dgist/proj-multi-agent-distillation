@@ -73,6 +73,26 @@ DEFAULT_RECOVERY_CAPABILITY_ROSTER = {
     "evidence_repair": "orchestrator",
 }
 RECOVERY_AGENTS = frozenset(DEFAULT_RECOVERY_CAPABILITY_ROSTER.values())
+
+# RECOVERY_CAPABILITY_MATERIALIZATION declares, for each genuinely CORRECTIVE recovery capability,
+# the set of materializing transitions (see workflow.recovery_taxonomy.MATERIALIZING_TRANSITIONS)
+# that capability's executor can actually produce at or downstream of a return stage. It closes the
+# structural gap ffv4m named: DEFAULT_RECOVERY_CAPABILITY_ROSTER maps capability->role only and
+# never declared which state/evidence transitions a capability can materialize, so nothing recorded
+# that a "notes-only" capability could only ever re-emit a byte-identical artifact
+# (RECOVERY_EXECUTION_UNVERIFIED dead-loop). This is a DECLARATIVE contract: the actual per-plan
+# no-op rejection lives in _validate_recovery_materialization (which keys off the return stage's
+# route action, independent of capability, so it holds even for a run's custom roster). Support-only
+# roles (root_cause_analysis / orchestration / evidence_repair) are deliberately NOT corrective
+# capabilities and appear nowhere here -- they materialize nothing on their own. Every set here is
+# non-empty: a corrective capability that declares no materializing transition is forbidden. The
+# completeness / non-emptiness / vocabulary invariants are locked by
+# tests/test_recovery_materialization_contract.py.
+RECOVERY_CAPABILITY_MATERIALIZATION = {
+    "data_repair": frozenset({"distinct_evidence_artifact", "input_supersession_replan"}),
+    "model_retrain": frozenset({"scientific_recompute"}),
+    "simulation_rerun": frozenset({"scientific_recompute", "input_supersession_replan"}),
+}
 ADJUDICATION_DECISIONS = {"ACCEPT_DECLARED_LIMITATION", "REQUIRE_SCIENTIFIC_RECOVERY"}
 ADJUDICATION_SCOPE_EFFECT = "restrict_scope_to_declared_limitations"
 
@@ -2420,6 +2440,109 @@ class RunController:
                 "model_fitting/student_fidelity domain before authorizing retrain/relabel/new DFT."
             )
 
+    def _workflow_cfg(self):
+        """Parse THIS run's own frozen workflow.yaml (``state['workflow_config']``), or ``{}``.
+
+        Read-only and side-effect-free. Used to resolve a stage's declared deterministic route
+        action for the recovery-materialization no-op check. ``pydantic_ai.action`` is read as
+        opaque run configuration (no runtime import): it is the exact value this run was
+        initialized from and is never mutated after init. A ``workflow_config`` that is not a
+        readable file (e.g. a legacy/placeholder manifest that predates this field being a real
+        path) yields ``{}`` -- the stage route is then simply unknown, and the no-op guard is
+        SOUND to skip (``verify_recovery_execution`` remains the backstop), never a hard error.
+        """
+        config_path = Path(self.state.get("workflow_config") or "")
+        if not config_path.is_file():
+            return {}
+        return yaml.safe_load(config_path.read_text(encoding="utf-8")) or {}
+
+    def _stage_route_action(self, stage_name):
+        """Return the deterministic route action a stage's forward executor dispatches, or ``None``.
+
+        Resolved from THIS run's frozen workflow.yaml (the stage's ``pydantic_ai.action``). ``None``
+        means the route is unknown for this run (e.g. a bare fixture stage with no route metadata);
+        a caller must then treat the stage as NOT a provable no-op and leave
+        ``verify_recovery_execution`` as the backstop -- never reject on an unknown route.
+        """
+        for stage in self._workflow_cfg().get("stages", []) or []:
+            if isinstance(stage, dict) and stage.get("name") == stage_name:
+                route = stage.get("pydantic_ai") or {}
+                action = route.get("action")
+                return action if isinstance(action, str) and action.strip() else None
+        return None
+
+    def _stage_route_parameters(self, stage_name):
+        """Return the stage's DECLARED typed route input parameters (``pydantic_ai.parameters``) as a
+        dict, or ``{}``. These are the only channels the stage's own deterministic route executor
+        consumes; a corrective that overrides one of them with a different value supersedes a bound
+        input (materializing a changed re-run), whereas keys the route never declares are opaque
+        free text the executor cannot consume -- the exact ffv4m defect."""
+        for stage in self._workflow_cfg().get("stages", []) or []:
+            if isinstance(stage, dict) and stage.get("name") == stage_name:
+                route = stage.get("pydantic_ai") or {}
+                params = route.get("parameters")
+                return params if isinstance(params, dict) else {}
+        return {}
+
+    @staticmethod
+    def _return_stage_replans_on_recovery(return_stage):
+        """True iff returning to ``return_stage`` supersedes that stage's bound plan, forcing a
+        re-plan on changed inputs (see ``start_iteration``). Only the acquisition stage does so
+        today: its bound AcquisitionPlan is retired so the re-run re-plans with fresh gap-driven
+        sizing, which is what lets a coverage-deficit re-acquisition materialize changed candidates
+        instead of a byte-identical DUPLICATE."""
+        return return_stage == "acquisition"
+
+    def _validate_recovery_materialization(self, plan, labeling, training):
+        """Fail closed on a recovery whose corrective effect provably cannot change any artifact at
+        or downstream of its return stage -- the exact RECOVERY_EXECUTION_UNVERIFIED dead-loop ffv4m
+        hit (a data_repair plan whose corrective ``action_type`` equalled the return stage's own
+        deterministic route action, on unchanged inputs, re-emitting a byte-identical DUPLICATE).
+
+        Fully generic: it names no stage, capability, chemistry or dataset. It classifies the
+        materializing transition the corrective effect will produce (see
+        ``recovery_taxonomy.classify_recovery_materialization``) from (a) whether a costly scientific
+        recompute is authorized, (b) whether the return stage's bound plan is superseded, and (c)
+        whether a corrective_action dispatches an executor DISTINCT from the return stage's route
+        action. SOUND rejection: if the effect classifies as a provable no-op AND the return stage's
+        route action is KNOWN for this run, refuse it before approval -- it can only ever DUPLICATE.
+        When the route is unknown (route ``None``: a bare fixture stage with no route metadata)
+        nothing is rejected and ``verify_recovery_execution`` remains the backstop; the gate never
+        rejects on an unknown route.
+
+        Returns the classified transition (or ``None``) so the recovery record can carry it.
+        """
+        return_stage = plan["return_stage"]
+        route_action = self._stage_route_action(return_stage)
+        corrective = (plan.get("recovery_context") or {}).get("corrective_action")
+        corrective_action_type = (corrective.get("action_type")
+                                  if isinstance(corrective, dict) else None)
+        corrective_params = (corrective.get("parameters")
+                             if isinstance(corrective, dict) else None) or {}
+        route_params = self._stage_route_parameters(return_stage)
+        corrective_supersedes_bound_input = any(
+            key in route_params and corrective_params[key] != route_params[key]
+            for key in corrective_params)
+        transition = recovery_taxonomy.classify_recovery_materialization(
+            return_stage_route_action=route_action,
+            corrective_action_type=corrective_action_type,
+            return_stage_supersedes_inputs=self._return_stage_replans_on_recovery(return_stage),
+            authorizes_scientific_recompute=bool(
+                labeling.get("new_dft") or labeling.get("teacher_relabel")
+                or training.get("retrain")),
+            corrective_supersedes_bound_input=corrective_supersedes_bound_input)
+        if transition is None and route_action is not None:
+            raise ValueError(
+                f"recovery returning to stage {return_stage!r} would re-run that stage's own "
+                f"deterministic route action {route_action!r} on unchanged inputs, re-emitting a "
+                "byte-identical artifact that recovery-execution verification rejects as unchanged "
+                "(RECOVERY_EXECUTION_UNVERIFIED). Authorize a genuine scientific recompute, return "
+                "to a stage whose bound plan is superseded, override one of the return stage's "
+                "declared typed route input parameters with a different value, or dispatch a "
+                "corrective_action whose action_type differs from the return stage's route action -- "
+                "otherwise this is an unresolved evidence gap, not a dispatchable corrective repair.")
+        return transition
+
     def propose_recovery(self, plan_path, *, proposer=None):
         """Bind a scientific recovery proposal to the failed gate and its evidence.
 
@@ -2512,6 +2635,8 @@ class RunController:
         if training["retrain"] == (training["mode"] == "none"):
             raise ValueError("recovery student_training retrain and mode are inconsistent")
         self._validate_evidence_gap_recovery(resolved_code, labeling, training)
+        materialization_transition = self._validate_recovery_materialization(
+            plan, labeling, training)
         revalidation = plan.get("revalidation")
         if (not isinstance(revalidation, dict) or
                 not isinstance(revalidation.get("reuse_profile"), bool) or
@@ -2543,6 +2668,7 @@ class RunController:
             "plan": plan, "human_approval": None,
             "proposed_by": proposer.as_dict(),
             "failure_domain": resolved_code.domain,
+            "materialization_transition": materialization_transition,
             "resolved_responsible_agent": resolved_agent,
             "resolved_responsible_capability": resolved_capability,
             "recovery_signature": signature,
@@ -2675,7 +2801,7 @@ class RunController:
         # no new human plan then fails closed at the acquisition stage (PLAN_INPUT_REQUIRED),
         # which is the correct fail-closed outcome, not a silent reuse.
         superseded_plans = []
-        if return_stage == "acquisition":
+        if self._return_stage_replans_on_recovery(return_stage):
             superseded_plans = self.supersede_bound_acquisition_plan(
                 reason=(f"coverage-deficit re-acquisition (recovery {recovery['id']:03d}, "
                         f"failed_stage {recovery['failed_stage']}): stale plan retired so the "

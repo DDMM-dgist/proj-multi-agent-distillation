@@ -190,6 +190,29 @@ mandatory -- so a recovery with no real corrective change still fails closed. Th
 assembler change lives in runtimes/pydantic_ai/cli.py (not frozen). schema_version UNCHANGED at 10.
 No role/action-set, recovery-taxonomy, protected-reference, or Judge change; the approved
 RecoveryPlan's stored semantics are untouched (this is purely a verification-ORDERING fix).
+
+v27 (ffv4m recovery-materialization contract: pre-acceptance no-op refusal) closes the generic
+RECOVERY_EXECUTION_UNVERIFIED dead-loop (docs/postmortems/ffv4m_recovery_execution_unverified.md). A
+data_repair RecoveryPlan whose corrective ``action_type`` equalled its return stage's OWN
+deterministic route action, re-run on unchanged inputs, re-emitted a byte-identical artifact
+(DUPLICATE) that ``verify_recovery_execution`` correctly rejects -- an unbreakable loop, with no
+pre-acceptance check that the corrective could ever MATERIALIZE a changed artifact. workflow/
+controller.py re-freezes for additive read-only helpers (``_workflow_cfg``, ``_stage_route_action``,
+``_stage_route_parameters``, ``_return_stage_replans_on_recovery``) and one new acceptance guard
+``_validate_recovery_materialization`` wired into ``propose_recovery`` BEFORE binding: it classifies
+(via the pure, generic ``workflow.recovery_taxonomy.classify_recovery_materialization``) the
+materializing transition a corrective will produce, and if the effect is a provable deterministic
+no-op AND the return stage's route action is KNOWN for this run, refuses the plan before approval
+(never dispatching it into the loop). A same-action corrective still materializes when it authorizes
+a scientific recompute, returns to a stage whose bound plan is superseded, or overrides one of the
+return stage's DECLARED typed route input parameters with a different value; a corrective dispatching
+a DISTINCT action_type materializes a distinct evidence artifact. When the route is unknown (a stage
+with no ``pydantic_ai.action`` metadata) nothing is rejected and ``verify_recovery_execution`` stays
+the backstop -- the guard is SOUND to skip, never a false rejection. The hash-change verification
+invariant is UNCHANGED and un-weakened. schema_version UNCHANGED at 10. No role/action-set,
+protected-reference, or Judge change. recovery_taxonomy.py (not frozen) gained the pure classifier
+and MATERIALIZING_TRANSITIONS vocabulary; the static compatibility invariant and the ffv4m acceptance
+gate are locked by tests/test_recovery_materialization_contract.py.
 """
 from __future__ import annotations
 
@@ -1005,7 +1028,7 @@ FROZEN = {
     "orchestration/specs.py":
         "4b6dc829fe2b6b594cc87e8a62bd944ea9df181cd7f420ae3732c861ce8e43cb",
     "workflow/controller.py":
-        "47ee90dd6138894cf14109a233c8405556b73f7c0015a75ede348526ac84a657",
+        "5f510e590caa1f957a09a18c3260c9b7283b22a37f71b6c6b9ff9aac96415a42",
     "orchestration/schema/agent_result.schema.json":
         "a38afea9c06c21e647376efd835dec32a16b2f247583a090560cb1843e0eda31",
     "orchestration/schema/agent_spec.schema.json":

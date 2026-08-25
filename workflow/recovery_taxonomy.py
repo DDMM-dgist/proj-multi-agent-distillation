@@ -123,6 +123,60 @@ def failure_category_enum() -> type:
     return _failure_category_enum_cache
 
 
+# --- Recovery-execution materialization contract --------------------------------------------
+# A recovery's corrective effect is VERIFIED only if it changes an artifact hash at or downstream of
+# the return stage (RunController.verify_recovery_execution). These are the generic, stage- and
+# chemistry-agnostic ways a corrective effect can actually MATERIALIZE such a change. A corrective
+# action that merely re-runs the return stage's own deterministic route action on unchanged inputs
+# re-emits a byte-identical artifact (DUPLICATE) and materializes NONE of these -- the exact
+# RECOVERY_EXECUTION_UNVERIFIED dead-end ffv4m hit.
+MATERIALIZING_TRANSITIONS: frozenset = frozenset({
+    "scientific_recompute",        # authorized new DFT / teacher relabel / student retrain changes outputs
+    "input_supersession_replan",   # a bound input is superseded (return-stage plan retired, OR the
+                                   # corrective overrides a DECLARED route input parameter) -> the
+                                   # route re-run reads changed inputs instead of DUPLICATING
+    "distinct_evidence_artifact",  # a corrective action dispatches an executor DISTINCT from the route action
+})
+
+
+def classify_recovery_materialization(*, return_stage_route_action, corrective_action_type,
+                                      return_stage_supersedes_inputs,
+                                      authorizes_scientific_recompute,
+                                      corrective_supersedes_bound_input=False):
+    """Classify the materializing transition a recovery's corrective effect will produce at or
+    downstream of the return stage, or return ``None`` if it is a provable deterministic no-op.
+
+    Pure and fully generic: it names no stage, capability, chemistry, or dataset. It reasons only
+    about (a) whether a costly scientific recompute is authorized, (b) whether the return stage's
+    bound plan will be superseded (forcing a re-plan on changed inputs), (c) whether the corrective
+    action dispatches an executor DISTINCT from the return stage's own deterministic route action,
+    and (d) whether the corrective supersedes a DECLARED typed route input parameter of the return
+    stage with a different value (so the SAME route executor re-runs on genuinely changed inputs).
+
+    A corrective action equal to the route action -- or an absent corrective action, i.e. a bare
+    forward re-run of that same route action -- that supersedes NONE of the return stage's declared
+    typed input channels re-emits the identical artifact on unchanged inputs, which
+    ``verify_recovery_execution`` rejects as unchanged. That is the exact ffv4m failure: its
+    corrective merely restated existing artifact pointers and attached an ``required_evidence`` list
+    of OPAQUE FREE TEXT that the deterministic executor has no typed channel to consume -- superseding
+    no declared input -- so the re-run DUPLICATED. Only overriding a declared typed parameter (e.g.
+    pointing the stage at a different dataset) counts as a materializing input supersession; opaque
+    keys the route never declares are, by contract, not materialization channels. That guaranteed
+    ``RECOVERY_EXECUTION_UNVERIFIED`` no-op is reported here as ``None`` so a caller can refuse it at
+    acceptance rather than dispatch it into a DUPLICATE dead-loop.
+    """
+    if authorizes_scientific_recompute:
+        return "scientific_recompute"
+    if return_stage_supersedes_inputs:
+        return "input_supersession_replan"
+    if (corrective_action_type is not None and
+            corrective_action_type != return_stage_route_action):
+        return "distinct_evidence_artifact"
+    if corrective_supersedes_bound_input:
+        return "input_supersession_replan"
+    return None
+
+
 # --- Legacy reconciliation ------------------------------------------------------------------
 # Every value that used to be independently accepted by workflow.controller.RECOVERY_CATEGORIES
 # or runtimes.pydantic_ai.root_cause.FailureCategory is registered here exactly once, tagged

@@ -179,6 +179,11 @@ class SingleInvocationGateToApprovalTests(unittest.TestCase):
             diagnosis_sha256 = hashlib.sha256(
                 (classification.model_dump_json(indent=2) + "\n").encode()).hexdigest()
 
+            # The proposed recovery must be a genuinely materializing repair to be ACCEPTED (the
+            # recovery-materialization contract refuses a no-op that could only DUPLICATE): its
+            # corrective_action overrides the return stage's declared ``dataset`` route input with a
+            # DIFFERENT corrected dataset, so re-running build_dataset_manifest reads changed inputs.
+            corrected_dataset = _dataset(root / "dataset_a_corrected.extxyz", 3, 500)
             orchestrator_payload = {
                 "run_id": "single-invocation-recovery-test", "failed_stage": "stage_a",
                 "diagnosis_artifact_sha256": diagnosis_sha256,
@@ -188,6 +193,11 @@ class SingleInvocationGateToApprovalTests(unittest.TestCase):
                 "student_training": {"retrain": False, "mode": "none"},
                 "revalidation": {"reuse_profile": True, "targets": ["stage_a"]},
                 "rationale": "rebuild stage_a's manifest from a dataset that fixes the coverage gap",
+                "corrective_action": {
+                    "action_type": "build_dataset_manifest",
+                    "parameters": {"dataset": str(corrected_dataset.resolve()),
+                                   "manifest_path": manifest_path},
+                },
             }
             orchestrator_response_path = root / "mock_orchestrator_response.json"
             orchestrator_response_path.write_text(json.dumps(orchestrator_payload))
