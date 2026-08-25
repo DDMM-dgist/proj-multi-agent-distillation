@@ -39,7 +39,7 @@ from validation.report import validate_evidence
 from workflow.integrity import sha256_file
 
 
-ACCESS_MODES = {"full", "representative", "unavailable"}
+ACCESS_MODES = {"full", "representative", "representative_geometry_only", "unavailable"}
 COVERAGE_STATUSES = {"COMPLETE", "PARTIAL", "NOT_ASSESSABLE"}
 TEACHER_TRAIN_PARTITION_ROLE = "teacher_train_partition"
 REQUIRED_TEACHER_TRAINING_EXCLUSIONS = {"validation", "test"}

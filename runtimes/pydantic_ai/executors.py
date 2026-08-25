@@ -906,6 +906,54 @@ def _coverage_assessment_block(*, p, counts, deployment_domain, acquisition_mani
     return assessment, limitations
 
 
+def _resolve_teacher_training_data_access(p, dataset_policy_path):
+    """FE-041: resolve the typed ``teacher_training_data_access`` from the AUTHORITATIVE frozen,
+    run-bound scientific input(s) -- the bound ``dataset_policy`` and, when a path is bound, the
+    ``distillation_scope`` -- so the truthful Teacher-data provenance (e.g.
+    ``representative_geometry_only``) is preserved end-to-end and never re-authored by an LLM
+    proposal or collapsed to a coarser mode.
+
+    Contract: every frozen source that declares the field must agree exactly; distinct values fail
+    closed (``TEACHER_ACCESS_CONFLICT``) rather than guessing. When NO frozen source declares it,
+    fall back to the historical proposal-parameter path (preserving pre-FE-041 behavior for callers
+    that pass it directly), and finally to the historical default ``representative``. Returns
+    ``(mode, provenance)`` where provenance records each source path + sha256 + the resolved value.
+    """
+    import yaml
+    from workflow.integrity import sha256_file
+    candidate_paths = []
+    if dataset_policy_path:
+        candidate_paths.append(("dataset_policy", Path(dataset_policy_path)))
+    scope_path = p.get("distillation_scope")
+    if scope_path:
+        candidate_paths.append(("distillation_scope", Path(scope_path)))
+    declarations = []
+    for role, path in candidate_paths:
+        if not path.is_file():
+            continue
+        doc = yaml.safe_load(path.read_text())
+        value = doc.get("teacher_training_data_access") if isinstance(doc, dict) else None
+        if isinstance(value, str) and value.strip():
+            declarations.append({"source_role": role, "source_path": str(path.resolve()),
+                                 "source_sha256": sha256_file(path), "value": value})
+    if declarations:
+        distinct = sorted({d["value"] for d in declarations})
+        if len(distinct) > 1:
+            raise ValueError(
+                "TEACHER_ACCESS_CONFLICT: authoritative frozen inputs declare conflicting "
+                f"teacher_training_data_access values {distinct}; refusing to guess -- reconcile "
+                "the frozen inputs before re-running data_coverage. Declarations: "
+                + json.dumps(declarations, sort_keys=True))
+        return distinct[0], {"resolved_from": "frozen_authoritative_input",
+                             "resolved_value": distinct[0], "declarations": declarations}
+    param = p.get("teacher_training_data_access")
+    if isinstance(param, str) and param.strip():
+        return param, {"resolved_from": "proposal_parameter", "resolved_value": param,
+                       "declarations": []}
+    return "representative", {"resolved_from": "historical_default",
+                             "resolved_value": "representative", "declarations": []}
+
+
 def _exec_build_data_coverage_report(proposal):
     """Composite data-curator driver for the ``data_coverage`` production stage: enforces
     protected-reference exclusion (``_protect_dataset``) and acquisition-lineage consistency
@@ -975,7 +1023,11 @@ def _exec_build_data_coverage_report(proposal):
             {"provenance": {"note": "auto-generated default dataset policy"}}))
     dataset_policy = str(Path(dataset_policy).resolve())
 
-    teacher_training_data_access = p.get("teacher_training_data_access", "representative")
+    # FE-041: the truthful Teacher-data access mode is sourced from the AUTHORITATIVE frozen,
+    # run-bound input(s) (bound dataset_policy / distillation_scope), never re-authored by the LLM
+    # proposal and never collapsed to a coarser mode; conflicting frozen declarations fail closed.
+    teacher_training_data_access, teacher_access_provenance = (
+        _resolve_teacher_training_data_access(p, dataset_policy))
     # A proposal may declare ONLY a conservative status (PARTIAL / NOT_ASSESSABLE); it can
     # never self-assert COMPLETE. Adequacy (COMPLETE) is earned below, deterministically,
     # solely by satisfying a FROZEN coverage_requirement -- no LLM fabricates completeness.
@@ -1077,6 +1129,7 @@ def _exec_build_data_coverage_report(proposal):
     report = {
         "schema_version": 1,
         "teacher_training_data_access": teacher_training_data_access,
+        "teacher_training_data_access_provenance": teacher_access_provenance,
         "coverage_status": coverage_status,
         "coverage_assessment": coverage_assessment,
         "deployment_domain": deployment_domain,
