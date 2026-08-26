@@ -52,6 +52,50 @@ def _sha256_file(path) -> str:
     return h.hexdigest()
 
 
+def _read_generation_progress(workdir) -> dict:
+    """Read the bounded generator's per-parent progress checkpoint (attempts/accepted/rejections/
+    terminal status), if present. Returns {} when absent (e.g. a fake-engine test path)."""
+    p = Path(workdir) / "generation_progress.json"
+    if not p.is_file():
+        return {}
+    try:
+        return json.loads(p.read_text())
+    except (ValueError, OSError):
+        return {}
+
+
+def _summarize_generation(progress: dict) -> dict:
+    """Collapse the per-parent generation progress into a manifest-ready completeness summary:
+    requested vs accepted children, exhausted/inadmissible parents, aggregate rejections, and
+    whether the augmented dataset is COMPLETE (every admissible parent met its target) or PARTIAL."""
+    parents = list((progress.get("parents") or {}).values())
+    total_requested = sum(int(r.get("requested", 0)) for r in parents)
+    total_accepted = sum(int(r.get("accepted", 0)) for r in parents)
+    agg = {"force": 0, "similar": 0, "separation": 0}
+    exhausted, inadmissible = [], []
+    for r in parents:
+        for k in agg:
+            agg[k] += int((r.get("rejections") or {}).get(k, 0))
+        status = r.get("terminal_status")
+        if status == "INADMISSIBLE_DEGENERATE":
+            inadmissible.append(r.get("parent_id"))
+        elif int(r.get("accepted", 0)) < int(r.get("requested", 0)):
+            exhausted.append(r.get("parent_id"))
+    return {
+        "stopping_policy": progress.get("policy"),
+        "stopping_policy_sha256": progress.get("policy_sha256"),
+        "n_parents": progress.get("n_parents"),
+        "requested_children": total_requested,
+        "accepted_children": total_accepted,
+        "deficit_children": max(0, total_requested - total_accepted),
+        "aggregate_rejections": agg,
+        "exhausted_parents": exhausted,
+        "inadmissible_parents": inadmissible,
+        "complete": (not exhausted and not inadmissible),
+        "per_parent": sorted(parents, key=lambda r: int(r.get("parent_index", 0))),
+    }
+
+
 # --------------------------------------------------------------------------------------------
 # Run-local layout
 # --------------------------------------------------------------------------------------------
@@ -391,8 +435,15 @@ def freeze_augmentation_plan(controller, produced, *, train_pool, emitter=None) 
     out = plan_path(run_dir, run_id)
     out.parent.mkdir(parents=True, exist_ok=True)
 
+    from framework_v2.acquisition.generators.bounded_perturbation import StoppingPolicy
+
     executable_projection = realized.existing_pool_projection or realized.legacy_projection
     strategy_kind = ctx.strategy.kind.value
+    # Hash-bind the bounded-generation stopping policy into the frozen plan. LOCAL_PERTURBATION
+    # execution is governed by this exact versioned budget (per-parent attempt cap + exhaustion
+    # policy); recording it here makes the termination contract part of the plan's provenance rather
+    # than an execute-time constant.
+    stopping_policy = StoppingPolicy()
 
     frozen = {
         "schema_version": 1,
@@ -411,6 +462,8 @@ def freeze_augmentation_plan(controller, produced, *, train_pool, emitter=None) 
         "required_param_keys": list(ctx.required_param_keys),
         "param_bounds": {k: list(v) for k, v in (ctx.param_bounds or {}).items()},
         "executable_projection": executable_projection,
+        "stopping_policy": stopping_policy.to_provenance(),
+        "stopping_policy_sha256": stopping_policy.content_sha256(),
     }
     out.write_text(json.dumps(frozen, indent=2, sort_keys=True) + "\n")
     if emitter is not None:
@@ -574,12 +627,22 @@ def execute_train_augmentation(
             calc, _ = load_teacher_with_species_evidence(self._cfg)
             return calc
 
+    from framework_v2.acquisition.generators.bounded_perturbation import StoppingPolicy
+
     teacher_cfg = load_config(teacher_config)
     workdir = str(augmentation_dir(run_dir) / "generation")
-    gen = LocalPerturbationGenerator().generate(
+    # The stopping policy that governs bounded generation is the one hash-bound into the frozen plan
+    # (see freeze_augmentation_plan); reconstruct it verbatim so execution honors the frozen
+    # termination contract rather than an execute-time default.
+    stopping_policy = StoppingPolicy.from_provenance(frozen_plan.get("stopping_policy"))
+    gen = LocalPerturbationGenerator(policy=stopping_policy).generate(
         protocol, workdir=workdir, teacher=_TeacherCalc(teacher_cfg))
+    generation_progress = _read_generation_progress(workdir)
     if not gen.artifact_ref:
-        raise ValueError("augment_atoms produced no children; cannot finalize augmentation")
+        raise ValueError(
+            "bounded LOCAL_PERTURBATION produced no admissible children for any TRAIN parent "
+            "within the stopping budget; cannot finalize augmentation (see "
+            f"{Path(workdir) / 'generation_progress.json'})")
 
     children = ase_read(gen.artifact_ref, index=":")
     if not isinstance(children, list):
@@ -627,10 +690,18 @@ def execute_train_augmentation(
         "final_train_path": str(ft.resolve()),
         "final_train_sha256": _sha256_file(ft),
     }
+    if generation_progress:
+        summary = _summarize_generation(generation_progress)
+        fm["generation_summary"] = summary
+        # The augmented dataset is COMPLETE only if every admissible parent met its target within
+        # the bounded budget; otherwise it is an honestly-recorded PARTIAL dataset (allow_partial
+        # policy) -- the deficit is surfaced, never fabricated.
+        fm["augmentation_complete"] = bool(summary["complete"])
     finalized_manifest_path(run_dir).write_text(json.dumps(fm, indent=2, sort_keys=True) + "\n")
     if emitter is not None:
         emitter.emit("augmentation_finalized",
                      detail={"augmentation_warranted": True,
                              "n_augmented_children": len(children),
+                             "augmentation_complete": fm.get("augmentation_complete", True),
                              "final_train_sha256": fm["final_train_sha256"]})
     return fm
