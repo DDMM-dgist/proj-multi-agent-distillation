@@ -221,3 +221,18 @@ _LEGACY_CODES = (
 for _code, _domain, _description in _LEGACY_CODES:
     register_failure_code(_code, _domain, _description, legacy=True)
 del _code, _domain, _description
+
+
+# --- Framework capability codes (non-legacy) ------------------------------------------------
+# Registered here at import time (not lazily by the capability module) so the cached
+# ``failure_category_enum()`` -- built the first time any module imports
+# ``runtimes.pydantic_ai.root_cause`` -- always enumerates them, exactly as the docstring on
+# ``failure_category_enum`` requires. A capability module re-exports the constant but must never
+# be the sole registrant, or its code would be absent from the enum under some import orders.
+RECOVERY_BUDGET_EXHAUSTED_CODE = "recovery_budget_exhausted"
+register_failure_code(
+    RECOVERY_BUDGET_EXHAUSTED_CODE, "operational",
+    "the bounded autonomous training-continuation budget (max rounds or max cumulative "
+    "continuation epochs) is exhausted; further continuation requires an explicit human "
+    "scientific decision, not another automatic train-longer round",
+)
