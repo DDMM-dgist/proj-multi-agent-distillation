@@ -72,6 +72,86 @@ def finalized_manifest_path(run_dir) -> Path:
     return augmentation_dir(run_dir) / "augmentation_finalized.json"
 
 
+def _split_manifest_path(run_dir) -> Path:
+    return Path(run_dir) / "artifacts" / "dataset" / "split_manifest.json"
+
+
+def derive_train_base_label_manifest(controller, *, train_dataset) -> Path:
+    """Project the authoritative Stage-5 Teacher-label manifest onto the FROZEN TRAIN split.
+
+    ``prepare_student_distillation_dataset`` proves same-run, same-Teacher binding by requiring a
+    ``base_label_manifest`` whose recorded ``sha256`` equals the base dataset's bytes. The base
+    dataset here is the Stage-6 split output ``train.extxyz`` (a byte-preserved SUBSET of the
+    Stage-5 labeled pool), so NO Stage-5 manifest -- which records the FULL labeled pool's sha --
+    matches it. This gap is closed HONESTLY, not by fabrication: the Stage-6 ``split_manifest``
+    binds ``source_sha256`` to the exact Stage-5 labeled-pool output, and the TRAIN split's own
+    recorded sha to ``train.extxyz``. We therefore locate the authoritative Stage-5 manifest by that
+    source sha, copy its Teacher binding VERBATIM (teacher model/config SHAs, integrity, species
+    mapping, units), and override ONLY the split-specific descriptors (output path, sha256,
+    n_frames). Every override is an independently recomputed real value; nothing is invented.
+
+    Fails closed if the split lineage cannot be proven (train bytes disagree with the split
+    manifest, or no unique Stage-5 manifest carries the split's source sha)."""
+    run_dir = controller.run_dir
+    smp = _split_manifest_path(run_dir)
+    if not smp.is_file():
+        raise ValueError(f"no dataset split_manifest at {smp}; cannot derive the TRAIN base "
+                         "label manifest")
+    split = json.loads(smp.read_text())
+    source_sha = split.get("source_sha256")
+    train_split = (split.get("splits") or {}).get("train") or {}
+    declared_train_sha = train_split.get("sha256")
+    declared_train_n = train_split.get("n_frames")
+    if not source_sha or not declared_train_sha:
+        raise ValueError("split_manifest is missing source_sha256 or splits.train.sha256; the "
+                         "TRAIN base label manifest lineage cannot be proven")
+    actual_train_sha = _sha256_file(train_dataset)
+    if actual_train_sha != declared_train_sha:
+        raise ValueError(
+            "TRAIN dataset bytes do not match the frozen split_manifest TRAIN sha "
+            f"({actual_train_sha} != {declared_train_sha}); refusing to derive a base label "
+            "manifest for an artifact the split did not produce")
+
+    # Locate the authoritative Stage-5 manifest whose recorded output sha IS the split source.
+    candidates = sorted((Path(run_dir) / "artifacts").glob("*.manifest.json"))
+    matches = []
+    for m in candidates:
+        try:
+            payload = json.loads(m.read_text())
+        except (json.JSONDecodeError, OSError):
+            continue
+        if payload.get("sha256") == source_sha and payload.get("teacher_model_sha256") \
+                and payload.get("teacher_config_sha256"):
+            matches.append((m, payload))
+    if len(matches) != 1:
+        raise ValueError(
+            "could not uniquely resolve the authoritative Stage-5 Teacher-label manifest for the "
+            f"split source sha {source_sha!r} (found {len(matches)} candidate(s)); refusing to "
+            "guess the TRAIN parents' Teacher binding")
+    source_manifest_path, source_payload = matches[0]
+
+    projected = dict(source_payload)
+    projected["schema_version"] = 1
+    projected["output"] = str(Path(train_dataset).resolve())
+    projected["sha256"] = actual_train_sha
+    if declared_train_n is not None:
+        projected["n_frames"] = int(declared_train_n)
+    projected["derived_from"] = {
+        "source_label_manifest": str(source_manifest_path.resolve()),
+        "source_label_manifest_sha256": source_sha,
+        "split_manifest": str(smp.resolve()),
+        "split": "train",
+        "note": ("Teacher binding copied verbatim from the Stage-5 labeled-pool manifest; only the "
+                 "split-subset output/sha256/n_frames are recomputed. The split_manifest binds "
+                 "source_sha256 to this Stage-5 output, proving train.extxyz is a byte-preserved "
+                 "subset of it."),
+    }
+    out = augmentation_dir(run_dir) / "labeling" / "train_base_labels.manifest.json"
+    out.parent.mkdir(parents=True, exist_ok=True)
+    out.write_text(json.dumps(projected, indent=2, sort_keys=True) + "\n")
+    return out
+
+
 # --------------------------------------------------------------------------------------------
 # Declaration + Stage-7 fail-closed guard
 # --------------------------------------------------------------------------------------------

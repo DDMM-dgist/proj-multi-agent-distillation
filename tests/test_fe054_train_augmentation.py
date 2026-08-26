@@ -106,6 +106,56 @@ class BuildTrainPoolManifest(unittest.TestCase):
                     train, root / "train_pool", protected_source_indices={5, 6})
 
 
+class DeriveTrainBaseLabelManifest(unittest.TestCase):
+    def _setup(self, root, *, train_globals=(0, 1, 2), tamper_train=False,
+               source_manifest_count=1):
+        c = _make_controller(root)
+        ds = c.run_dir / "artifacts" / "dataset"
+        ds.mkdir(parents=True, exist_ok=True)
+        train = ds / "train.extxyz"
+        ase_write(str(train), [_make_frame(source_global_index=g) for g in train_globals],
+                  format="extxyz")
+        train_sha = ta._sha256_file(train)
+        source_sha = "poolsha_" + "a" * 56
+        # Authoritative Stage-5 manifest(s): output sha == the split source sha.
+        for i in range(source_manifest_count):
+            (c.run_dir / "artifacts" / f"teacher_labels{i}.manifest.json").write_text(json.dumps({
+                "schema_version": 1, "sha256": source_sha, "n_frames": 81,
+                "teacher_model_sha256": "tm" + "0" * 62,
+                "teacher_config_sha256": "tc" + "0" * 62,
+                "units": "eV", "output": "pool.extxyz"}))
+        split = {"schema_version": 1, "source_sha256": source_sha,
+                 "splits": {"train": {"sha256": ("bad" if tamper_train else train_sha),
+                                      "n_frames": len(train_globals)}}}
+        (ds / "split_manifest.json").write_text(json.dumps(split))
+        return c, train
+
+    def test_projects_stage5_binding_onto_train_split(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            c, train = self._setup(Path(tmp))
+            out = ta.derive_train_base_label_manifest(c, train_dataset=str(train))
+            payload = json.loads(Path(out).read_text())
+            # sha256 is recomputed to the TRAIN split bytes (not the full-pool sha).
+            self.assertEqual(payload["sha256"], ta._sha256_file(train))
+            self.assertEqual(payload["n_frames"], 3)
+            # Teacher binding copied verbatim so the merge can prove same-Teacher.
+            self.assertEqual(payload["teacher_model_sha256"], "tm" + "0" * 62)
+            self.assertEqual(payload["teacher_config_sha256"], "tc" + "0" * 62)
+            self.assertEqual(payload["derived_from"]["split"], "train")
+
+    def test_fails_closed_on_train_byte_mismatch(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            c, train = self._setup(Path(tmp), tamper_train=True)
+            with self.assertRaises(ValueError):
+                ta.derive_train_base_label_manifest(c, train_dataset=str(train))
+
+    def test_fails_closed_when_source_manifest_not_unique(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            c, train = self._setup(Path(tmp), source_manifest_count=2)
+            with self.assertRaises(ValueError):
+                ta.derive_train_base_label_manifest(c, train_dataset=str(train))
+
+
 class RemapChildLineage(unittest.TestCase):
     def test_remaps_item_id_to_seed_pool(self):
         children = [_make_frame(parent_structure_id="train_parents#0"),

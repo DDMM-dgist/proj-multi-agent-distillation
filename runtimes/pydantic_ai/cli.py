@@ -4219,6 +4219,13 @@ def _cmd_augment_train(args) -> int:
         teacher_config, _ = _resolve_bound_teacher_calculator_config(c)
     reference_yaml = args.reference_yaml or _acquisition_protection_reference_yaml(c)
     base_label_manifest = args.base_label_manifest
+    if warranted and not base_label_manifest:
+        # No per-split base label manifest is emitted by Stage-5 (full pool) or Stage-6 (split);
+        # derive one HONESTLY by projecting the authoritative Stage-5 Teacher binding onto the
+        # frozen TRAIN split (train.extxyz is a byte-preserved subset, proven by split_manifest).
+        base_label_manifest = str(ta.derive_train_base_label_manifest(c, train_dataset=train_dataset))
+        emitter.emit("augmentation_base_label_manifest_derived",
+                     detail={"path": base_label_manifest})
     if warranted and (not teacher_config or not base_label_manifest or not reference_yaml):
         print("APPROVAL_REQUIRED inputs missing for execution: a warranted plan needs "
               "--teacher-config, --base-label-manifest, and --reference-yaml (base_label_manifest "
