@@ -1042,7 +1042,20 @@ FREEZE_REVISION = (
     "integrity is fully preserved; source-byte equality remains mandatory and fail-closed for every "
     "ACTIVE input. No stage set, gate-vote, recovery-taxonomy, capability-routing, protected-reference, "
     "schema_version, approval-boundary, threshold, or Judge change; no science, acquisition, coverage, "
-    "or recovery logic touched; every other frozen file is untouched."
+    "or recovery logic touched; every other frozen file is untouched. "
+    "FE-049 (recovery corrective-action parameter-contract validation + species-mapping exposure "
+    "action) re-freezes runtimes/pydantic_ai/actions.py: it deliberately grows the role/action-set, "
+    "ADDING ONE new backed data-curator action_type, 'validate_species_mapping_consistency' (a READY "
+    "deterministic executor that exposes a Teacher labeling manifest's concrete element->type-index "
+    "species mapping and fails closed unless every independently-sourced mapping agrees and is "
+    "attested), so an evidence-exposure REVISE on teacher_labeling has a corrective action that can "
+    "converge. Same additive change class as v19/v21/v23 and stage10-11-deployment-producers (UNIT 3). "
+    "The rest of FE-049 -- acceptance-time parameter-contract validation that rejects a "
+    "corrective_action whose parameters would KeyError at dispatch -- is in the NON-frozen "
+    "runtimes/pydantic_ai/{recovery_bridge,cli,executors,deterministic_executors}.py. No stage set, "
+    "gate-vote, recovery-taxonomy, capability-routing, protected-reference, schema_version, "
+    "approval-boundary, threshold, or Judge change; every other frozen file, and every other field of "
+    "actions.py, is untouched."
 )
 FROZEN_MODEL = "qwen2.5-7b-instruct"
 
@@ -1066,7 +1079,7 @@ FROZEN = {
     "runtimes/pydantic_ai/driver.py":
         "db480c20d126b7511e8bbaa4fc2018adb56aa789fabe496ba4f08313379f5939",
     "runtimes/pydantic_ai/actions.py":
-        "0e4b35cf3621baaabb8a972b16f694196834777fd20b615b93838d26ca3f5539",
+        "e661fcf46cbb9288e92b7785d5282104c60c6885c8552d602e1e42d23e5df88e",
     "runtimes/pydantic_ai/controller_bridge.py":
         "91432692ae394da3b526b9d61b3c6743f34ec74c81f874b04494c96425f7f500",
     "orchestration/specs.py":

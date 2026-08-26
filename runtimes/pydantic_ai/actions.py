@@ -98,7 +98,8 @@ DATA_CURATOR_ACTIONS = (
     "inspect_dataset", "summarize_source_categories", "sample_seed_pool",
     "reconstruct_lineage", "generate_group_split", "build_split_membership_population",
     "acquire_structures", "label_with_teacher",
-    "validate_label_preservation", "build_dataset_manifest",
+    "validate_label_preservation", "validate_species_mapping_consistency",
+    "build_dataset_manifest",
     "compare_deployment_coverage", "detect_duplicates", "detect_atomic_overlap",
     "build_data_coverage_report",
 )

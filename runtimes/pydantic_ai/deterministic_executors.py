@@ -162,6 +162,104 @@ def validate_label_preservation(proposal) -> dict:
     return _write(result, p.get("out_path"))
 
 
+def validate_species_mapping_consistency(proposal) -> dict:
+    """Expose the concrete element/species -> 0-based model-type-index mapping recorded in a
+    Teacher labeling manifest's ``species_mapping_evidence`` and DETERMINISTICALLY confirm it is
+    internally consistent across every independently-sourced mapping the labeling run already
+    recorded -- the declared Teacher config (``declared_chemical_symbols``), the constructed
+    calculator's own runtime state, and the compiled model's embedded metadata -- reusing the same
+    ``adapters.teacher`` cross-check primitives ``label_with_teacher`` itself used, so no new
+    species-mapping science is invented here. Fails closed (``_ValidationFailure`` /
+    ``SpeciesMappingConflictError``) when the mapping is not attested or any two sources disagree.
+
+    Optional ``teacher_config``: an INDEPENDENT fourth source read fresh off disk. When supplied,
+    its sha256 must match the manifest's recorded ``teacher_config_sha256`` (else fail closed), and
+    its declared ``calculator.kwargs.chemical_symbols`` are re-derived into a mapping and
+    cross-checked against the manifest's runtime/compiled maps -- validating the manifest against the
+    hashed active Teacher configuration rather than trusting the manifest's own self-report.
+
+    Parameters: ``manifest_path`` (required); optional ``teacher_config``,
+    ``expected_manifest_sha256``, ``out_path``.
+    """
+    from adapters.teacher import (
+        _cross_check_species_mappings, _ordered_symbols_to_type_map,
+        species_mapping_is_attested)
+    from workflow.integrity import sha256_file
+    p = _p(proposal)
+    manifest_path = Path(p["manifest_path"])
+    manifest_sha256 = sha256_file(manifest_path)
+    expected_manifest_sha256 = p.get("expected_manifest_sha256")
+    if expected_manifest_sha256 is not None and manifest_sha256 != expected_manifest_sha256:
+        raise _ValidationFailure(json.dumps({
+            "ok": False, "reason": "manifest_sha256_mismatch",
+            "manifest_path": str(manifest_path), "manifest_sha256": manifest_sha256,
+            "expected_manifest_sha256": expected_manifest_sha256}))
+    manifest = json.loads(manifest_path.read_text())
+    evidence = manifest.get("species_mapping_evidence")
+    if not isinstance(evidence, dict):
+        raise _ValidationFailure(json.dumps({
+            "ok": False, "reason": "manifest_has_no_species_mapping_evidence",
+            "manifest_path": str(manifest_path)}))
+
+    declared_symbols = evidence.get("declared_chemical_symbols")
+    declared_map = _ordered_symbols_to_type_map(declared_symbols) if declared_symbols else None
+    runtime_map = evidence.get("runtime_chemical_species_to_atom_type_map")
+    compiled_map = evidence.get("compiled_model_type_names_map")
+
+    config_binding = None
+    if p.get("teacher_config") is not None:
+        import yaml
+        config_path = Path(p["teacher_config"])
+        config_sha256 = sha256_file(config_path)
+        manifest_config_sha256 = manifest.get("teacher_config_sha256")
+        if manifest_config_sha256 is not None and config_sha256 != manifest_config_sha256:
+            raise _ValidationFailure(json.dumps({
+                "ok": False, "reason": "teacher_config_sha256_mismatch",
+                "teacher_config": str(config_path), "teacher_config_sha256": config_sha256,
+                "manifest_teacher_config_sha256": manifest_config_sha256}))
+        cfg = yaml.safe_load(config_path.read_text()) or {}
+        cfg_symbols = (((cfg.get("calculator") or {}).get("kwargs") or {})
+                       .get("chemical_symbols"))
+        config_map = _ordered_symbols_to_type_map(cfg_symbols) if cfg_symbols else None
+        config_binding = {"teacher_config": str(config_path.resolve()),
+                          "teacher_config_sha256": config_sha256,
+                          "sha256_matches_manifest": manifest_config_sha256 is None
+                          or config_sha256 == manifest_config_sha256,
+                          "declared_chemical_symbols": cfg_symbols,
+                          "config_species_to_type_index_map": config_map}
+    else:
+        config_map = None
+
+    # Fail closed on any disagreement among the independently-sourced mappings (declared config,
+    # constructed-calculator runtime, compiled-model metadata, and the fresh on-disk config when
+    # supplied). Raises adapters.teacher.SpeciesMappingConflictError on conflict.
+    sources = {"declared_config": declared_map,
+               "constructed_calculator_runtime": runtime_map,
+               "compiled_model_metadata": compiled_map,
+               "reread_teacher_config": config_map}
+    _cross_check_species_mappings(sources)
+
+    attested = species_mapping_is_attested(evidence)
+    exposed_map = runtime_map or declared_map or compiled_map or config_map
+    result = {
+        "ok": bool(attested),
+        "manifest_path": str(manifest_path.resolve()),
+        "manifest_sha256": manifest_sha256,
+        "species_to_type_index_map": exposed_map,
+        "declared_config_map": declared_map,
+        "runtime_map": runtime_map,
+        "compiled_model_map": compiled_map,
+        "attested": bool(attested),
+        "fallback_applied": bool(evidence.get("fallback_applied")),
+        "sources_cross_checked": sorted(name for name, m in sources.items() if m),
+        "teacher_config_binding": config_binding,
+    }
+    if not attested:
+        result["reason"] = "species_mapping_not_attested"
+        raise _ValidationFailure(json.dumps(result))
+    return _write(result, p.get("out_path"))
+
+
 def sample_seed_pool(proposal) -> dict:
     """Deterministic seed-pool selection policy v1 (no new scientific sampling method):
     seeded shuffle of an id-sorted frame list, selecting ``count`` frames, deduplicated, with

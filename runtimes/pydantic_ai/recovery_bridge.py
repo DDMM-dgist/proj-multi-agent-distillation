@@ -276,6 +276,7 @@ def validate_recovery_plan_proposal(proposal: RecoveryPlanProposal, *, expected_
                                     return_stage_route_action=None,
                                     return_stage_route_parameters=None,
                                     return_stage_replans=None,
+                                    action_required_parameters=None,
                                     ) -> RecoveryPlanProposal:
     """Contextual, fail-closed validation beyond Pydantic shape (mirrors
     ``root_cause.validate_root_cause_classification``'s role for ``RootCauseClassification``).
@@ -350,6 +351,31 @@ def validate_recovery_plan_proposal(proposal: RecoveryPlanProposal, *, expected_
                 f"corrective_action.action_type {proposal.corrective_action.action_type!r} is not "
                 f"an action {role!r} (the role responsible for capability {proposal.capability!r}) "
                 f"may dispatch -- allowed: {sorted(allowed)}")
+        # FE-049: reject a corrective_action whose parameters would make its deterministic executor
+        # raise KeyError at dispatch, BEFORE a human approves it. ``action_required_parameters`` is
+        # a caller-computed dict {action_type: frozenset(required_param_names)} single-sourced from
+        # the executor registry's input_contract (cli passes it; None entry / omitted => unvalidated,
+        # i.e. no parseable parameter contract, so nothing is failed closed spuriously). Mirrors
+        # _dispatch_recovery_corrective_action's parameter assembly exactly: the return stage's own
+        # route parameters are merged in ONLY when the corrective action re-runs that stage's OWN
+        # route action (same action_type); a DIFFERENT action_type receives only the plan-supplied
+        # parameters, so every required parameter must be present there.
+        if action_required_parameters:
+            required = action_required_parameters.get(proposal.corrective_action.action_type)
+            if required:
+                provided = set(proposal.corrective_action.parameters or {})
+                if (proposal.corrective_action.action_type == return_stage_route_action
+                        and return_stage_route_parameters):
+                    provided |= set(return_stage_route_parameters)
+                missing = sorted(set(required) - provided)
+                if missing:
+                    raise RecoveryPlanValidationError(
+                        f"corrective_action {proposal.corrective_action.action_type!r} is missing "
+                        f"required parameter(s) {missing} its deterministic executor consumes -- "
+                        "dispatching it would fail with a KeyError before any artifact is produced. "
+                        f"Supply {missing} in corrective_action.parameters (a corrective action whose "
+                        "action_type differs from the return stage's route action does not inherit "
+                        "that stage's route parameters, so it must name every input it needs).")
     if not (dft_comparison_evidence_present and gate_alleges_accuracy_disagreement):
         unsupported = []
         if proposal.labeling.new_dft:

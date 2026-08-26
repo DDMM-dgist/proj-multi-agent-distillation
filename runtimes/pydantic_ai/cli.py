@@ -2937,6 +2937,7 @@ def _propose_recovery_via_reasoning_roles(controller, *, runtime, agent_specs_di
     from .recovery_bridge import (validate_recovery_plan_proposal,
                                   build_recovery_plan_draft_from_proposal,
                                   valid_corrective_actions_by_capability)
+    from .executors import required_parameters_for_action
     from .orchestrator_bridge import OrchestratorActionProposal, dispatch_orchestrator_action
     from workflow.controller import DEFAULT_RECOVERY_CAPABILITY_ROSTER
 
@@ -2973,6 +2974,19 @@ def _propose_recovery_via_reasoning_roles(controller, *, runtime, agent_specs_di
     gate_alleges_accuracy_disagreement = _gate_alleges_accuracy_disagreement(gate_vote_bundle)
     available_artifacts = {a["path"] for a in c.state["artifacts"]}
     roster = c.state.get("recovery_capability_roster") or DEFAULT_RECOVERY_CAPABILITY_ROSTER
+    # FE-049: the required top-level parameters each dispatchable corrective action's deterministic
+    # executor consumes, single-sourced from the executor registry's input_contract. Surfaced to the
+    # Orchestrator's context (so a well-behaved model supplies them) AND enforced at acceptance by
+    # validate_recovery_plan_proposal (so a model that ignores the context still fails closed before
+    # a human approves an undispatchable plan). None entries are actions with no parseable parameter
+    # contract (HPC/interface/reasoning) -- surfaced/enforced only where a real requirement exists.
+    action_required_parameters = {
+        action: required_parameters_for_action(action)
+        for actions in valid_corrective_actions_by_capability(roster).values()
+        for action in actions}
+    action_required_parameters_context = {
+        action: sorted(required)
+        for action, required in action_required_parameters.items() if required}
     exchange = Path(exchange_dir) if exchange_dir else c.run_dir / "exchange"
     specs = load_agent_specs(agent_specs_dir)
 
@@ -3090,6 +3104,11 @@ def _propose_recovery_via_reasoning_roles(controller, *, runtime, agent_specs_di
                        "{...}} with action_type one of "
                        "context.valid_actions_by_capability[capability]; omit corrective_action "
                        "entirely if no registered action applies",
+                       "corrective_action.parameters MUST include every parameter listed in "
+                       "context.action_required_parameters[action_type] (if present there) -- a "
+                       "corrective action whose action_type differs from the return stage's own "
+                       "route action does not inherit that stage's parameters, so name every input "
+                       "path it needs (e.g. manifest_path); a missing required parameter is rejected",
                        "if context.dft_comparison_evidence_present is false, do not set "
                        "labeling.new_dft, labeling.teacher_relabel, or student_training.retrain -- "
                        "the failed stage's own evidence contains no Teacher-vs-DFT comparison, so "
@@ -3106,6 +3125,7 @@ def _propose_recovery_via_reasoning_roles(controller, *, runtime, agent_specs_di
                    "diagnosis_artifact_sha256": diagnosis_sha256,
                    "valid_capabilities": sorted(roster), "valid_stage_names": sorted(stage_names),
                    "valid_actions_by_capability": valid_corrective_actions_by_capability(roster),
+                   "action_required_parameters": action_required_parameters_context,
                    "dft_comparison_evidence_present": dft_comparison_evidence_present,
                    "gate_alleges_accuracy_disagreement": gate_alleges_accuracy_disagreement,
                    "gate_votes": [
@@ -3146,7 +3166,8 @@ def _propose_recovery_via_reasoning_roles(controller, *, runtime, agent_specs_di
             gate_alleges_accuracy_disagreement=gate_alleges_accuracy_disagreement,
             return_stage_route_action=c._stage_route_action(return_stage),
             return_stage_route_parameters=c._stage_route_parameters(return_stage),
-            return_stage_replans=c._return_stage_replans_on_recovery(return_stage))
+            return_stage_replans=c._return_stage_replans_on_recovery(return_stage),
+            action_required_parameters=action_required_parameters)
 
     emitter.emit("role_invocation_started", stage=failed_stage, role="orchestrator",
                 action="recovery_plan_proposal")

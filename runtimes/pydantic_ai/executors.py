@@ -2790,6 +2790,11 @@ BINDINGS: dict[str, ExecutorBinding] = {b.action_type: b for b in [
            "ase.io.read + acquisition.validate_lineage", "labeled_path[,n_source_frames]",
            "label-preservation report", de.validate_label_preservation,
            validator="artifact completeness"),
+    _ready("validate_species_mapping_consistency", "data-curator",
+           "adapters.teacher species-mapping cross-check",
+           "manifest_path[,teacher_config,expected_manifest_sha256,out_path]",
+           "species-mapping consistency evidence", de.validate_species_mapping_consistency,
+           validator="adapters.teacher species mapping attestation + cross-check"),
     _ready("build_dataset_manifest", "data-curator", "workflow.integrity.artifact_digest",
            "dataset[,manifest_path]", "hash-bound dataset manifest", de.build_dataset_manifest),
     _ready("compare_deployment_coverage", "data-curator",
@@ -2910,6 +2915,29 @@ BINDINGS: dict[str, ExecutorBinding] = {b.action_type: b for b in [
            "run summary report (schema_version=1, hash-bound to Controller state)",
            _exec_generate_run_summary, validator="validation.run_summary.validate_run_summary_report"),
 ]}
+
+
+def required_parameters_for_action(action_type: str) -> Optional[frozenset]:
+    """The top-level ``parameters`` keys a deterministic READY executor unconditionally reads,
+    parsed single-source from that action's ``input_contract`` (``"req1,req2[,opt1,opt2]"`` --
+    tokens before the optional ``[...]`` group are required, tokens inside it are optional). Used
+    by recovery-plan acceptance validation to reject a corrective_action whose parameters would
+    make its executor raise ``KeyError`` at dispatch, BEFORE a human approves it.
+
+    Returns ``None`` (meaning "no parseable parameter contract -- do not fail closed on this")
+    for any action that is not a real deterministic READY executor (HPC/interface/reasoning
+    bindings, no ``fn``) or whose contract is free-text rather than a comma-separated parameter
+    list -- so this never manufactures a spurious requirement it cannot actually prove.
+    """
+    b = BINDINGS.get(action_type)
+    if b is None or b.fn is None or b.status != "READY_EXECUTOR":
+        return None
+    contract = (b.input_contract or "").strip()
+    required_part = contract.split("[", 1)[0]
+    tokens = [t.strip() for t in required_part.split(",") if t.strip()]
+    if not tokens or any((" " in t or not t.replace("_", "").isalnum()) for t in tokens):
+        return None  # free-text contract, not a parameter list
+    return frozenset(tokens)
 
 
 def build_executor_registry() -> dict:
