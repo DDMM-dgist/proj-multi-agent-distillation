@@ -3350,6 +3350,21 @@ def _dispatch_recovery_corrective_action(controller, trigger, recovery, correcti
         params.update(corrective_params)
     else:
         params = corrective_params
+    # FE-052: a distinct_evidence_artifact corrective MUST materialize a NEW run-local artifact so
+    # verify_recovery_execution detects a change at the return stage (see FE-050). The evidence
+    # executors that satisfy this recovery class (e.g. validate_species_mapping_consistency) write
+    # their report only to an OPTIONAL ``out_path``; because it is optional it is absent from the
+    # executor's REQUIRED-parameter contract, so FE-049's acceptance-time param check does not force
+    # it and an approved plan legitimately may omit it (the LLM proposed only ``manifest_path``).
+    # When it is missing, inject a deterministic, collision-free, run-local ``out_path`` BEFORE
+    # dispatch so the executor materializes its distinct evidence deterministically -- no LLM path
+    # authoring, no stage/action/material-specific knowledge. A no-op when the plan already supplied
+    # ``out_path`` or the recovery is not distinct-evidence.
+    if (recovery.get("materialization_transition") == "distinct_evidence_artifact"
+            and not params.get("out_path")):
+        params["out_path"] = str(
+            c.run_dir / "artifacts"
+            / f"{corrective_action['action_type']}.recovery-{recovery['id']:03d}.evidence.json")
     proposal = {
         "run_id": c.state["run_id"], "stage": return_stage,
         "requested_by_role": role, "action_type": corrective_action["action_type"],

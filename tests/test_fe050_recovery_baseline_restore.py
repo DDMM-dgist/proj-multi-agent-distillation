@@ -248,6 +248,61 @@ class Fe050DistinctEvidenceRestoreTests(_Fe050Fixture):
         self.assertEqual(observed["read_sha"], self.labeled_baseline_sha)
         self.assertEqual(c2.stage("labeling")["status"], "completed")
 
+    def test_8_out_path_injected_when_plan_omits_it(self):
+        # FE-052: a distinct_evidence_artifact corrective must materialize a NEW run-local artifact,
+        # but out_path is OPTIONAL in the executor contract so FE-049 does not force it and an
+        # approved plan may omit it (the live eng6 blocker: the LLM proposed only manifest_path).
+        # The dispatch injects a deterministic run-local out_path BEFORE dispatch so the executor
+        # writes its distinct evidence there and the recovery materializes.
+        c = self._staged_controller()
+        self._drive_to_started_recovery(c, corrective_parameters={"manifest_path": "m.json"})
+        recovery = c.state["recoveries"][-1]
+        self.assertEqual(recovery["materialization_transition"], "distinct_evidence_artifact")
+        self.assertNotIn(
+            "out_path",
+            recovery["plan"]["recovery_context"]["corrective_action"]["parameters"])
+
+        run_dir = c.run_dir
+        seen = {}
+
+        def out_path_honoring_executor(proposal):
+            params = proposal["parameters"] if isinstance(proposal, dict) else proposal.parameters
+            seen["out_path"] = params.get("out_path")
+            # Honors out_path exactly like deterministic_executors._write; returns NO path itself so
+            # success depends entirely on the INJECTED params["out_path"] being present + written.
+            out = Path(params["out_path"])
+            out.parent.mkdir(parents=True, exist_ok=True)
+            out.write_text(json.dumps({"ok": True, "attested": True}))
+            return {"metrics": {"ok": True}}
+
+        c2, result = self._dispatch(c, self._corrective_registry(out_path_honoring_executor))
+        self.assertIsNone(result, getattr(result, "message", None))
+        # The injected out_path is deterministic, run-local, and collision-free per recovery id.
+        expected = (run_dir / "artifacts"
+                    / f"{CORRECTIVE_ACTION}.recovery-{recovery['id']:03d}.evidence.json")
+        self.assertEqual(Path(seen["out_path"]), expected)
+        self.assertTrue(expected.exists())
+
+        c3 = RunController(c.run_dir)
+        labeling_paths = {Path(a["path"]).name for a in c3.stage_artifacts("labeling")}
+        self.assertEqual(labeling_paths, {"labeled.json", expected.name})
+
+    def test_9_injected_out_path_does_not_override_plan_supplied(self):
+        # FE-052 is a no-op when the plan already supplied out_path: the plan's value wins.
+        c = self._staged_controller()
+        self._drive_to_started_recovery(
+            c, corrective_parameters={"out_path": "artifacts/species_mapping.report.json"})
+        seen = {}
+
+        def executor(proposal):
+            params = proposal["parameters"] if isinstance(proposal, dict) else proposal.parameters
+            seen["out_path"] = params.get("out_path")
+            return self._species_report_executor()(proposal)
+
+        c2, result = self._dispatch(c, self._corrective_registry(executor))
+        self.assertIsNone(result, getattr(result, "message", None))
+        self.assertEqual(seen["out_path"], "artifacts/species_mapping.report.json")
+
     def test_6_non_distinct_recovery_does_not_restore(self):
         # A recovery NOT classified distinct_evidence_artifact must take the original path: no
         # baseline restore, so if its corrective does not itself reproduce the declared output the
