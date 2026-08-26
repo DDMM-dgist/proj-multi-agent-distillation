@@ -598,18 +598,26 @@ class FrameworkDefaultAcquisitionProvider:
     def _compose_cumulative_coverage_selection(self, *, vectors, item_ids, eligible_positions,
                                                knee_k, fe046):
         """Compose the FE-046 coverage-gap reacquisition selection as
-        ``cumulative_prior_accepted + per_unsupported_class_floor + fps_topup_to_knee``.
+        ``cumulative_prior_accepted + per_unsupported_class_local_saturation + optional_fps_topup``.
 
         Returns ``(ordered_local_indices, composition_provenance)`` where the indices are into the
         eligible-subset ``item_ids``/``vectors``. The composed set is a SUPERSET of the cumulative
-        prior-accepted frames plus one frame per still-uncovered unsupported class, so coverage is
-        monotonic by construction (an accepted frame is never dropped, a covered class never lost)."""
+        prior-accepted frames plus, for every still-uncovered unsupported class, a DOMAIN-LOCAL
+        population sized by that class's OWN farthest-point marginal-novelty saturation knee -- so
+        coverage is monotonic by construction (an accepted frame is never dropped, a covered class
+        never lost) AND each class's added N is determined by its own within-class diversity
+        saturation, never a fixed per-class quota. Presence (Stage-4 occupancy>0) and adequacy
+        (class-local novelty saturation) are kept separate: a class becomes PRESENT at its first
+        selected frame, but its recovery acquisition continues until its own class-local knee
+        terminates."""
         from validation.coverage_gap_assessment import resolve_config_type_domain
 
         label_index = fe046["label_index"]
         unsupported = fe046["unsupported"]
         floor_targets = fe046["floor_targets"]
         prior_globals = fe046["prior_accepted_globals"]
+        coverage_gap_sha256 = fe046.get("coverage_gap_sha256", "fe046-classlocal")
+        sizing_id_prefix = fe046.get("sizing_id_prefix", "fe046")
 
         local_of_global = {g: i for i, g in enumerate(eligible_positions)}
 
@@ -640,34 +648,61 @@ class FrameworkDefaultAcquisitionProvider:
             if dom is not None:
                 covered.add(dom)
 
-        # (b) per-class occupancy FLOOR: add the most marginally-novel eligible frame from each
-        #     still-uncovered unsupported class's target families.
-        floor_added: dict[str, int] = {}
+        # (b) per-class DOMAIN-LOCAL autonomous sizing: for each still-uncovered unsupported class,
+        #     build that class's OWN candidate population (its admissible source families, minus
+        #     protected frames -- already excluded from item_ids -- and already-acquired frames), then
+        #     run the SAME generic FPS marginal-novelty saturation sizer WITHIN THAT CLASS ONLY. The
+        #     class-local knee determines how many NEW frames that class contributes: presence
+        #     (occupancy>0) is achieved at the first pick, but acquisition continues until the class's
+        #     own diversity saturates. No fixed per-class quota, no human N -- a large/diverse class
+        #     pool yields more than one frame; a descriptor-degenerate one yields exactly one.
+        domain_local_added_by_class: dict[str, int] = {}
+        floor_added: dict[str, int] = {}  # first pick per class (back-compat / presence marker)
         sel_set = set(selected)
         for c in unsupported:
             if c in covered:
                 continue
             fams = set(floor_targets.get(c, []))
-            pool = [loc for loc in range(len(item_ids))
-                    if loc not in sel_set and self._source_category_of(item_ids[loc]) in fams]
-            if not pool:
+            class_local_positions = [
+                loc for loc in range(len(item_ids))
+                if loc not in sel_set and self._source_category_of(item_ids[loc]) in fams]
+            if not class_local_positions:
                 raise AcquisitionCapabilityGap(
-                    f"FE-046 occupancy floor cannot cover declared class {c!r}: no eligible "
+                    f"FE-046 domain-local sizing cannot cover declared class {c!r}: no eligible "
                     "non-protected frame remains in its target families; failing closed",
                     gap_kind="POOL_LACKS_STRUCTURE_CLASS")
-            pick = self._marginal_novelty_topup(
-                vectors, selected, len(selected) + 1, candidate_pool=pool)[-1]
-            selected.append(pick)
-            sel_set.add(pick)
-            floor_added[c] = pick
+            class_vectors = [vectors[loc] for loc in class_local_positions]
+            class_sizing = recommend_labeling_population_sizing(
+                class_vectors, params=FrameworkSizingParams(),
+                sizing_id=f"{sizing_id_prefix}-classlocal-{c}",
+                coverage_gap_sha256=coverage_gap_sha256, protected_excluded_count=0,
+                target_labeled_population=None, max_teacher_label_calls=None)
+            class_k = int(class_sizing.recommended_population_size)
+            class_picks = [class_local_positions[j]
+                           for j in class_sizing.selected_positions[:class_k]]
+            added = 0
+            for pick in class_picks:
+                if pick in sel_set:
+                    continue
+                selected.append(pick)
+                sel_set.add(pick)
+                if added == 0:
+                    floor_added[c] = pick
+                added += 1
+            domain_local_added_by_class[c] = added
             covered.add(c)
 
-        # (c) FPS TOP-UP to the novelty knee (size can only grow; never below the cumulative+floor
-        #     core -- so a shrinking knee can never force an accepted frame or a covered class out).
+        # (c) OPTIONAL SECONDARY global FPS top-up to the pool-wide novelty knee. This runs ONLY
+        #     AFTER every unsupported class has independently satisfied its class-local sizing, and
+        #     never substitutes for it: size can only grow (never below the cumulative+domain-local
+        #     core), so a shrinking global knee can never force an accepted frame or a covered class
+        #     out.
         selected = self._marginal_novelty_topup(vectors, selected, max(int(knee_k), len(selected)))
 
         composition = {
             "cumulative_prior_accepted": len(prior_local),
+            "domain_local_added_by_class": dict(sorted(domain_local_added_by_class.items())),
+            "n_domain_local_frames": sum(domain_local_added_by_class.values()),
             "floor_added_classes": sorted(floor_added),
             "n_floor_added": len(floor_added),
             "knee_k": int(knee_k),
@@ -804,6 +839,8 @@ class FrameworkDefaultAcquisitionProvider:
                 "floor_targets": floor_targets,
                 "prior_accepted_globals": prior_accepted_globals,
                 "label_index": _build_label_index(label_map),
+                "coverage_gap_sha256": m.coverage.content_sha256(),
+                "sizing_id_prefix": f"{m.frozen_artifact.evidence_id}-fe046",
             }
 
         admissible_positions = [

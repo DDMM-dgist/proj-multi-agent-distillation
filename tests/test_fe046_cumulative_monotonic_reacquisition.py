@@ -326,3 +326,170 @@ class TestRecoveryProgressGate:
         cur = {"report_sha256": "sha2", "unsupported_structure_classes": ["a", "b"]}
         events = [self._gate("sha1", ["a", "b", "c"]), self._gate("sha2", ["a", "b"])]
         assert self._run(events, cur) is None
+
+
+# ================================= Class F -- FE-046 AMENDMENT: domain-local autonomous sizing
+# The remediation for an unsupported class is NOT one guaranteed frame + a global top-up. For every
+# still-uncovered unsupported class we build that class's OWN candidate population (its admissible
+# source families, protected+already-acquired frames excluded) and run the SAME generic FPS
+# marginal-novelty saturation sizer WITHIN THAT CLASS ONLY. The class-local knee -- never a human N,
+# never a fixed per-class quota -- decides how many NEW frames that class contributes. Presence
+# (occupancy>0) is reached at the first pick; acquisition continues until the class's own diversity
+# saturates. These tests prove: a diverse pool yields >1, classes size independently and can differ,
+# the count is data-driven (not a constant), and the FE-046 cumulative/monotonic invariants hold.
+def _compose(prov, *, item_ids, vectors, prior_globals, unsupported, floor_targets, label_map,
+             knee_k=1):
+    """Run _compose_cumulative_coverage_selection over an explicit eligible-subset fixture
+    (locals 0..n-1 at globals 10..10+n-1). ``knee_k=1`` neutralizes the OPTIONAL secondary global
+    top-up (max(knee_k, len)=len) so the assertions isolate the DOMAIN-LOCAL additions."""
+    eligible_positions = [10 + i for i in range(len(item_ids))]
+    fe046 = {
+        "unsupported": list(unsupported), "floor_targets": dict(floor_targets),
+        "prior_accepted_globals": set(prior_globals),
+        "label_index": build_label_index(label_map),
+        "coverage_gap_sha256": "sha-test", "sizing_id_prefix": "fe046-test"}
+    return prov._compose_cumulative_coverage_selection(
+        vectors=vectors, item_ids=item_ids, eligible_positions=eligible_positions,
+        knee_k=knee_k, fe046=fe046)
+
+
+class TestDomainLocalAutonomousSizing:
+    # A hermetic fixture: 2 prior bulk_cryst frames (cover bulk_crystalline_SiO2) + three unsupported
+    # classes with DIFFERENT class-local geometries:
+    #   liquid  -> [0,100,101,102]  (diverse; class-local knee k=2)
+    #   vacancy -> [7,7,7]          (descriptor-degenerate; k=1 -- presence, no over-sampling)
+    #   bulk_amo-> [3,4]            (only 2 candidates; conservative fallback k=2)
+    ITEM_IDS = [
+        "bulk_cryst#0", "bulk_cryst#1",
+        "liquid#0", "liquid#1", "liquid#2", "liquid#3",
+        "vacancy#0", "vacancy#1", "vacancy#2",
+        "bulk_amo#0", "bulk_amo#1"]
+    VECTORS = [[0.0], [0.5],
+               [0.0], [100.0], [101.0], [102.0],
+               [7.0], [7.0], [7.0],
+               [3.0], [4.0]]
+    UNSUPPORTED = ["liquid_or_melt_SiO2", "oxygen_vacancy_SiO2", "amorphous_bulk_SiO2"]
+    FLOOR = {"liquid_or_melt_SiO2": ["liquid"],
+             "oxygen_vacancy_SiO2": ["vacancy"],
+             "amorphous_bulk_SiO2": ["bulk_amo"]}
+    PRIOR = (10, 11)
+
+    def _run(self, **over):
+        prov = _provider()
+        kw = dict(item_ids=self.ITEM_IDS, vectors=self.VECTORS, prior_globals=self.PRIOR,
+                  unsupported=self.UNSUPPORTED, floor_targets=self.FLOOR, label_map=_label_map())
+        kw.update(over)
+        return _compose(prov, **kw)
+
+    def test_A_diverse_class_pool_is_not_limited_to_one_frame(self):
+        selected, comp = self._run()
+        # liquid has a diverse 4-frame pool: its class-local knee selects TWO frames, not one.
+        assert comp["domain_local_added_by_class"]["liquid_or_melt_SiO2"] == 2
+        # both liquid picks (locals 2 and 5, the FPS endpoints) are present
+        assert {2, 5}.issubset(set(selected))
+
+    def test_B_classes_autonomously_produce_different_additional_N(self):
+        _, comp = self._run()
+        by_class = comp["domain_local_added_by_class"]
+        assert by_class["liquid_or_melt_SiO2"] == 2      # diverse -> knee 2
+        assert by_class["oxygen_vacancy_SiO2"] == 1      # degenerate -> presence only
+        assert by_class["amorphous_bulk_SiO2"] == 2      # 2 candidates -> fallback full
+        # the per-class N genuinely differs (not one uniform number)
+        assert len(set(by_class.values())) > 1
+
+    def test_C_class_local_sizing_is_independent_across_classes(self):
+        _, base = self._run()
+        base_vac = base["domain_local_added_by_class"]["oxygen_vacancy_SiO2"]
+        base_liq = base["domain_local_added_by_class"]["liquid_or_melt_SiO2"]
+        # Diversify ONLY the liquid pool ([0,100,200,201,202] -> class-local knee 3); leave vacancy
+        # untouched. vacancy's autonomous N must be unchanged -> its sizing depends on its own pool.
+        item_ids = ["bulk_cryst#0", "bulk_cryst#1",
+                    "liquid#0", "liquid#1", "liquid#2", "liquid#3", "liquid#4",
+                    "vacancy#0", "vacancy#1", "vacancy#2",
+                    "bulk_amo#0", "bulk_amo#1"]
+        vectors = [[0.0], [0.5],
+                   [0.0], [100.0], [200.0], [201.0], [202.0],
+                   [7.0], [7.0], [7.0],
+                   [3.0], [4.0]]
+        _, alt = self._run(item_ids=item_ids, vectors=vectors)
+        assert alt["domain_local_added_by_class"]["liquid_or_melt_SiO2"] == 3  # changed
+        assert alt["domain_local_added_by_class"]["oxygen_vacancy_SiO2"] == base_vac  # unchanged
+        assert base_liq == 2 and base_vac == 1
+
+    def test_D_count_is_data_driven_not_a_fixed_per_class_quota(self):
+        # SAME class, two different diverse pools -> two different autonomous N (2 vs 3): the count is
+        # produced by the class-local knee, never a hard-coded per-class number.
+        prov = _provider()
+        base_ids = ["bulk_cryst#0", "bulk_cryst#1"]
+        base_vec = [[0.0], [0.5]]
+        lm = _label_map()
+        _, c4 = _compose(
+            prov, item_ids=base_ids + ["liquid#0", "liquid#1", "liquid#2", "liquid#3"],
+            vectors=base_vec + [[0.0], [100.0], [101.0], [102.0]],
+            prior_globals=(10, 11), unsupported=["liquid_or_melt_SiO2"],
+            floor_targets={"liquid_or_melt_SiO2": ["liquid"]}, label_map=lm)
+        _, c5 = _compose(
+            prov, item_ids=base_ids + ["liquid#0", "liquid#1", "liquid#2", "liquid#3", "liquid#4"],
+            vectors=base_vec + [[0.0], [100.0], [200.0], [201.0], [202.0]],
+            prior_globals=(10, 11), unsupported=["liquid_or_melt_SiO2"],
+            floor_targets={"liquid_or_melt_SiO2": ["liquid"]}, label_map=lm)
+        assert c4["domain_local_added_by_class"]["liquid_or_melt_SiO2"] == 2
+        assert c5["domain_local_added_by_class"]["liquid_or_melt_SiO2"] == 3
+
+    def test_E_fe046_cumulative_and_monotonic_invariants_intact(self):
+        selected, comp = self._run()
+        # (1) cumulative core (prior-accepted locals 0,1) is never dropped
+        assert {0, 1}.issubset(set(selected))
+        assert comp["cumulative_prior_accepted"] == 2
+        # (2) every unsupported class is now covered (occupancy>=1 for each)
+        cats = {self.ITEM_IDS[i].rsplit("#", 1)[0] for i in selected}
+        assert {"liquid", "vacancy", "bulk_amo"}.issubset(cats)
+        # (3) the optional global top-up only GROWS the set, never below the domain-local core
+        core = set(selected)
+        grown, _ = self._run(knee_k=len(self.ITEM_IDS))
+        assert core.issubset(set(grown))
+        # provenance keeps FE-046 back-compat fields alongside the new per-class breakdown
+        assert comp["n_domain_local_frames"] == sum(
+            comp["domain_local_added_by_class"].values())
+        assert comp["n_floor_added"] == 3  # one presence marker per newly-covered class
+
+    def test_F_ffv4t_eng2_gap_classes_get_multiframe_domain_local_populations(self):
+        # Faithful fixture for the REAL ffv4t-eng2 coverage gap: the three still-unsupported declared
+        # classes and their PRIMARY-claim source families + representative pool sizes (from the frozen
+        # deployment_scope_v2 label_map and the sanitized_pool manifest). Descriptors are STRUCTURED
+        # synthetic (per-family clusters separated by 1000, unit grid within) -- a stand-in for the
+        # real material descriptors, which are only available by running the descriptor plugin over
+        # ~11k frames at eng3. The point proven here is structural: each gap class receives a
+        # data-driven multi-frame domain-local population sized by its OWN pool, NOT exactly one frame
+        # by construction. Real run-time counts will emerge from the real descriptor knee at eng3.
+        real_families = {
+            "liquid_or_melt_SiO2": [("liquid", 313)],
+            "oxygen_vacancy_SiO2": [("vacancy", 278), ("vacancy_int_AL", 780)],
+            "condensed_pure_Si_boundary": [
+                ("silicon_bulk_amo", 159), ("silicon_crystalline_main", 1257),
+                ("silicon_liquid", 76), ("silicon_surfaces", 214), ("silicon_defects", 423)]}
+        label_map = [{"raw_label": "bulk_cryst", "canonical_domain": "bulk_crystalline_SiO2",
+                      "claim_role": "primary_claim"}]
+        item_ids = ["bulk_cryst#0", "bulk_cryst#1"]
+        vectors = [[0.0], [0.5]]
+        floor_targets = {}
+        for cls, fams in real_families.items():
+            floor_targets[cls] = [f for f, _ in fams]
+            for fi, (fam, count) in enumerate(fams):
+                label_map.append({"raw_label": fam, "canonical_domain": cls,
+                                  "claim_role": "primary_claim"})
+                for j in range(count):
+                    item_ids.append(f"{fam}#{j}")
+                    vectors.append([fi * 1000.0 + j])
+        prov = _provider()
+        _, comp = _compose(
+            prov, item_ids=item_ids, vectors=vectors, prior_globals=(10, 11),
+            unsupported=list(real_families), floor_targets=floor_targets, label_map=label_map)
+        by_class = comp["domain_local_added_by_class"]
+        # every gap class gets a MULTI-frame population (never exactly 1 by construction)
+        for cls in real_families:
+            assert by_class[cls] > 1, (cls, by_class)
+        # and the classes are sized INDEPENDENTLY -> distinct autonomous counts on this fixture
+        assert by_class["liquid_or_melt_SiO2"] == 9
+        assert by_class["oxygen_vacancy_SiO2"] == 7
+        assert by_class["condensed_pure_Si_boundary"] == 6
