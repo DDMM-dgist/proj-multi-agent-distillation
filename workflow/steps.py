@@ -212,7 +212,17 @@ def _source_global_offsets_from_reference(reference_yaml):
     cfg = yaml.safe_load(Path(reference_yaml).read_text(encoding="utf-8")) or {}
     rows_path = cfg.get("protected_source_rows_csv")
     if rows_path is None:
-        index_path = Path(cfg["protected_source_rows_file"]).expanduser().resolve()
+        index_file = cfg.get("protected_source_rows_file")
+        if index_file is None:
+            # A protection-only reference kind (e.g. ``protected-structure-identity``) identifies
+            # protection by structure fingerprints + explicit protected source indices, not by a
+            # per-source-row CSV, so there are no category global-index offsets to derive. Base
+            # frames that already carry an explicit ``parent_structure_id`` (the norm) never consult
+            # these offsets; any base frame that DID rely on category+local-index derivation still
+            # fails closed downstream in ``_base_parent_id`` ("no source global-index offset for
+            # category"). Return an empty offset map rather than crashing on the missing key.
+            return {}
+        index_path = Path(index_file).expanduser().resolve()
         rows_path = index_path.with_name("protected_source_rows.csv")
     rows_path = Path(rows_path).expanduser().resolve()
     import csv
