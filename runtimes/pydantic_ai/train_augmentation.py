@@ -63,10 +63,6 @@ def plan_path(run_dir, run_id) -> Path:
     return augmentation_dir(run_dir) / "plans" / f"{run_id}.augmentation_plan.json"
 
 
-def train_pool_manifest_path(run_dir) -> Path:
-    return augmentation_dir(run_dir) / "train_pool" / "train_pool_manifest.json"
-
-
 def final_train_path(run_dir) -> Path:
     # A NEW artifact -- never overwrite the frozen Stage-6 split output ``train.extxyz``.
     return Path(run_dir) / "artifacts" / "dataset" / "final_train.extxyz"
@@ -255,8 +251,10 @@ def build_train_pool_manifest(
         "protected_augmentation_parents_excluded": sorted(excluded_globals),
         "n_protected_excluded": len(excluded_globals),
     }
-    manifest_file = train_pool_manifest_path(out_dir.parent) if out_dir.name == "train_pool" \
-        else out_dir / "train_pool_manifest.json"
+    # The manifest MUST sit beside the parents file: load_pool resolves each category's
+    # ``sanitized_file`` relative to the MANIFEST's own directory (generic_representation.load_pool
+    # -> manifest_dir = manifest_path.parent).
+    manifest_file = out_dir / "train_pool_manifest.json"
     manifest_file.parent.mkdir(parents=True, exist_ok=True)
     manifest_body = json.dumps(manifest, indent=2, sort_keys=True) + "\n"
     manifest_file.write_text(manifest_body)
