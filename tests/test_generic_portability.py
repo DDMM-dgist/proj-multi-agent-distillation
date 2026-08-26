@@ -158,12 +158,14 @@ class GenericPortabilityP6(unittest.TestCase):
         # Admissible parents ARE the pool frame ids (never a human-authored parent list).
         self.assertEqual(len(evidence.admissible_parent_ids), 20)
         self.assertTrue(all("#" in p for p in evidence.admissible_parent_ids))
-        # Generation bounds are the P4 pool-derived envelope bounds (data/physics, not constants).
-        self.assertIn("displacement_sigma_A", evidence.param_bounds)
-        lo, hi = evidence.param_bounds["displacement_sigma_A"]
+        # Generation bounds are the P4 pool-derived envelope bounds (data/physics, not constants):
+        # the cell-strain magnitude is the numerically-bounded augment_atoms recipe knob.
+        self.assertIn("cell_sigma", evidence.param_bounds)
+        lo, hi = evidence.param_bounds["cell_sigma"]
         self.assertEqual(lo, 0.0)
         self.assertGreater(hi, 0.0)
-        self.assertIn("seed", evidence.required_param_keys)
+        for key in ("T_K", "beta", "sigma_range_A", "seed"):
+            self.assertIn(key, evidence.required_param_keys)
         # CORE_TARGET coverage keyed by the scope PRIMARY region id, saturation in [0, 1].
         from framework_v2.acquisition.contracts import RelevanceRole
         from framework_v2.contracts import ScopeCategory
@@ -203,7 +205,7 @@ class GenericPortabilityP6(unittest.TestCase):
         self.assertEqual(fa.inventory_sha256, materialized.inventory.content_sha256())
         self.assertEqual(fa.coverage_gap_sha256, materialized.coverage.content_sha256())
         self.assertEqual(fa.admissible_parent_ids, list(materialized.admissible_parent_ids))
-        self.assertIn("displacement_sigma_A", fa.param_bounds)
+        self.assertIn("cell_sigma", fa.param_bounds)
 
     def test_typed_decisions_are_stable_across_repeated_builds(self):
         from framework_v2.acquisition.generic_provider import (

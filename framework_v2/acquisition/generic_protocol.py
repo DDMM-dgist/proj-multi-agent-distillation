@@ -8,11 +8,11 @@ numbers.
 
 The envelope has two parts, both material-agnostic:
 
-  * INPUT-knob bounds -- for LOCAL_PERTURBATION, the displacement magnitude is bounded by a fraction
-    of the pool's OWN nearest-neighbor spacing (you must not displace atoms by an appreciable
-    fraction of the interatomic distance), and the cell-strain magnitude by a versioned fraction.
-    These are derived from ``mean_min_neighbor_distance_A`` -- a generic feature P1 already computed
-    -- never from an element pair or phase.
+  * INPUT-knob bounds -- for LOCAL_PERTURBATION, the cell-strain magnitude is bounded by a versioned
+    fraction; the displacement sampling range is not numerically bounded from raw structure (it is
+    presence-checked, like the absolute MD temperature) and its physical safety is enforced by the
+    output-admissibility floor below, which is derived from ``mean_min_neighbor_distance_A`` -- a
+    generic feature P1 already computed -- never from an element pair or phase.
 
   * OUTPUT-admissibility bounds -- applied to whatever a backend produces, regardless of how:
     a generated structure is admissible only if its minimum interatomic distance stays above a
@@ -105,23 +105,36 @@ def _output_admissibility(nn_scale: float, params: EnvelopeParams) -> dict[str, 
 def build_perturbation_envelope(
     pool, *, params: EnvelopeParams, envelope_id: str, evidence_ref: str = "",
 ) -> ProtocolEnvelope:
-    """Derive the LOCAL_PERTURBATION envelope from the pool's own nearest-neighbor scale."""
+    """Derive the LOCAL_PERTURBATION envelope from the pool's own nearest-neighbor scale.
+
+    The decision-space knobs are exactly those the ``augment_atoms`` LOCAL_PERTURBATION recipe
+    consumes (``plan_assembly.build_legacy_projection`` /
+    ``generators.local_perturbation.LocalPerturbationGenerator``): the fractional cell-strain
+    magnitude ``cell_sigma`` is numerically bounded by a versioned fraction, while the Metropolis
+    temperature ``T_K``, the acceptance sharpness ``beta`` and the per-structure displacement
+    sampling range ``sigma_range_A`` are NOT numerically derivable from raw structure -- they are
+    presence-checked and recorded as ``unbounded_from_raw_structure`` (the same treatment
+    :func:`build_md_envelope` gives the absolute MD temperature). Physical displacement safety is
+    enforced not at input but by the ``output_admissibility`` floor on the minimum interatomic
+    distance, which DOES scale with the pool nearest-neighbor spacing."""
     nn = _pool_nn_scale(pool)
-    max_disp = params.max_displacement_frac_of_nn * nn
     return ProtocolEnvelope(
         envelope_id=envelope_id,
         strategy_kind=AcquisitionStrategyKind.LOCAL_PERTURBATION,
         params_version=params.version,
         nn_scale_A=nn,
         param_bounds={
-            "displacement_sigma_A": (0.0, max_disp),
-            "cell_strain_frac": (0.0, params.max_cell_strain_frac),
+            "cell_sigma": (0.0, params.max_cell_strain_frac),
         },
-        presence_required_keys=["seed"],
+        presence_required_keys=["T_K", "beta", "sigma_range_A", "seed"],
         output_admissibility=_output_admissibility(nn, params),
+        unbounded_from_raw_structure=["T_K", "beta", "sigma_range_A"],
         evidence_refs=[evidence_ref] if evidence_ref else [],
-        rationale=("displacement bounded by a fraction of the pool nearest-neighbor spacing; "
-                   "generated structures are admissible only within the output bounds"))
+        rationale=("cell-strain magnitude bounded by a versioned fraction; the Metropolis "
+                   "temperature, acceptance sharpness and displacement sampling range are not "
+                   "derivable from raw structure and are presence-checked, with physical "
+                   "displacement safety enforced by the output-admissibility floor on the minimum "
+                   "interatomic distance (which scales with the pool nearest-neighbor spacing)"))
 
 
 def build_md_envelope(

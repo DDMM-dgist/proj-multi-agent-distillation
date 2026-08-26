@@ -43,12 +43,17 @@ class GenericProtocolP4(unittest.TestCase):
 
         self.assertEqual(env.strategy_kind, AcquisitionStrategyKind.LOCAL_PERTURBATION)
         self.assertGreater(env.nn_scale_A, 0.0)
-        lo, hi = env.param_bounds["displacement_sigma_A"]
-        self.assertEqual(lo, 0.0)
-        # The upper bound is EXACTLY the framework fraction of the derived nn scale -- data-derived.
-        self.assertAlmostEqual(hi, params.max_displacement_frac_of_nn * env.nn_scale_A)
-        self.assertEqual(env.param_bounds["cell_strain_frac"], (0.0, params.max_cell_strain_frac))
-        self.assertIn("seed", env.presence_required_keys)
+        # The augment_atoms recipe knobs are the envelope's decision space: cell-strain magnitude is
+        # numerically bounded by a versioned fraction; the Metropolis temperature, acceptance
+        # sharpness and displacement sampling range are presence-checked + recorded unbounded (the
+        # MD-temperature pattern), with physical displacement safety enforced by the output floor.
+        self.assertEqual(env.param_bounds["cell_sigma"], (0.0, params.max_cell_strain_frac))
+        for key in ("T_K", "beta", "sigma_range_A", "seed"):
+            self.assertIn(key, env.presence_required_keys)
+            self.assertIn(key, env.required_param_keys)
+        for key in ("T_K", "beta", "sigma_range_A"):
+            self.assertIn(key, env.unbounded_from_raw_structure)
+            self.assertNotIn(key, env.param_bounds)
         # Output admissibility floor scales with the same nn scale.
         self.assertAlmostEqual(
             env.output_admissibility["min_interatomic_distance_A"],
