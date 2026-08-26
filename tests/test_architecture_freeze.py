@@ -1055,7 +1055,25 @@ FREEZE_REVISION = (
     "runtimes/pydantic_ai/{recovery_bridge,cli,executors,deterministic_executors}.py. No stage set, "
     "gate-vote, recovery-taxonomy, capability-routing, protected-reference, schema_version, "
     "approval-boundary, threshold, or Judge change; every other frozen file, and every other field of "
-    "actions.py, is untouched."
+    "actions.py, is untouched. "
+    "FE-059 (Teacher-physical-validation canonical Stage-2/7/11 integration) re-freezes "
+    "runtimes/pydantic_ai/actions.py: it deliberately grows the role/action-set, ADDING ONE new backed "
+    "simulation action_type, 'build_teacher_physical_validation_target' (a READY, approval-gated "
+    "executor in the NON-frozen runtimes/pydantic_ai/executors.py that, in COMPUTE mode, drives the "
+    "Teacher PES through an MD trajectory and freezes a hash-bound TeacherValidationTarget as a Stage-2 "
+    "declared artifact, or in INGEST mode freezes the same target from an existing Teacher trajectory "
+    "with zero Teacher recomputation), so the canonical reference_validation stage can emit and "
+    "hash-bind the frozen Teacher physical-validation target BEFORE acquisition/training, Stage-7 "
+    "training can fail closed when a required target is absent/invalid, and Stage-11 physical_validation "
+    "can reproduce the Student trajectory and compare it against that exact frozen target via the SAME "
+    "shared observable dispatcher. Added to SIMULATION_ACTIONS and to APPROVAL_GATED_ACTIONS "
+    "('production_md' boundary, never waived); same additive change class as v19/v21/v23/FE-049. The "
+    "rest of the integration -- the Stage-2/7/11 executor wiring, the shared-observable reproduction "
+    "path, and the Stage-7 target-bound guard -- lives entirely in the NON-frozen "
+    "runtimes/pydantic_ai/executors.py plus validation/teacher_physical_validation.py. No stage set, "
+    "gate-vote, recovery-taxonomy, capability-routing, protected-reference, schema_version, "
+    "approval-boundary (existing entries unchanged), threshold, or Judge change; every other frozen "
+    "file, and every other field of actions.py, is untouched."
 )
 FROZEN_MODEL = "qwen2.5-7b-instruct"
 
@@ -1079,7 +1097,7 @@ FROZEN = {
     "runtimes/pydantic_ai/driver.py":
         "db480c20d126b7511e8bbaa4fc2018adb56aa789fabe496ba4f08313379f5939",
     "runtimes/pydantic_ai/actions.py":
-        "e661fcf46cbb9288e92b7785d5282104c60c6885c8552d602e1e42d23e5df88e",
+        "a6e177104877bce0ad3379a380c8da425c67486f75cc465e7ad1ac188ff255aa",
     "runtimes/pydantic_ai/controller_bridge.py":
         "91432692ae394da3b526b9d61b3c6743f34ec74c81f874b04494c96425f7f500",
     "orchestration/specs.py":

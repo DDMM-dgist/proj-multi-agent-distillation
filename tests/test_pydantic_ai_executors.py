@@ -303,7 +303,9 @@ class BackingMatrixTests(unittest.TestCase):
         # (resolve_deployment_checkpoint, build_deployment_context) + 1 FE-049 species-mapping
         # exposure producer (validate_species_mapping_consistency).
         self.assertEqual(counts["READY_EXECUTOR"], 36)
-        self.assertEqual(counts["READY_HPC_APPROVAL_GATED"], 8)
+        # 9: 8 prior HPC producers + the Stage-2 Teacher physical-validation target producer
+        # (build_teacher_physical_validation_target; COMPUTE drives the Teacher PES).
+        self.assertEqual(counts["READY_HPC_APPROVAL_GATED"], 9)
         self.assertEqual(counts["READY_INTERFACE_BACKEND_NOT_CONFIGURED"], 3)
         self.assertEqual(counts["READY_REASONING_OUTPUT"], 1)
         self.assertEqual(counts.get("NOT_IMPLEMENTED", 0), 0)

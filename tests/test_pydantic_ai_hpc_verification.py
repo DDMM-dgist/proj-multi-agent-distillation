@@ -40,6 +40,10 @@ HPC_ACTIONS = {
     "evaluate_heldout_fidelity": "workflow.steps.evaluate_committee",
     "run_teacher_md": "adapters.acquisition.run_teacher_md",
     "run_student_md": "workflow.steps.run_md",
+    # COMPUTE mode drives the Teacher PES; compute_teacher_validation_target is the representative
+    # costly callable (INGEST mode runs no Teacher inference at all).
+    "build_teacher_physical_validation_target":
+        "validation.teacher_physical_validation.compute_teacher_validation_target",
 }
 
 

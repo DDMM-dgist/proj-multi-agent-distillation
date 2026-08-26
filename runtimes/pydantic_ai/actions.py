@@ -110,7 +110,9 @@ ML_TRAINER_ACTIONS = (
     "build_uncertainty_report",
 )
 SIMULATION_ACTIONS = (
-    "build_teacher_baseline", "validate_teacher_reference", "run_teacher_md", "run_student_md", "compute_rdf", "compute_coordination",
+    "build_teacher_baseline", "validate_teacher_reference",
+    "build_teacher_physical_validation_target", "run_teacher_md", "run_student_md",
+    "compute_rdf", "compute_coordination",
     "compute_minimum_distance", "detect_force_spike", "compute_nve_drift",
     "validate_simulation_completion",
     "resolve_deployment_checkpoint", "build_deployment_context",
@@ -137,6 +139,9 @@ APPROVAL_GATED_ACTIONS = {
     "evaluate_heldout_fidelity": "costly_training",
     "run_teacher_md": "production_md",
     "run_student_md": "production_md",
+    # COMPUTE mode drives the Teacher PES under an MD protocol (production dynamics); INGEST mode
+    # runs no Teacher, but the boundary is a per-action-type default and never relaxes production_md.
+    "build_teacher_physical_validation_target": "production_md",
     "submit_scheduler_job": "scheduler_submission",
 }
 
