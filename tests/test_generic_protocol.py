@@ -48,10 +48,13 @@ class GenericProtocolP4(unittest.TestCase):
         # sharpness and displacement sampling range are presence-checked + recorded unbounded (the
         # MD-temperature pattern), with physical displacement safety enforced by the output floor.
         self.assertEqual(env.param_bounds["cell_sigma"], (0.0, params.max_cell_strain_frac))
+        # augment_atoms constrains the acceptance sharpness to the closed unit interval.
+        self.assertEqual(env.param_bounds["beta"], (0.0, 1.0))
         for key in ("T_K", "beta", "sigma_range_A", "seed"):
-            self.assertIn(key, env.presence_required_keys)
             self.assertIn(key, env.required_param_keys)
-        for key in ("T_K", "beta", "sigma_range_A"):
+        for key in ("T_K", "sigma_range_A", "seed"):
+            self.assertIn(key, env.presence_required_keys)
+        for key in ("T_K", "sigma_range_A"):
             self.assertIn(key, env.unbounded_from_raw_structure)
             self.assertNotIn(key, env.param_bounds)
         # Output admissibility floor scales with the same nn scale.

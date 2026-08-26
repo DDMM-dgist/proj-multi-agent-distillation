@@ -125,16 +125,21 @@ def build_perturbation_envelope(
         nn_scale_A=nn,
         param_bounds={
             "cell_sigma": (0.0, params.max_cell_strain_frac),
+            # augment_atoms constrains the Metropolis acceptance sharpness to the closed unit
+            # interval (assert 0 <= beta <= 1); enforce that documented backend range at proposal
+            # validation rather than letting a bad value fail deep in live generation.
+            "beta": (0.0, 1.0),
         },
-        presence_required_keys=["T_K", "beta", "sigma_range_A", "seed"],
+        presence_required_keys=["T_K", "sigma_range_A", "seed"],
         output_admissibility=_output_admissibility(nn, params),
-        unbounded_from_raw_structure=["T_K", "beta", "sigma_range_A"],
+        unbounded_from_raw_structure=["T_K", "sigma_range_A"],
         evidence_refs=[evidence_ref] if evidence_ref else [],
-        rationale=("cell-strain magnitude bounded by a versioned fraction; the Metropolis "
-                   "temperature, acceptance sharpness and displacement sampling range are not "
-                   "derivable from raw structure and are presence-checked, with physical "
-                   "displacement safety enforced by the output-admissibility floor on the minimum "
-                   "interatomic distance (which scales with the pool nearest-neighbor spacing)"))
+        rationale=("cell-strain magnitude bounded by a versioned fraction and the Metropolis "
+                   "acceptance sharpness by the augment_atoms unit-interval constraint; the "
+                   "absolute temperature and displacement sampling range are not derivable from "
+                   "raw structure and are presence-checked, with physical displacement safety "
+                   "enforced by the output-admissibility floor on the minimum interatomic distance "
+                   "(which scales with the pool nearest-neighbor spacing)"))
 
 
 def build_md_envelope(
