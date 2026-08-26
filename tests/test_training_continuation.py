@@ -30,6 +30,9 @@ from framework_v2.convergence import (
 )
 from framework_v2.states import SemanticState
 from framework_v2.training_continuation import (
+    DEFAULT_MAX_CONTINUATION_ROUNDS,
+    DEFAULT_MAX_CUMULATIVE_CONTINUATION_EPOCHS,
+    DEFAULT_TRAINING_CONTINUATION_POLICY_ID,
     RECOVERY_BUDGET_EXHAUSTED_CODE,
     CheckpointInfo,
     ContinuationHistory,
@@ -92,9 +95,24 @@ class TestPolicyContract:
     def test_default_policy_is_versioned_and_hash_bound(self):
         p = default_training_continuation_policy()
         assert p.schema_version >= 1
-        assert p.policy_id == "framework-default-training-continuation-v1"
+        assert p.policy_id == DEFAULT_TRAINING_CONTINUATION_POLICY_ID
+        assert p.policy_id == "framework-default-training-continuation-v2"
         # Deterministic content hash, stable across rebuilds.
         assert p.content_sha256() == default_training_continuation_policy().content_sha256()
+
+    def test_default_global_budget_is_generous_but_bounded(self):
+        """The default global compute ceiling is far larger than the old 3-round /
+        150-epoch cap (so normal under-training resolves autonomously) yet still a
+        finite hard bound (termination guaranteed)."""
+        p = default_training_continuation_policy()
+        assert p.max_continuation_rounds == DEFAULT_MAX_CONTINUATION_ROUNDS
+        assert p.max_cumulative_continuation_epochs == DEFAULT_MAX_CUMULATIVE_CONTINUATION_EPOCHS
+        # Strictly larger than the previous (too-conservative) cap.
+        assert p.max_continuation_rounds > 3
+        assert p.max_cumulative_continuation_epochs > 150
+        # Still finite / bounded.
+        assert math.isfinite(p.max_continuation_rounds)
+        assert math.isfinite(p.max_cumulative_continuation_epochs)
 
     def test_changing_a_bound_changes_the_hash(self):
         a = default_training_continuation_policy()
@@ -315,11 +333,12 @@ class TestCommitteeContinuation:
         assert d.total_epoch_override == 200 + conv.projection_window
 
     # (6)+(7) repeated continuation stays bounded; exhaustion -> escalation
-    def test_rounds_budget_exhausted(self):
+    def test_rounds_budget_exhausted_at_global_cap(self):
         logs = {"seed-1": _log(total_epoch=200, series=_improving_series(), best_at=200)}
         cks = {"seed-1": _resumable_ckpt(1)}
-        # rounds_used already at the cap (default max 3).
-        history = ContinuationHistory(base_boundary=200, rounds_used=3)
+        # rounds_used already at the (new, larger) global cap.
+        history = ContinuationHistory(
+            base_boundary=200, rounds_used=DEFAULT_MAX_CONTINUATION_ROUNDS)
         _, _, d = self._plan(logs, cks, history=history)
         assert d.outcome == ContinuationOutcome.RECOVERY_BUDGET_EXHAUSTED
         assert d.directives == []
@@ -327,7 +346,9 @@ class TestCommitteeContinuation:
     def test_last_round_within_rounds_budget_still_continues(self):
         logs = {"seed-1": _log(total_epoch=200, series=_improving_series(), best_at=200)}
         cks = {"seed-1": _resumable_ckpt(1)}
-        history = ContinuationHistory(base_boundary=200, rounds_used=2)  # 2 < 3
+        # One below the global round cap: still continues.
+        history = ContinuationHistory(
+            base_boundary=200, rounds_used=DEFAULT_MAX_CONTINUATION_ROUNDS - 1)
         _, _, d = self._plan(logs, cks, history=history)
         assert d.outcome == ContinuationOutcome.CONTINUE
 
@@ -340,26 +361,40 @@ class TestCommitteeContinuation:
         _, _, d = self._plan(logs, cks, cont=cont)
         assert d.outcome == ContinuationOutcome.RECOVERY_BUDGET_EXHAUSTED
 
-    def test_repeated_continuation_is_bounded_across_rounds(self):
-        """Simulate advancing boundaries: each round derives the next target and
-        eventually the cumulative cap forces escalation -- never unbounded."""
-        cont = default_training_continuation_policy()  # max_cum=150, quantum=50
+    def test_repeated_continuation_is_globally_bounded(self):
+        """Simulate advancing boundaries across a healthy, still-improving run:
+        each round derives the next target and continues WELL beyond the old
+        3-round cap, but the global compute ceiling still forces eventual
+        escalation -- continuation is never unbounded, and once exhausted it
+        stays exhausted."""
+        cont = default_training_continuation_policy()
         conv = default_training_convergence_policy()
+        q = conv.projection_window
+        base = 200
+        max_rounds = cont.max_continuation_rounds
         outcomes = []
-        for boundary in (200, 250, 300, 350):
+        boundary = base
+        for rounds_used in range(0, max_rounds + 2):
             logs = {"seed-1": _log(total_epoch=boundary,
                                    series=_improving_series(), best_at=boundary)}
             cks = {"seed-1": _resumable_ckpt(1, epoch=boundary)}
             report = build_convergence_report(conv, seed_logs=logs)
-            rounds_used = (boundary - 200) // 50
-            hist = ContinuationHistory(base_boundary=200, rounds_used=rounds_used)
+            hist = ContinuationHistory(base_boundary=base, rounds_used=rounds_used)
             d = plan_committee_continuation(
                 report, logs, cks, cont, conv, hist,
                 triggering_convergence_report_sha256="s")
             outcomes.append(d.outcome)
-        # 200->250, 250->300, 300->350 continue; 350->400 exceeds 150 cumulative.
-        assert outcomes[:3] == [ContinuationOutcome.CONTINUE] * 3
-        assert outcomes[3] == ContinuationOutcome.RECOVERY_BUDGET_EXHAUSTED
+            boundary += q
+        # Healthy improving runs continue far beyond the old 3-round / 150-epoch cap.
+        assert outcomes[3] == ContinuationOutcome.CONTINUE
+        assert outcomes[10] == ContinuationOutcome.CONTINUE
+        # ...but the global ceiling still forces eventual escalation.
+        assert ContinuationOutcome.RECOVERY_BUDGET_EXHAUSTED in outcomes
+        first_exh = outcomes.index(ContinuationOutcome.RECOVERY_BUDGET_EXHAUSTED)
+        assert first_exh > 3  # the budget is strictly larger than the old cap
+        # Once exhausted it stays exhausted (monotone, never resurrected).
+        assert all(o == ContinuationOutcome.RECOVERY_BUDGET_EXHAUSTED
+                   for o in outcomes[first_exh:])
 
     # (9) the convergence gate is unchanged and cannot be bypassed
     def test_continuation_does_not_bypass_convergence_gate(self):
@@ -396,3 +431,90 @@ class TestSeedAssessmentOrdering:
         assert d.eligible is True
         assert d.start_epoch == 200
         assert d.source_checkpoint_sha256 == "sha-1"
+
+
+# --------------------------------------------------------------------------
+# FE-061: extended global compute budget. Healthy under-training resolves
+# autonomously beyond the old 3-round cap; convergence stops immediately;
+# repeated continuation stays globally bounded; exhaustion escalates; and the
+# policy NEVER touches LR / optimizer / architecture / dataset.
+# --------------------------------------------------------------------------
+class TestExtendedGlobalBudget:
+    def _plan_at(self, *, boundary, rounds_used, series=None, cont=None):
+        cont = cont or default_training_continuation_policy()
+        conv = default_training_convergence_policy()
+        series = series if series is not None else _improving_series()
+        logs = {"seed-1": _log(total_epoch=boundary, series=series, best_at=boundary)}
+        cks = {"seed-1": _resumable_ckpt(1, epoch=boundary)}
+        report = build_convergence_report(conv, seed_logs=logs)
+        hist = ContinuationHistory(base_boundary=200, rounds_used=rounds_used)
+        d = plan_committee_continuation(
+            report, logs, cks, cont, conv, hist,
+            triggering_convergence_report_sha256="s")
+        return report, conv, d
+
+    # (7a) healthy improving runs can continue beyond 3 rounds
+    def test_healthy_run_continues_beyond_three_rounds(self):
+        conv = default_training_convergence_policy()
+        q = conv.projection_window
+        # round index 5 (0-based rounds_used=5) -> well past the old 3-round cap.
+        _, _, d = self._plan_at(boundary=200 + 5 * q, rounds_used=5)
+        assert d.outcome == ContinuationOutcome.CONTINUE
+        assert d.target_epoch == 200 + 6 * q
+
+    # (7b) convergence stops continuation immediately -- even with budget left
+    def test_convergence_stops_continuation_immediately_mid_budget(self):
+        # Plenty of rounds/epochs still available, but the committee has converged.
+        _, _, d = self._plan_at(boundary=400, rounds_used=4, series=_flat_series())
+        assert d.outcome == ContinuationOutcome.NO_RECOVERY_CONVERGED
+        assert d.directives == []
+        assert d.recovery_plan is None
+
+    # (7c) repeated continuation remains globally bounded (finite hard stop)
+    def test_repeated_continuation_hits_global_cap(self):
+        cont = default_training_continuation_policy()
+        # At exactly the round cap the next round is refused.
+        _, _, d = self._plan_at(
+            boundary=200, rounds_used=cont.max_continuation_rounds)
+        assert d.outcome == ContinuationOutcome.RECOVERY_BUDGET_EXHAUSTED
+
+    def test_cumulative_epoch_cap_also_binds_independently(self):
+        # Even below the round cap, the cumulative-epoch ceiling can bind first
+        # (e.g. a larger derived quantum). Emulate via an explicit small cap.
+        cont = default_training_continuation_policy().model_copy(
+            update={"max_cumulative_continuation_epochs": 40})  # < one quantum
+        _, _, d = self._plan_at(boundary=200, rounds_used=0, cont=cont)
+        assert d.outcome == ContinuationOutcome.RECOVERY_BUDGET_EXHAUSTED
+
+    # (7d) budget exhaustion escalates to a human (typed outcome + policy behavior)
+    def test_budget_exhaustion_escalates_to_human(self):
+        cont = default_training_continuation_policy()
+        assert cont.exhaustion_behavior == "escalate_to_human"
+        _, _, d = self._plan_at(
+            boundary=200, rounds_used=cont.max_continuation_rounds)
+        assert d.outcome == ContinuationOutcome.RECOVERY_BUDGET_EXHAUSTED
+        assert d.directives == []
+        assert d.recovery_plan is None  # no auto plan; hand to human
+
+    # (7e) the policy NEVER changes LR / optimizer / architecture / dataset
+    def test_continuation_plan_never_changes_lr_optimizer_arch_or_data(self):
+        conv = default_training_convergence_policy()
+        _, _, d = self._plan_at(boundary=200, rounds_used=0)
+        assert d.outcome == ContinuationOutcome.CONTINUE
+        plan = d.recovery_plan
+        assert plan is not None
+        # It is the TRUE-resume / more-epochs route only.
+        assert plan.failure_code == "training_instability"
+        assert plan.responsible_capability == "model_fitting"
+        blob = " ".join(plan.required_changes).lower()
+        # It explicitly PRESERVES optimizer/model state (TRUE resume)...
+        assert "optimizer" in blob and "do not retrain from epoch 0" in blob
+        # ...and never asks to CHANGE the recipe knobs.
+        forbidden = ("learning rate", "learning_rate", " lr ", "change optimizer",
+                     "architecture", "hidden layer", "num_layers", "batch size",
+                     "batch_size", "dataset", "augment", "add data", "new data",
+                     "loss function", "activation")
+        for term in forbidden:
+            assert term not in blob, f"continuation plan must not mention {term!r}"
+        # Derived epoch target only; no free-standing campaign number authored.
+        assert d.target_epoch == 200 + conv.projection_window

@@ -26,10 +26,17 @@ Design invariants:
     with a resumable checkpoint". Every other failure mode (numerical
     divergence/NaN, missing checkpoint, insufficient evidence) is routed to a
     human, never silently treated as "train longer".
-  * The recovery is BOUNDED: a versioned, hash-bound
-    :class:`TrainingContinuationPolicy` caps both the number of rounds and the
-    cumulative continuation epochs. When the budget is spent the layer emits
-    ``RECOVERY_BUDGET_EXHAUSTED`` and requires human escalation.
+  * The recovery is BOUNDED by a *global* compute ceiling: a versioned,
+    hash-bound :class:`TrainingContinuationPolicy` caps both the number of rounds
+    and the cumulative continuation epochs. The ceiling is a generic
+    compute-safety backstop -- deliberately generous so an ordinarily
+    under-trained but healthy, still-improving run resolves autonomously across
+    however many evidence windows it needs -- while still guaranteeing
+    termination. When the ceiling is reached the layer emits
+    ``RECOVERY_BUDGET_EXHAUSTED`` and requires human escalation. Note the ceiling
+    only ever fully binds a run that keeps improving by a hair forever: a healthy
+    run normally *converges* (its trend flattens -> ``CONVERGED_AT_MAX`` ->
+    gate PASS) long before the ceiling, which stops continuation immediately.
   * Everything is deterministic and provenance-bound: the source checkpoint SHA,
     start/target epochs, both policy SHAs, the triggering convergence-report SHA,
     and the cumulative budget consumption are recorded for every round.
@@ -146,22 +153,37 @@ class TrainingContinuationPolicy(ContractBase):
         return self
 
 
-DEFAULT_TRAINING_CONTINUATION_POLICY_ID = "framework-default-training-continuation-v1"
+DEFAULT_TRAINING_CONTINUATION_POLICY_ID = "framework-default-training-continuation-v2"
+
+# Global compute-safety ceiling for autonomous continuation. These are generic
+# FRAMEWORK_CONSTRAINT backstops, NOT targets and NOT tuned to any material or
+# run: they are deliberately generous so that ordinary under-training (a healthy,
+# still-improving committee that simply needs more epochs) resolves autonomously
+# across as many evidence windows as it needs, while termination is still
+# guaranteed. The two limits are coherent at the default 50-epoch window
+# (24 rounds x 50 = 1200 epochs); whichever binds first stops continuation. A
+# healthy run almost always CONVERGES (trend flattens) well before either limit;
+# the ceiling only fully binds a pathological "improves by a hair forever" run.
+DEFAULT_MAX_CONTINUATION_ROUNDS = 24
+DEFAULT_MAX_CUMULATIVE_CONTINUATION_EPOCHS = 1200
 
 
 def default_training_continuation_policy() -> TrainingContinuationPolicy:
     """The framework's own fail-closed bounded-continuation policy.
 
-    Numbers are ``FRAMEWORK_CONSTRAINT``: at most 3 automatic rounds and at most
-    3 evidence-windows (150 epochs at the default 50-epoch window) of cumulative
-    continuation before a human must decide. A run may override by supplying its
-    own contract; when it does not, this bounds the autonomy rather than leaving
-    it unbounded (or absent)."""
+    Numbers are ``FRAMEWORK_CONSTRAINT`` global compute-safety ceilings, not
+    campaign targets: at most :data:`DEFAULT_MAX_CONTINUATION_ROUNDS` automatic
+    rounds and at most :data:`DEFAULT_MAX_CUMULATIVE_CONTINUATION_EPOCHS`
+    cumulative continuation epochs before a human must decide. They are large
+    enough that normal under-training resolves autonomously (the run typically
+    converges first), yet still guarantee termination. A run may override by
+    supplying its own contract; when it does not, this bounds the autonomy rather
+    than leaving it unbounded (or absent)."""
     return TrainingContinuationPolicy(
         policy_id=DEFAULT_TRAINING_CONTINUATION_POLICY_ID,
         quantum_source=QuantumSource.PROJECTION_WINDOW,
-        max_continuation_rounds=3,
-        max_cumulative_continuation_epochs=150,
+        max_continuation_rounds=DEFAULT_MAX_CONTINUATION_ROUNDS,
+        max_cumulative_continuation_epochs=DEFAULT_MAX_CUMULATIVE_CONTINUATION_EPOCHS,
         eligible_states=[NOT_CONVERGED],
         require_resumable_checkpoint=True,
         divergence_relative_tolerance=0.10,
@@ -170,8 +192,12 @@ def default_training_continuation_policy() -> TrainingContinuationPolicy:
         provenance_source=(
             "framework_v2 built-in fail-closed bounded training-continuation "
             "policy: continuation quantum = convergence-policy projection window; "
-            "<= 3 automatic rounds and <= 150 cumulative continuation epochs "
-            "before mandatory human escalation"),
+            "generic global compute-safety ceiling of "
+            f"<= {DEFAULT_MAX_CONTINUATION_ROUNDS} automatic rounds and "
+            f"<= {DEFAULT_MAX_CUMULATIVE_CONTINUATION_EPOCHS} cumulative "
+            "continuation epochs (deliberately generous so ordinary under-training "
+            "resolves autonomously; a healthy run normally converges first) before "
+            "mandatory human escalation"),
     )
 
 
@@ -584,6 +610,8 @@ __all__ = [
     "ContinuationOutcome",
     "TrainingContinuationPolicy",
     "DEFAULT_TRAINING_CONTINUATION_POLICY_ID",
+    "DEFAULT_MAX_CONTINUATION_ROUNDS",
+    "DEFAULT_MAX_CUMULATIVE_CONTINUATION_EPOCHS",
     "default_training_continuation_policy",
     "REQUIRED_RESUMABLE_KEYS",
     "checkpoint_is_resumable",
