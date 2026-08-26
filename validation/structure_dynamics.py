@@ -360,6 +360,296 @@ def read_energy_log(path):
             np.array([float(row[4]) for row in parsed]))
 
 
+def compute_diffusivity(msd_by_species, timestep_fs, *, fit_start_frame, fit_end_frame,
+                        sample_interval_steps=1, n_dims=3):
+    """Einstein self-diffusivity from an EXPLICIT, provenance-bound MSD fit window.
+
+    ``msd_by_species`` is the per-species MSD series dict returned by
+    ``compute_msd`` (each value shape ``(n_frames,)``, units A^2). The MSD is
+    fitted linearly, MSD(t) = 2*n_dims*D*t + c, over the half-open frame window
+    ``[fit_start_frame, fit_end_frame)`` and D read off the slope. There is NO
+    default window: the caller MUST declare it, and the window (in frames and in
+    fs) is returned so it can be frozen into the validation target — a
+    diffusivity number is meaningless without the window it was fit over.
+
+    Time is reconstructed deterministically as
+    ``t_fs = frame_index * sample_interval_steps * timestep_fs``. Fails closed on
+    a malformed window, non-finite MSD, or non-positive timestep.
+    """
+    if not msd_by_species:
+        raise ValueError("compute_diffusivity requires a non-empty per-species MSD mapping")
+    if not (isinstance(timestep_fs, (int, float)) and float(timestep_fs) > 0):
+        raise ValueError("compute_diffusivity requires positive timestep_fs")
+    if int(sample_interval_steps) <= 0:
+        raise ValueError("sample_interval_steps must be positive")
+    if int(n_dims) not in (1, 2, 3):
+        raise ValueError("n_dims must be 1, 2, or 3")
+    s0, s1 = int(fit_start_frame), int(fit_end_frame)
+    out = {}
+    for species, series in msd_by_species.items():
+        series = np.asarray(series, dtype=float)
+        n = len(series)
+        if not (0 <= s0 < s1 <= n):
+            raise ValueError(
+                f"invalid MSD fit window [{s0}, {s1}) for species {species!r} with {n} frames")
+        if s1 - s0 < 2:
+            raise ValueError("MSD fit window must contain at least two frames")
+        window = series[s0:s1]
+        if not np.isfinite(window).all():
+            raise ValueError(f"non-finite MSD inside the fit window for species {species!r}")
+        frame_idx = np.arange(s0, s1, dtype=float)
+        t_fs = frame_idx * float(sample_interval_steps) * float(timestep_fs)
+        slope, intercept = np.polyfit(t_fs, window, 1)  # A^2 / fs
+        resid = window - (slope * t_fs + intercept)
+        d_A2_per_fs = float(slope) / (2.0 * int(n_dims))
+        out[str(species)] = {
+            "diffusivity_A2_per_fs": float(d_A2_per_fs),
+            "diffusivity_A2_per_ps": float(d_A2_per_fs * 1000.0),
+            # 1 A^2/fs = (1e-8 cm)^2 / (1e-15 s) = 0.1 cm^2/s
+            "diffusivity_cm2_per_s": float(d_A2_per_fs * 0.1),
+            "msd_slope_A2_per_fs": float(slope),
+            "fit_intercept_A2": float(intercept),
+            "fit_residual_std_A2": float(resid.std()),
+            "fit_window_frames": [s0, s1],
+            "fit_window_t_fs": [float(t_fs[0]), float(t_fs[-1])],
+            "n_fit_points": int(s1 - s0),
+            "n_dims": int(n_dims),
+            "sample_interval_steps": int(sample_interval_steps),
+            "timestep_fs": float(timestep_fs),
+        }
+    return out
+
+
+def compute_adf(frames, center_species, neighbor_species, *, r_cut_A,
+                nbins=180, angle_min_deg=0.0, angle_max_deg=180.0):
+    """Angular distribution function for neighbor-center-neighbor triplets.
+
+    For each atom of ``center_species`` this considers every pair of neighbouring
+    ``neighbor_species`` atoms within ``r_cut_A`` (minimum-image convention) and
+    histograms the enclosed bond angle. It is fully generic: ``center_species``
+    is a symbol, ``neighbor_species`` is a symbol or a sequence of symbols, and
+    the angular window is configurable — no material-specific triplet (O-Si-O,
+    etc.) is assumed anywhere. Fails closed on a malformed cutoff/bin/angle
+    range or an absent center species; a geometry that yields zero triplets is
+    reported honestly (``n_triplets == 0``, ``mean_angle_deg is None``) rather
+    than fabricated.
+    """
+    import itertools as _itertools
+    center_species = str(center_species)
+    if isinstance(neighbor_species, (list, tuple, set)):
+        neighbor_set = {str(s) for s in neighbor_species}
+    else:
+        neighbor_set = {str(neighbor_species)}
+    if not neighbor_set:
+        raise ValueError("compute_adf requires at least one neighbor species")
+    if not (isinstance(r_cut_A, (int, float)) and float(r_cut_A) > 0):
+        raise ValueError("compute_adf requires a positive r_cut_A")
+    nbins = int(nbins)
+    if nbins <= 0:
+        raise ValueError("compute_adf requires positive nbins")
+    lo, hi = float(angle_min_deg), float(angle_max_deg)
+    if not (0.0 <= lo < hi <= 180.0):
+        raise ValueError("compute_adf angle range must satisfy 0 <= min < max <= 180")
+    if not frames:
+        raise ValueError("compute_adf requires at least one frame")
+    edges = np.linspace(lo, hi, nbins + 1)
+    counts = np.zeros(nbins, dtype=float)
+    n_triplets = 0
+    n_center_seen = 0
+    for atoms in frames:
+        syms = np.array(atoms.get_chemical_symbols())
+        d = atoms.get_all_distances(mic=True)
+        center_idx = np.where(syms == center_species)[0]
+        n_center_seen += int(len(center_idx))
+        for i in center_idx:
+            neigh = [j for j in range(len(atoms))
+                     if j != i and syms[j] in neighbor_set and 0.0 < d[i, j] < float(r_cut_A)]
+            for a, b in _itertools.combinations(neigh, 2):
+                va = atoms.get_distance(i, a, mic=True, vector=True)
+                vb = atoms.get_distance(i, b, mic=True, vector=True)
+                na = float(np.linalg.norm(va))
+                nb = float(np.linalg.norm(vb))
+                if na == 0.0 or nb == 0.0:
+                    continue
+                cos = float(np.dot(va, vb) / (na * nb))
+                cos = max(-1.0, min(1.0, cos))
+                ang = float(np.degrees(np.arccos(cos)))
+                if lo <= ang <= hi:
+                    k = int(np.searchsorted(edges, ang, side="right") - 1)
+                    k = min(max(k, 0), nbins - 1)
+                    counts[k] += 1.0
+                    n_triplets += 1
+    if n_center_seen == 0:
+        raise ValueError(f"no {center_species} atoms present in any frame")
+    total = float(counts.sum())
+    bin_centers = ((edges[:-1] + edges[1:]) / 2.0)
+    distribution = (counts / total).tolist() if total > 0 else [0.0] * nbins
+    return {
+        "center_species": center_species,
+        "neighbor_species": sorted(neighbor_set),
+        "r_cut_A": float(r_cut_A),
+        "nbins": nbins,
+        "angle_range_deg": [lo, hi],
+        "bin_centers_deg": [float(x) for x in bin_centers],
+        "distribution": [float(x) for x in distribution],
+        "counts": [float(x) for x in counts],
+        "n_triplets": int(n_triplets),
+        "n_frames": int(len(frames)),
+        "mean_angle_deg": (float(np.average(bin_centers, weights=counts))
+                           if total > 0 else None),
+    }
+
+
+def compute_md_stability_summary(frames, *, energies=None, forces_key="forces",
+                                 min_separation_floor_A=0.5,
+                                 max_force_ceiling_eV_A=None, temperatures=None):
+    """Model-independent MD / trajectory stability summary.
+
+    Every quantity is derived deterministically from the trajectory (and, where
+    supplied, an explicit energy or temperature series); nothing is invented. A
+    quantity that cannot be measured from the available data is reported as
+    unavailable rather than defaulted:
+      * ``energies_finite`` — only meaningful when ``energies`` is supplied;
+      * ``forces_available`` / ``max_force_eV_per_A`` — read from
+        ``frames[k].arrays[forces_key]`` when present, never recomputed by a model;
+      * ``min_interatomic_separation_A`` — minimum over all frames (MIC);
+      * ``temperature_available`` / ``temperature_mean_K`` /
+        ``temperature_relative_std`` — from a supplied ``temperatures`` series, or
+        from per-frame momenta via ASE when present, else unavailable.
+
+    ``catastrophic_failure`` is True (with ``failure_reasons``) if any frame's
+    minimum separation drops below ``min_separation_floor_A``, any supplied
+    energy or present force is non-finite, or (when ``max_force_ceiling_eV_A`` is
+    given) the maximum force magnitude exceeds it.
+    """
+    if not frames:
+        raise ValueError("compute_md_stability_summary requires at least one frame")
+    failure_reasons = []
+
+    # --- energies (only when explicitly supplied) ---
+    energies_finite = None
+    if energies is not None:
+        arr = np.asarray(energies, dtype=float)
+        energies_finite = bool(np.isfinite(arr).all())
+        if not energies_finite:
+            failure_reasons.append("non_finite_energy")
+
+    # --- forces (read from arrays only; never model-recomputed) ---
+    forces_available = False
+    max_force = None
+    for atoms in frames:
+        f = atoms.arrays.get(forces_key) if hasattr(atoms, "arrays") else None
+        if f is None:
+            continue
+        forces_available = True
+        f = np.asarray(f, dtype=float)
+        if not np.isfinite(f).all():
+            failure_reasons.append("non_finite_force")
+            continue
+        mag = float(np.sqrt((f ** 2).sum(axis=1)).max()) if f.size else 0.0
+        max_force = mag if max_force is None else max(max_force, mag)
+    if (max_force_ceiling_eV_A is not None and max_force is not None
+            and max_force > float(max_force_ceiling_eV_A)):
+        failure_reasons.append("max_force_exceeds_ceiling")
+
+    # --- minimum interatomic separation (MIC) ---
+    min_sep = None
+    for atoms in frames:
+        if len(atoms) < 2:
+            continue
+        d = atoms.get_all_distances(mic=True)
+        iu = np.triu_indices(len(atoms), k=1)
+        frame_min = float(d[iu].min())
+        min_sep = frame_min if min_sep is None else min(min_sep, frame_min)
+    if min_sep is not None and min_sep < float(min_separation_floor_A):
+        failure_reasons.append("min_separation_below_floor")
+
+    # --- temperature stability (explicit series, else momenta, else unavailable) ---
+    temperature_available = False
+    temp_mean = None
+    temp_rel_std = None
+    temp_series = None
+    if temperatures is not None:
+        temp_series = np.asarray(temperatures, dtype=float)
+    else:
+        derived = []
+        for atoms in frames:
+            try:
+                if atoms.get_momenta() is not None and np.any(atoms.get_momenta()):
+                    derived.append(float(atoms.get_temperature()))
+            except Exception:
+                derived = []
+                break
+        if derived and len(derived) == len(frames):
+            temp_series = np.asarray(derived, dtype=float)
+    if temp_series is not None and temp_series.size and np.isfinite(temp_series).all():
+        temperature_available = True
+        temp_mean = float(temp_series.mean())
+        temp_rel_std = float(temp_series.std() / abs(temp_mean)) if temp_mean != 0 else None
+
+    return {
+        "n_frames": int(len(frames)),
+        "n_atoms": int(len(frames[0])),
+        "energies_finite": energies_finite,
+        "forces_available": bool(forces_available),
+        "max_force_eV_per_A": (float(max_force) if max_force is not None else None),
+        "max_force_ceiling_eV_A": (float(max_force_ceiling_eV_A)
+                                   if max_force_ceiling_eV_A is not None else None),
+        "min_interatomic_separation_A": (float(min_sep) if min_sep is not None else None),
+        "min_separation_floor_A": float(min_separation_floor_A),
+        "temperature_available": bool(temperature_available),
+        "temperature_mean_K": temp_mean,
+        "temperature_relative_std": temp_rel_std,
+        "catastrophic_failure": bool(failure_reasons),
+        "failure_reasons": sorted(set(failure_reasons)),
+    }
+
+
+# --- material-specific observable plugin interface -------------------------------------------
+# Built-in observable kinds are dispatched by validation.teacher_physical_validation; a campaign
+# that needs a phase/defect/surface observable the generic engine does not implement registers it
+# here (a callable ``fn(frames, params, context) -> dict``) WITHOUT editing the engine or
+# hard-coding a material. Registration is fail-closed against clobbering a built-in or an existing
+# plugin so an extension can never silently redefine a shared observable.
+BUILTIN_OBSERVABLE_KINDS = frozenset({
+    "rdf_peak_position", "rdf_peak_height", "species_coordination",
+    "coordination_distribution", "density", "msd", "diffusivity", "adf", "nve_drift",
+})
+_OBSERVABLE_PLUGINS = {}
+
+
+def register_observable(kind, fn):
+    """Register a material-specific observable implementation under a unique ``kind``.
+
+    ``fn`` must be callable as ``fn(frames, params, context) -> dict``. Raises on a
+    duplicate/clobbering registration (a built-in kind or an already-registered
+    plugin) so a plugin can never silently override a shared observable."""
+    kind = str(kind)
+    if kind in BUILTIN_OBSERVABLE_KINDS:
+        raise ValueError(f"cannot override built-in observable kind: {kind}")
+    if kind in _OBSERVABLE_PLUGINS:
+        raise ValueError(f"observable kind already registered: {kind}")
+    if not callable(fn):
+        raise ValueError("observable plugin must be callable")
+    _OBSERVABLE_PLUGINS[kind] = fn
+    return kind
+
+
+def unregister_observable(kind):
+    """Remove a previously registered plugin (no-op if absent). Never touches built-ins."""
+    _OBSERVABLE_PLUGINS.pop(str(kind), None)
+
+
+def observable_plugin(kind):
+    """Return the registered plugin callable for ``kind``, or None."""
+    return _OBSERVABLE_PLUGINS.get(str(kind))
+
+
+def registered_observable_kinds():
+    """Return the sorted set of currently registered plugin kinds (excludes built-ins)."""
+    return sorted(_OBSERVABLE_PLUGINS)
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("trajectory")
