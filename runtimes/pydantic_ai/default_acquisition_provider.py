@@ -282,6 +282,15 @@ class FrameworkDefaultAcquisitionProvider:
             return False
         return True
 
+    # -- descriptor-provider resolution (overridable seam) -----------------------------------
+    def _resolve_descriptor_provider(self, *, controller, objective, scope_contract):
+        """Resolve the material descriptor provider for this run. Extracted as an overridable seam
+        so the post-split augmentation provider can rebind the SAME generic pipeline onto the
+        frozen TRAIN-parent pool (see ``AugmentationAcquisitionProvider``) without duplicating the
+        whole ``build_context`` materialization chain."""
+        return resolve_descriptor_provider(
+            controller=controller, objective=objective, scope_contract=scope_contract)
+
     # -- evidence auto-materialization -------------------------------------------------------
     def build_context(self, controller) -> AcquisitionPlanningContext:
         from framework_v2.acquisition.contracts import CampaignObjective
@@ -311,7 +320,7 @@ class FrameworkDefaultAcquisitionProvider:
             scope_contract_sha256=scope_sha,
             phase=self._phase)
 
-        provider = resolve_descriptor_provider(
+        provider = self._resolve_descriptor_provider(
             controller=controller, objective=objective, scope_contract=scope_contract)
         evidence = provider.build_descriptor_space_evidence(
             controller=controller, objective=objective, scope_contract=scope_contract)
@@ -1103,3 +1112,44 @@ def maybe_install_default_acquisition_provider(controller) -> Optional[Framework
     register_builtin_generic_fallback()
     return install_default_acquisition_provider(
         backend_probe=default_backend_probe, teacher_probe=default_teacher_probe)
+
+
+class AugmentationAcquisitionProvider(FrameworkDefaultAcquisitionProvider):
+    """The post-split TRAIN-augmentation planning provider (FE-054).
+
+    It rebinds the IDENTICAL autonomous acquisition reasoning pipeline -- same descriptor
+    representation, same coverage/strategy derivation, same admissible-recipe decision space, same
+    ``realize`` projection and validators -- onto the frozen Stage-6 TRAIN-parent population instead
+    of the Stage-3 acquisition candidate pool. The only behavioural differences from the default
+    provider are (1) the descriptor pool is pinned to an explicit TRAIN-parent manifest (so the
+    already-bound Stage-3 acquisition pool manifest does not trip the AMBIGUOUS_SOURCE_POOL guard),
+    and (2) ``applies`` no longer refuses when a Stage-3 acquisition plan is already bound -- that is
+    the EXPECTED state after Stage 6, not a reason to skip augmentation planning. No perturbation
+    number is invented here: the recipe's admissible bounds come from the TRAIN pool's own
+    nearest-neighbor scale via ``build_perturbation_envelope`` exactly as in acquisition."""
+
+    def __init__(
+        self, *, backend_probe: BackendProbe, teacher_probe: TeacherProbe,
+        pool_manifest_path, phase: AcquisitionPhase = AcquisitionPhase.INITIAL,
+    ) -> None:
+        super().__init__(backend_probe=backend_probe, teacher_probe=teacher_probe, phase=phase)
+        self._pool_manifest_path = pool_manifest_path
+
+    def applies(self, controller) -> bool:
+        # Augmentation planning is invoked explicitly by the post-split action, not by the lazy
+        # campaign loop, so it only requires V2 closure (a bound scope contract) -- it deliberately
+        # does NOT self-gate on the absence of a Stage-3 acquisition plan.
+        return bool(controller.v2_enabled())
+
+    def _resolve_descriptor_provider(self, *, controller, objective, scope_contract):
+        from framework_v2.acquisition.generic_provider import GenericStructuralDescriptorProvider
+        return GenericStructuralDescriptorProvider(pool_manifest_path=self._pool_manifest_path)
+
+
+def build_augmentation_provider(pool_manifest_path) -> AugmentationAcquisitionProvider:
+    """Construct the post-split augmentation provider with the framework's own generic backend and
+    Teacher probes (the same ones ``maybe_install_default_acquisition_provider`` uses), pinned to
+    the given TRAIN-parent pool manifest."""
+    return AugmentationAcquisitionProvider(
+        backend_probe=default_backend_probe, teacher_probe=default_teacher_probe,
+        pool_manifest_path=pool_manifest_path)

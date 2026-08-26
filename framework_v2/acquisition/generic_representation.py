@@ -137,13 +137,37 @@ def _iter_input_paths(controller):
                 break
 
 
-def locate_pool_manifest(controller):
+def locate_pool_manifest(controller, *, pool_manifest_path=None):
     """Find the single source-pool manifest among the run's frozen inputs by SCHEMA.
 
     Returns ``(manifest_path, manifest_dict)``. Fails closed with a typed
     ``AcquisitionCapabilityGap`` when zero inputs parse as a pool manifest (no admissible raw
     pool -> the framework cannot synthesize a representation and will NOT ask a human for a
-    descriptor) or when more than one does (ambiguous -- refuses to silently pick)."""
+    descriptor) or when more than one does (ambiguous -- refuses to silently pick).
+
+    ``pool_manifest_path`` (post-split augmentation only) pins the pool to one EXPLICIT
+    schema-valid manifest rather than scanning the run's frozen inputs. This is how the SAME
+    generic descriptor pipeline is rebound from the Stage-3 acquisition candidate pool onto the
+    frozen Stage-6 TRAIN-parent population without colliding with the already-bound acquisition
+    pool manifest (which would otherwise trip the AMBIGUOUS_SOURCE_POOL guard). The pinned file
+    must itself be a schema-valid pool manifest; it is validated exactly like a discovered one."""
+    if pool_manifest_path is not None:
+        path = Path(pool_manifest_path)
+        if not path.is_file():
+            raise AcquisitionCapabilityGap(
+                f"the pinned pool manifest does not exist: {path}",
+                gap_kind="NO_SOURCE_POOL")
+        try:
+            obj = json.loads(path.read_text())
+        except (ValueError, OSError) as exc:
+            raise AcquisitionCapabilityGap(
+                f"the pinned pool manifest is unreadable/not JSON: {path} ({exc})",
+                gap_kind="NO_SOURCE_POOL")
+        if not _looks_like_pool_manifest(obj):
+            raise AcquisitionCapabilityGap(
+                f"the pinned pool manifest does not match the source-pool schema: {path}",
+                gap_kind="NO_SOURCE_POOL")
+        return path, obj
     found = []
     for path in _iter_input_paths(controller):
         if path.suffix.lower() != ".json" or not path.is_file():
@@ -274,15 +298,19 @@ def compute_frame_features(atoms) -> dict:
 # --------------------------------------------------------------------------------------------
 # Pool loading + representation building
 # --------------------------------------------------------------------------------------------
-def load_pool(controller, *, max_frames_per_category: Optional[int] = None) -> LoadedPool:
+def load_pool(controller, *, max_frames_per_category: Optional[int] = None,
+              pool_manifest_path=None) -> LoadedPool:
     """Load raw frames from the schema-detected pool manifest and compute generic features.
 
     ``max_frames_per_category`` optionally caps how many frames per category are read (a
     deterministic head-slice) so planning-time descriptor computation stays bounded on very
-    large pools; None reads all. The cap is a bounded-compute knob, not a scientific choice."""
+    large pools; None reads all. The cap is a bounded-compute knob, not a scientific choice.
+    ``pool_manifest_path`` pins the pool to one explicit schema-valid manifest (post-split
+    TRAIN-parent augmentation); see ``locate_pool_manifest``."""
     from ase.io import read as ase_read
 
-    manifest_path, manifest = locate_pool_manifest(controller)
+    manifest_path, manifest = locate_pool_manifest(
+        controller, pool_manifest_path=pool_manifest_path)
     manifest_dir = manifest_path.parent
     manifest_sha = manifest.get("sanitized_pool_manifest_sha256") or ""
 

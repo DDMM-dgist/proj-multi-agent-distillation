@@ -52,17 +52,22 @@ class GenericStructuralDescriptorProvider:
 
     material_id = GENERIC_MATERIAL_ID
 
-    def __init__(self, *, max_frames_per_category: Optional[int] = None) -> None:
+    def __init__(self, *, max_frames_per_category: Optional[int] = None,
+                 pool_manifest_path=None) -> None:
         # A bounded-compute cap on planning-time descriptor computation over very large pools; it
         # is a deterministic head-slice, not a scientific selection. None reads the whole pool.
         self._max_frames_per_category = max_frames_per_category
+        # When set, the descriptor pool is pinned to this explicit schema-valid manifest instead of
+        # being schema-detected among the run's frozen inputs. This is the post-split augmentation
+        # rebind: the identical generic pipeline plans over the frozen Stage-6 TRAIN-parent pool.
+        self._pool_manifest_path = pool_manifest_path
 
     # -- gating ------------------------------------------------------------------------------
     def applies(self, *, controller, objective, scope_contract: DeploymentScopeContract) -> bool:
         if not scope_contract.regions_of(ScopeCategory.PRIMARY_DEPLOYMENT):
             return False
         try:
-            locate_pool_manifest(controller)
+            locate_pool_manifest(controller, pool_manifest_path=self._pool_manifest_path)
         except Exception:
             return False
         return True
@@ -77,7 +82,8 @@ class GenericStructuralDescriptorProvider:
         Fails closed with a typed ``AcquisitionCapabilityGap`` (raised from within the generic
         representation builder) if no admissible representation discriminates the pool -- it never
         asks a human for a descriptor."""
-        pool = load_pool(controller, max_frames_per_category=self._max_frames_per_category)
+        pool = load_pool(controller, max_frames_per_category=self._max_frames_per_category,
+                         pool_manifest_path=self._pool_manifest_path)
         run_id = controller.state["run_id"]
         return build_adequate_representation(
             pool, id_prefix=run_id, scope_contract=scope_contract,

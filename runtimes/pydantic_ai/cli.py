@@ -172,6 +172,39 @@ def _build_parser() -> argparse.ArgumentParser:
     authorize_downstream_reliance.add_argument("--run-dir", required=True)
     authorize_downstream_reliance.add_argument("--authorized-by", required=True)
     authorize_downstream_reliance.add_argument("--note", default=None)
+    augment_train = sub.add_parser(
+        "augment-train",
+        help="FE-054: out-of-band post-split TRAIN-only augmentation action (run AFTER Stage-6 "
+             "dataset_split PASS and BEFORE Stage-7 training). Plans an autonomous AugmentationPlan "
+             "over the frozen TRAIN parents (protected augmentation_parents excluded) and, with "
+             "--execute, runs the costly_teacher_labeling generation+labeling+merge into "
+             "final_train.extxyz")
+    augment_train.add_argument("--run-dir", required=True)
+    augment_train.add_argument("--runtime", choices=("mock", "pydantic-ai"), required=True)
+    augment_train.add_argument("--agent-specs-dir", default="agent_specs")
+    augment_train.add_argument("--exchange-dir", default=None)
+    augment_train.add_argument("--repo-root", default=".")
+    augment_train.add_argument("--train-dataset", default=None,
+                               help="frozen Stage-6 labeled TRAIN parents (default: "
+                                    "{run_dir}/artifacts/dataset/train.extxyz)")
+    augment_train.add_argument("--base-label-manifest", default=None,
+                               help="Stage-5 teacher_labeling manifest for the TRAIN parents "
+                                    "(required with --execute)")
+    augment_train.add_argument("--teacher-config", default=None,
+                               help="Teacher calculator config (required with --execute); default "
+                                    "resolved from the run's bound workflow teacher_config")
+    augment_train.add_argument("--reference-yaml", default=None,
+                               help="protected-reference YAML for merge protection (required with "
+                                    "--execute); default resolved from the run's bound reference")
+    augment_train.add_argument(
+        "--execute", action="store_true",
+        help="cross the costly_teacher_labeling boundary: run augment_atoms generation + Teacher "
+             "labeling + merge into final_train.extxyz (requires PYDANTIC_AI_SMOKE_CONFIRM=yes for "
+             "a warranted, Teacher-driving plan)")
+    augment_train.add_argument(
+        "--mock-acquisition-response", default=None,
+        help="test-only: canned AcquisitionPlanProposal JSON (required with --runtime mock); a "
+             "comma-separated list simulates the bounded semantic-correction retry")
     r = sub.add_parser("run-task", help="run one task through the runtime")
     r.add_argument("--runtime", choices=("mock", "pydantic-ai"), required=True)
     r.add_argument("--agent", required=True, help="agent/role name (spec basename)")
@@ -2222,6 +2255,17 @@ def run_production_stage(controller, stage_name, *, runtime, agent_specs_dir="ag
     c.verify_inputs()
     emitter.emit("stage_selected", **stage_progress_fields(c, stage_name))
     stage_cfg = _stage_config(c, stage_name)
+    # FE-054: fail closed if this run DECLARES post-split TRAIN augmentation but its finalized
+    # merged dataset has not been produced and routed as the training dataset. This is the one
+    # explicit precondition that ties Stage-7 training to the out-of-band augmentation action
+    # without adding a lifecycle stage. A no-op for any run that does not declare augmentation.
+    from .train_augmentation import stage7_augmentation_guard
+    augmentation_gap = stage7_augmentation_guard(c, stage_name)
+    if augmentation_gap is not None:
+        emitter.emit("campaign_blocked", stage=stage_name,
+                     detail={"reason": "POST_SPLIT_AUGMENTATION_NOT_FINALIZED"})
+        return StageRunResult("POST_SPLIT_AUGMENTATION_REQUIRED", EXIT_VALIDATION_REJECTED,
+                              f"FAILED: {augmentation_gap}")
     coverage_gap = _teacher_validation_plan_coverage_gap(c)
     if coverage_gap is not None:
         emitter.emit("campaign_blocked", stage=stage_name,
@@ -4101,6 +4145,98 @@ def _cmd_authorize_downstream_teacher_reliance(args) -> int:
     return EXIT_SUCCESS
 
 
+def _cmd_augment_train(args) -> int:
+    import os
+    from workflow.controller import RunController
+    from . import train_augmentation as ta
+
+    c = RunController(args.run_dir)
+    emitter = CampaignEventEmitter(c.run_dir, run_id=c.state.get("run_id"), quiet=True)
+
+    # Precondition: Stage-6 dataset_split must have PASSED -- augmentation operates on the FROZEN
+    # TRAIN/validation/test parent membership. Fail closed rather than augmenting a pre-split pool.
+    try:
+        split_status = c.stage("dataset_split")["status"]
+    except Exception:
+        split_status = None
+    if split_status != "completed":
+        print("augment-train requires a PASSED dataset_split stage (frozen TRAIN parents); "
+              f"dataset_split status={split_status!r}", file=sys.stderr)
+        return EXIT_BLOCKED_POLICY
+
+    train_dataset = args.train_dataset or str(
+        c.run_dir / "artifacts" / "dataset" / "train.extxyz")
+    if not Path(train_dataset).is_file():
+        print(f"TRAIN parents dataset not found: {train_dataset}", file=sys.stderr)
+        return EXIT_VALIDATION_REJECTED
+
+    # 1. Build the TRAIN-parent pool manifest, EXCLUDING protected augmentation_parents.
+    reference_id, protected_globals = ta.resolve_protected_source_indices(c)
+    train_pool = ta.build_train_pool_manifest(
+        train_dataset, ta.augmentation_dir(c.run_dir) / "train_pool",
+        protected_source_indices=protected_globals)
+    emitter.emit("augmentation_pool_built",
+                 detail={"n_frames": train_pool["n_frames"],
+                         "n_protected_excluded": train_pool["n_protected_excluded"]})
+
+    # 2. Autonomously plan the augmentation recipe (reused acquisition producer, rebound to TRAIN).
+    produced = ta.plan_train_augmentation(
+        c, runtime=args.runtime, agent_specs_dir=args.agent_specs_dir,
+        exchange_dir=args.exchange_dir, repo_root=args.repo_root,
+        train_manifest_path=train_pool["manifest_path"],
+        mock_producer_response=args.mock_acquisition_response, emitter=emitter)
+    if produced.failure is not None:
+        r = produced.failure
+        print(f"outcome: {r.outcome}\n{r.message}", file=sys.stderr)
+        return r.exit_code
+
+    # 3. Freeze the autonomously-realized AugmentationPlan with full provenance.
+    frozen_path = ta.freeze_augmentation_plan(c, produced, train_pool=train_pool, emitter=emitter)
+    strategy_kind = produced.ctx.strategy.kind.value
+    warranted = strategy_kind != "EXISTING_POOL_SELECTION"
+    print(f"AugmentationPlan frozen: {frozen_path}")
+    print(f"strategy_kind={strategy_kind} augmentation_warranted={warranted} "
+          f"train_parents={train_pool['n_frames']} "
+          f"protected_excluded={train_pool['n_protected_excluded']}")
+
+    if not args.execute:
+        print("plan phase complete (no --execute); the costly_teacher_labeling generation/"
+              "labeling/merge was NOT run")
+        return EXIT_SUCCESS
+
+    # 4. Execute -- the costly_teacher_labeling boundary. A warranted (Teacher-driving) plan needs
+    #    the explicit smoke-confirm; an unwarranted EXISTING_POOL_SELECTION plan makes NO Teacher
+    #    call and simply routes the labeled TRAIN parents through as final_train.
+    if warranted and os.environ.get("PYDANTIC_AI_SMOKE_CONFIRM") != "yes":
+        print("APPROVAL_REQUIRED: a warranted augmentation plan drives the Teacher (augment_atoms "
+              "PES + canonical labeling); set PYDANTIC_AI_SMOKE_CONFIRM=yes to authorize the "
+              "costly_teacher_labeling execution", file=sys.stderr)
+        return EXIT_APPROVAL_REQUIRED
+
+    teacher_config = args.teacher_config
+    if teacher_config is None:
+        from .default_acquisition_provider import _resolve_bound_teacher_calculator_config
+        teacher_config, _ = _resolve_bound_teacher_calculator_config(c)
+    reference_yaml = args.reference_yaml or _acquisition_protection_reference_yaml(c)
+    base_label_manifest = args.base_label_manifest
+    if warranted and (not teacher_config or not base_label_manifest or not reference_yaml):
+        print("APPROVAL_REQUIRED inputs missing for execution: a warranted plan needs "
+              "--teacher-config, --base-label-manifest, and --reference-yaml (base_label_manifest "
+              "is the Stage-5 teacher_labeling manifest for the TRAIN parents)", file=sys.stderr)
+        return EXIT_VALIDATION_REJECTED
+
+    try:
+        fm = ta.execute_train_augmentation(
+            c, base_dataset=train_dataset, base_label_manifest=base_label_manifest,
+            teacher_config=teacher_config, reference_yaml=reference_yaml, emitter=emitter)
+    except Exception as exc:
+        print(f"augment-train execution failed: {type(exc).__name__}: {exc}", file=sys.stderr)
+        return EXIT_VALIDATION_REJECTED
+    print(f"final_train: {fm['final_train_path']}\nfinal_train_sha256={fm['final_train_sha256']} "
+          f"n_augmented_children={fm['n_augmented_children']}")
+    return EXIT_SUCCESS
+
+
 def main(argv=None) -> int:
     import os
     args = _build_parser().parse_args(argv)
@@ -4122,6 +4258,8 @@ def main(argv=None) -> int:
         return _cmd_plan_teacher_validation(args)
     if args.command == "authorize-downstream-teacher-reliance":
         return _cmd_authorize_downstream_teacher_reliance(args)
+    if args.command == "augment-train":
+        return _cmd_augment_train(args)
     if args.command != "run-task":  # pragma: no cover
         return EXIT_INTERNAL
     out = sys.stdout
