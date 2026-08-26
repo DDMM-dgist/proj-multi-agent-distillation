@@ -276,6 +276,70 @@ def _acquisition_readiness(controller, proposal, *, report_path=None):
     return compute_acquisition_evidence(controller, proposal, report_path=report_path)
 
 
+def _species_mapping_gate_evidence(controller, stage_name, declared):
+    """FE-053: deterministic element/species -> 0-based model-type-index mapping criterion-evidence
+    for a Teacher-labeling gate, or ``None`` when no declared stage output records a
+    ``species_mapping_evidence`` block (a no-op for every non-labeling stage, and for any labeling
+    manifest predating that field). Mirrors ``_reference_validation_readiness`` /
+    ``_acquisition_readiness``: it surfaces the EXACT ordered mapping, its attestation, and the
+    cross-source agreement -- hash-bound to the manifest sha256 -- into the gate packet's
+    ``validation_outcomes`` so a Judge can VERIFY the mapping criterion against an authoritative
+    deterministic result instead of only observing that a ``species_mapping_evidence`` field
+    exists. Evidence surfacing only: it never relabels, re-selects, or mutates any artifact, and it
+    reuses the FE-049 deterministic ``validate_species_mapping_consistency`` cross-check verbatim
+    (called WITHOUT ``out_path`` so nothing is written). A genuine non-attestation or cross-source
+    conflict is surfaced as a failed criterion (``ready``/``agree`` False + the reason) so the gate
+    REVISEs on explicit deterministic evidence rather than crashing during packet assembly --
+    fail-closed semantics preserved.
+
+    The labeling manifest is discovered GENERICALLY as whichever declared JSON output records a
+    ``species_mapping_evidence`` dict -- never a hardcoded filename or stage concept.
+    """
+    from .deterministic_executors import (validate_species_mapping_consistency,
+                                          _ValidationFailure)
+    from adapters.teacher import SpeciesMappingConflictError
+    from workflow.integrity import sha256_file
+    manifest_path = None
+    for art in declared:
+        path = Path(art)
+        if path.suffix != ".json" or not path.is_file():
+            continue
+        try:
+            doc = json.loads(path.read_text())
+        except (ValueError, OSError):
+            continue
+        if isinstance(doc, dict) and isinstance(doc.get("species_mapping_evidence"), dict):
+            manifest_path = path
+            break
+    if manifest_path is None:
+        return None
+    proposal = {"parameters": {"manifest_path": str(manifest_path)}}
+    try:
+        metrics = validate_species_mapping_consistency(proposal).get("metrics", {})
+    except (_ValidationFailure, SpeciesMappingConflictError) as exc:
+        try:
+            detail = json.loads(str(exc))
+        except ValueError:
+            detail = {"reason": str(exc)}
+        return {"stage": stage_name, "kind": "species_mapping_criterion_evidence",
+                "ready": False, "attested": bool(detail.get("attested", False)), "agree": False,
+                "blocking_gaps": [detail.get("reason", "species_mapping_invalid")],
+                "manifest_path": str(manifest_path),
+                "manifest_sha256": detail.get("manifest_sha256") or sha256_file(manifest_path),
+                "species_to_type_index_map": detail.get("species_to_type_index_map"),
+                "sources_cross_checked": detail.get("sources_cross_checked", [])}
+    return {"stage": stage_name, "kind": "species_mapping_criterion_evidence",
+            "ready": bool(metrics.get("ok")), "attested": bool(metrics.get("attested")),
+            "agree": True, "blocking_gaps": [],
+            "manifest_path": metrics.get("manifest_path"),
+            "manifest_sha256": metrics.get("manifest_sha256"),
+            "species_to_type_index_map": metrics.get("species_to_type_index_map"),
+            "declared_config_map": metrics.get("declared_config_map"),
+            "runtime_map": metrics.get("runtime_map"),
+            "compiled_model_map": metrics.get("compiled_model_map"),
+            "sources_cross_checked": metrics.get("sources_cross_checked", [])}
+
+
 def _selective_provenance_inputs(controller, stage_name):
     """Return the small, explicitly-declared set of provenance-only run INPUT paths that
     ``stage_name``'s bounded-evidence assembly should see, beyond its own registered stage output
@@ -2453,6 +2517,14 @@ def run_production_stage(controller, stage_name, *, runtime, agent_specs_dir="ag
             "blocking_gaps": acquisition_evidence["blocking_gaps"],
             "criteria": acquisition_evidence["criteria"],
         }]
+    # FE-053: surface the deterministic element->0-based-type-index mapping criterion evidence for a
+    # Teacher-labeling gate (mirrors the reference_validation/acquisition surfacers above) so a Judge
+    # can VERIFY the exact mapping against an authoritative deterministic result rather than only
+    # observing that the manifest declares a species_mapping_evidence field. No-op for every stage
+    # whose declared outputs record no species_mapping_evidence.
+    species_mapping_evidence = _species_mapping_gate_evidence(c, stage_name, declared)
+    if species_mapping_evidence is not None:
+        gate_outcomes = gate_outcomes + [species_mapping_evidence]
     build_bounded_evidence(gate_evidence_artifacts, evidence_path,
                            protocol_refs=[c.state.get("workflow_config")],
                            validation_outcomes=gate_outcomes,
