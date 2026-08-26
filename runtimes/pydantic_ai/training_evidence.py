@@ -124,6 +124,208 @@ def parse_simple_nn_log(text: str) -> dict:
     }
 
 
+def _read_json(path) -> dict:
+    try:
+        return json.loads(Path(path).read_text(encoding="utf-8"))
+    except (ValueError, OSError):
+        return {}
+
+
+def _training_stage_requires_augmentation(run_dir: Path, state: dict) -> bool:
+    """Whether this run DECLARES post-split TRAIN augmentation (the same single switch the Stage-7
+    guard keys on: the ``train_committee``-routed stage's
+    ``pydantic_ai.requires_post_split_augmentation``). Keyed on the route action, never a stage
+    name. Returns False for any run that does not declare it (the whole authoritative-population
+    resolution then reduces to the pre-existing Stage-6 TRAIN behaviour)."""
+    wf = state.get("workflow_config")
+    if not wf:
+        return False
+    wf_path = Path(wf)
+    if not wf_path.is_absolute():
+        wf_path = Path(run_dir) / wf
+    if not wf_path.is_file():
+        return False
+    try:
+        import yaml
+        cfg = yaml.safe_load(wf_path.read_text()) or {}
+    except Exception:
+        return False
+    for stage in cfg.get("stages", []) or []:
+        route = stage.get("pydantic_ai") or {}
+        if route.get("action") == "train_committee":
+            return bool(route.get("requires_post_split_augmentation"))
+    return False
+
+
+def _final_train_registered(state: dict, final_path: str | None, final_sha: str | None) -> bool:
+    """True iff ``final_train`` has been registered/bound through the canonical artifact/input
+    mechanism (a run-bound input snapshot/source, or a Controller-registered artifact) with a
+    matching resolved path AND sha256. This is the part-1 authority: the finalized augmentation
+    manifest is out-of-band evidence, but the population only becomes the *authoritative* Stage-7
+    training input once it is carried in the canonical registry."""
+    if not final_path or not final_sha:
+        return False
+    try:
+        target = str(Path(final_path).resolve())
+    except Exception:
+        return False
+    for rec in state.get("inputs", []) or []:
+        for key in ("snapshot", "source"):
+            p = rec.get(key)
+            if p and rec.get("sha256") == final_sha:
+                try:
+                    if str(Path(p).resolve()) == target:
+                        return True
+                except Exception:
+                    continue
+    for rec in state.get("artifacts", []) or []:
+        p = rec.get("path")
+        if p and rec.get("sha256") == final_sha:
+            try:
+                if str(Path(p).resolve()) == target:
+                    return True
+            except Exception:
+                continue
+    return False
+
+
+def _augmentation_provenance(run_dir: Path, fm: dict) -> dict:
+    """Compose the post-split-augmentation lineage from the finalized manifest + merge manifest:
+    Stage-6 TRAIN base + Teacher-labeled augmented children -> merged final_train. Every value is
+    read from already-produced provenance artifacts; nothing is recomputed or invented."""
+    merge = _read_json(run_dir / "augmentation" / "final_train.merge.manifest.json") \
+        if fm.get("merge_manifest") else {}
+    if fm.get("merge_manifest"):
+        merge = _read_json(fm["merge_manifest"]) or merge
+    children_sha = NOT_RECORDED
+    for src in (merge.get("sources") or []):
+        integ = src.get("integrity") or {}
+        if str(src.get("path", "")).endswith("children_labeled.extxyz"):
+            children_sha = integ.get("sha256", NOT_RECORDED)
+    return {
+        "strategy_kind": fm.get("strategy_kind", NOT_RECORDED),
+        "augmentation_warranted": fm.get("augmentation_warranted", NOT_RECORDED),
+        "augmentation_complete": fm.get("augmentation_complete", NOT_RECORDED),
+        "plan_content_sha256": fm.get("plan_content_sha256", NOT_RECORDED),
+        "base_train_dataset_sha256": fm.get("base_train_dataset_sha256", NOT_RECORDED),
+        "augmented_children_sha256": children_sha,
+        "n_augmented_children": fm.get("n_augmented_children", NOT_RECORDED),
+        "merge_output_sha256": fm.get("merge_output_sha256", NOT_RECORDED),
+        "merge_n_frames": merge.get("n_frames", NOT_RECORDED),
+        "merge_manifest_path": fm.get("merge_manifest", NOT_RECORDED),
+        "finalized_manifest_path": str((run_dir / "augmentation" /
+                                        "augmentation_finalized.json").resolve()),
+    }
+
+
+def resolve_authoritative_training_population(run_dir, state: dict, split_manifest: dict) -> dict:
+    """Resolve the authoritative Stage-7 training population.
+
+    Without post-split augmentation the authoritative population is the Stage-6 ``dataset_split``
+    TRAIN split (unchanged legacy behaviour). With ``requires_post_split_augmentation: true`` the
+    authoritative population is the registered/hash-bound ``final_train`` artifact -- but ONLY if it
+    has actually been finalized on disk AND registered through the canonical artifact/input
+    mechanism. If augmentation is declared and that authority is missing/mismatched, resolution
+    fails closed (``resolution_ok=False``) rather than silently falling back to the pre-augmentation
+    split -- the identity invariant is never relaxed. The Stage-6 TRAIN split sha is preserved in
+    the returned lineage regardless, so historical provenance is never dropped."""
+    run_dir = Path(run_dir)
+    split_train = ((split_manifest.get("splits") or {}).get("train") or {})
+    split_train_sha = split_train.get("sha256")
+    split_train_frames = split_train.get("n_frames")
+    declared = _training_stage_requires_augmentation(run_dir, state)
+
+    out = {
+        "requires_post_split_augmentation": declared,
+        "stage6_split_train_sha256": split_train_sha or NOT_RECORDED,
+        "stage6_split_train_n_frames": (split_train_frames if split_train_frames is not None
+                                        else NOT_RECORDED),
+        "post_split_augmentation": None,
+    }
+    if not declared:
+        out.update({
+            "authoritative_training_population_sha256": split_train_sha or NOT_RECORDED,
+            "authoritative_training_population_n_frames":
+                split_train_frames if split_train_frames is not None else NOT_RECORDED,
+            "authoritative_producing_stage": "dataset_split",
+            "resolution_ok": bool(split_train_sha),
+            "resolution_detail": ("no post-split augmentation declared; the authoritative Stage-7 "
+                                  "training population is the Stage-6 dataset_split TRAIN split"),
+        })
+        return out
+
+    # -- post-split augmentation declared: the finalized+registered final_train is authoritative ----
+    fm_path = run_dir / "augmentation" / "augmentation_finalized.json"
+    fm = _read_json(fm_path)
+    final_sha = fm.get("final_train_sha256")
+    final_path = fm.get("final_train_path")
+    reasons = []
+    if not final_sha or not final_path:
+        reasons.append("no finalized augmentation manifest carrying final_train_sha256/"
+                       "final_train_path")
+    file_bytes_ok = False
+    if final_path and Path(final_path).is_file():
+        file_bytes_ok = sha256_file(final_path) == final_sha
+        if not file_bytes_ok:
+            reasons.append("final_train file bytes do not match the finalized manifest sha256")
+    elif final_path:
+        reasons.append("finalized final_train file is absent on disk")
+    registered = _final_train_registered(state, final_path, final_sha)
+    if final_sha and not registered:
+        reasons.append("final_train is not registered/bound through the canonical artifact/input "
+                       "mechanism as the authoritative Stage-7 training input")
+    ok = bool(final_sha and final_path and file_bytes_ok and registered)
+
+    prov = _augmentation_provenance(run_dir, fm) if fm else None
+    n_frames = NOT_RECORDED
+    if prov is not None and prov.get("merge_n_frames") not in (None, NOT_RECORDED):
+        n_frames = prov["merge_n_frames"]
+    out.update({
+        "authoritative_training_population_sha256": final_sha or NOT_RECORDED,
+        "authoritative_training_population_n_frames": n_frames,
+        "authoritative_producing_stage": "post_split_train_augmentation",
+        "final_train_registered": registered,
+        "resolution_ok": ok,
+        "resolution_detail": ("post-split augmentation is declared; the authoritative Stage-7 "
+                              "training population is the registered final_train artifact"
+                              if ok else
+                              "post-split augmentation is declared but the authoritative final_train "
+                              "could not be resolved: " + "; ".join(reasons)),
+        "post_split_augmentation": prov,
+    })
+    return out
+
+
+_NN_CONFIG_KEYS = (
+    "method", "nodes", "batch_size", "total_epoch", "learning_rate", "double_precision",
+    "use_force", "use_stress", "E_loss_type", "F_loss_type", "stress_loss_weight",
+    "subprocesses", "accurate_train_rmse",
+)
+
+
+def reconstruct_member_effective_config(committee_dir: Path, seed) -> dict:
+    """Deterministically reconstruct one committee member's effective training configuration from
+    its already-produced ``input.yaml`` (rendered by adapters.student for the seed). Read-only; any
+    field absent from the config is ``NOT_RECORDED`` -- never invented. This is the part-3 evidence
+    that makes each committee member's metadata provable without retraining."""
+    p = Path(committee_dir) / f"seed-{seed}" / "input.yaml"
+    if not p.is_file():
+        return {"input_yaml_present": False, "input_yaml_path": str(p)}
+    try:
+        import yaml
+        cfg = yaml.safe_load(p.read_text(encoding="utf-8")) or {}
+    except Exception:
+        return {"input_yaml_present": True, "input_yaml_path": str(p), "parse_error": True}
+    nn = cfg.get("neural_network") or {}
+    effective = {k: nn.get(k, NOT_RECORDED) for k in _NN_CONFIG_KEYS}
+    params = cfg.get("params") or {}
+    effective["descriptor_elements"] = sorted(params.keys()) if params else NOT_RECORDED
+    effective["input_yaml_present"] = True
+    effective["input_yaml_path"] = str(p)
+    effective["input_yaml_sha256"] = sha256_file(p)
+    return effective
+
+
 def _committee_dir_sha256(run_dir: Path, committee_dir: Path) -> str:
     """The committee tree's aggregate digest, read from the Controller's ALREADY-registered
     artifact record -- never recomputed here (the tree is ~15 GB; re-hashing it would be a costly
@@ -164,6 +366,8 @@ def build_training_evidence_summary(run_dir: str | Path) -> dict:
     dataset_integrity = manifest.get("dataset_integrity") or {}
     dataset_path = manifest.get("dataset")
 
+    state = _read_json(run_dir / "manifest.json")
+
     split_manifest = {}
     if split_manifest_path.exists():
         try:
@@ -174,6 +378,13 @@ def build_training_evidence_summary(run_dir: str | Path) -> dict:
     split_train_sha = split_train.get("sha256")
     split_train_frames = split_train.get("n_frames")
     overlap_checks = split_manifest.get("overlap_checks") or {}
+
+    # Resolve the authoritative Stage-7 training population (Stage-6 TRAIN split, or -- when
+    # post-split augmentation is declared -- the registered/hash-bound final_train artifact).
+    authoritative = resolve_authoritative_training_population(run_dir, state, split_manifest)
+    authoritative_sha = authoritative["authoritative_training_population_sha256"]
+    authoritative_frames = authoritative["authoritative_training_population_n_frames"]
+    authoritative_ok = authoritative["resolution_ok"]
 
     protection_audit = {}
     if protection_audit_path.exists():
@@ -204,10 +415,13 @@ def build_training_evidence_summary(run_dir: str | Path) -> dict:
             "checkpoint_exists": exists,
             "checkpoint_size": integ.get("size", NOT_RECORDED),
             "dataset_sha256": dataset_integrity.get("sha256", NOT_RECORDED),
+            "manifest_metadata": model.get("metadata") or {},
+            "effective_config": reconstruct_member_effective_config(committee_dir, seed),
         })
 
     # -- per-seed training dynamics from the real LOGs ---------------------------------------
     dynamics = []
+    dynamics_by_seed = {}
     for model in models:
         seed = model.get("seed")
         log_path = committee_dir / f"seed-{seed}" / "LOG"
@@ -218,6 +432,13 @@ def build_training_evidence_summary(run_dir: str | Path) -> dict:
         else:
             parsed = {"seed": seed, "log_present": False, "log_path": str(log_path)}
         dynamics.append(parsed)
+        dynamics_by_seed[seed] = parsed
+
+    # Fold each member's LOG-derived training dynamics into its committee record so every member's
+    # metadata (effective config + training/validation metrics + stopping/epochs/wall time) is
+    # provable in one place from existing artifacts, without retraining.
+    for member in committee:
+        member["training_dynamics"] = dynamics_by_seed.get(member.get("seed"), {"log_present": False})
 
     # -- deterministic verification of the exact gate claims ---------------------------------
     n_models = len(models)
@@ -239,9 +460,13 @@ def build_training_evidence_summary(run_dir: str | Path) -> dict:
         {"check": "checkpoint_hashes_distinct",
          "observed": len(set(distinct_hashes)), "expected": n_models,
          "ok": len(set(distinct_hashes)) == n_models and n_models > 0},
-        {"check": "training_dataset_hash_matches_accepted_split_train",
-         "observed": dataset_hash, "expected": split_train_sha,
-         "ok": bool(dataset_hash) and dataset_hash == split_train_sha},
+        {"check": "training_dataset_hash_matches_authoritative_training_population",
+         "observed": dataset_hash,
+         "expected": authoritative_sha if authoritative_sha != NOT_RECORDED else None,
+         "authoritative_producing_stage": authoritative["authoritative_producing_stage"],
+         "resolution_detail": authoritative["resolution_detail"],
+         "ok": bool(authoritative_ok and dataset_hash and authoritative_sha != NOT_RECORDED
+                    and dataset_hash == authoritative_sha)},
         {"check": "training_dataset_belongs_to_this_run",
          "observed": dataset_path, "ok": dataset_in_run},
         {"check": "protected_reference_overlap_zero",
@@ -258,10 +483,18 @@ def build_training_evidence_summary(run_dir: str | Path) -> dict:
             "path": dataset_path,
             "sha256": dataset_hash or NOT_RECORDED,
             "size": dataset_integrity.get("size", NOT_RECORDED),
-            "n_frames": split_train_frames if split_train_frames is not None else NOT_RECORDED,
-            "producing_stage": "dataset_split",
+            "n_frames": (authoritative_frames if authoritative_frames not in (None, NOT_RECORDED)
+                         else (split_train_frames if split_train_frames is not None
+                               else NOT_RECORDED)),
+            "producing_stage": authoritative["authoritative_producing_stage"],
             "belongs_to_this_run": dataset_in_run,
+            # Stage-6 TRAIN split sha preserved in the lineage even when a superseding post-split
+            # augmented population is authoritative (historical provenance is never dropped).
             "accepted_split_train_sha256": split_train_sha or NOT_RECORDED,
+            "authoritative_training_population_sha256": authoritative_sha,
+            "authoritative_training_population_n_frames": authoritative_frames,
+            "authoritative_population_resolution_ok": authoritative_ok,
+            "post_split_augmentation": authoritative["post_split_augmentation"],
             "parent_family_overlap_checks": dict(overlap_checks) or NOT_RECORDED,
             "protected_reference_checks": dict(protection_checks) or NOT_RECORDED,
             "dataset_split_gate_result": "PASS" if (protection_all_pass and overlap_all_zero)

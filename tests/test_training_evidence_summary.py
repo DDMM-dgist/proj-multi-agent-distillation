@@ -142,6 +142,11 @@ class BuildTrainingEvidenceSummaryTests(unittest.TestCase):
             self.assertEqual(s["committee"]["seeds"], seeds)
             self.assertEqual(s["dataset_provenance"]["sha256"], train_sha)
             self.assertEqual(s["dataset_provenance"]["accepted_split_train_sha256"], train_sha)
+            # non-augmented run: the authoritative Stage-7 population IS the Stage-6 TRAIN split
+            self.assertEqual(
+                s["dataset_provenance"]["authoritative_training_population_sha256"], train_sha)
+            self.assertEqual(s["dataset_provenance"]["producing_stage"], "dataset_split")
+            self.assertIsNone(s["dataset_provenance"]["post_split_augmentation"])
             self.assertTrue(s["dataset_provenance"]["belongs_to_this_run"])
             self.assertEqual(s["dataset_provenance"]["n_frames"], 354)
             self.assertEqual(s["committee"]["committee_dir_sha256"], "committee-agg-sha")
@@ -165,7 +170,8 @@ class BuildTrainingEvidenceSummaryTests(unittest.TestCase):
             run_dir, _, _ = _make_run(Path(td), matching_dataset=False)
             s = build_training_evidence_summary(run_dir)
             check = {o["check"]: o["ok"] for o in s["verification_outcomes"]}
-            self.assertFalse(check["training_dataset_hash_matches_accepted_split_train"])
+            self.assertFalse(
+                check["training_dataset_hash_matches_authoritative_training_population"])
             self.assertFalse(s["all_verifications_passed"])
             # unrelated checks are unaffected
             self.assertTrue(check["committee_size_is_frozen_4"])

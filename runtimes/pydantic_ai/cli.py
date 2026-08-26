@@ -4239,9 +4239,56 @@ def _cmd_augment_train(args) -> int:
     except Exception as exc:
         print(f"augment-train execution failed: {type(exc).__name__}: {exc}", file=sys.stderr)
         return EXIT_VALIDATION_REJECTED
+
+    # Register the finalized final_train as a canonical, hash-bound, SUPERSEDING Stage-7 training
+    # input through the existing bound-input mechanism (never a parallel registry). The Stage-6
+    # dataset_split TRAIN artifact is preserved untouched -- final_train is a superseding TRAINING
+    # POPULATION, not a replacement for the historical split provenance. This is the authority the
+    # deterministic training-evidence builder resolves the authoritative training population from.
+    _register_final_train_as_training_input(c, fm, emitter=emitter)
+
     print(f"final_train: {fm['final_train_path']}\nfinal_train_sha256={fm['final_train_sha256']} "
           f"n_augmented_children={fm['n_augmented_children']}")
     return EXIT_SUCCESS
+
+
+def _register_final_train_as_training_input(controller, fm, *, emitter=None) -> None:
+    """Bind the finalized ``final_train`` as the canonical superseding Stage-7 training input.
+
+    Idempotent: if a bound input/artifact already carries final_train's resolved path AND sha256,
+    nothing is re-bound. Uses ``copy=False`` (hash-bind in place) because final_train already lives
+    under the run's ``artifacts/dataset/`` -- no scientific bytes are copied or mutated."""
+    from workflow.controller import now as _now
+    final_path = fm.get("final_train_path")
+    final_sha = fm.get("final_train_sha256")
+    if not final_path or not final_sha:
+        return
+    target = str(Path(final_path).resolve())
+    for rec in controller.state.get("inputs", []) or []:
+        for key in ("snapshot", "source"):
+            p = rec.get(key)
+            if p and rec.get("sha256") == final_sha and str(Path(p).resolve()) == target:
+                return
+    for rec in controller.state.get("artifacts", []) or []:
+        p = rec.get("path")
+        if p and rec.get("sha256") == final_sha and str(Path(p).resolve()) == target:
+            return
+    controller.bind_new_input(final_path, copy=False)
+    controller.state["events"].append({
+        "at": _now(), "type": "post_split_final_train_bound",
+        "final_train_path": target, "final_train_sha256": final_sha,
+        "base_train_dataset_sha256": fm.get("base_train_dataset_sha256"),
+        "n_augmented_children": fm.get("n_augmented_children"),
+        "merge_output_sha256": fm.get("merge_output_sha256"),
+        "detail": ("finalized post-split augmented TRAIN population bound as the canonical "
+                   "superseding Stage-7 training input; Stage-6 dataset_split TRAIN artifact "
+                   "preserved as historical provenance"),
+    })
+    controller.save()
+    if emitter is not None:
+        emitter.emit("post_split_final_train_bound",
+                     detail={"final_train_sha256": final_sha,
+                             "n_augmented_children": fm.get("n_augmented_children")})
 
 
 def main(argv=None) -> int:
