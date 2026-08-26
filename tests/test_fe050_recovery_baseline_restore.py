@@ -218,6 +218,36 @@ class Fe050DistinctEvidenceRestoreTests(_Fe050Fixture):
         self.assertEqual(result.outcome, cli.CAMPAIGN_FAILED)
         self.assertIn("distinct evidence artifact", result.message)
 
+    def test_7_corrective_can_read_restored_declared_output_at_dispatch(self):
+        # FE-051 regression: a distinct-evidence corrective whose executor READS the return stage's
+        # own declared output (as validate_species_mapping_consistency reads the teacher labeling
+        # manifest) only works if the byte-identical restore runs BEFORE dispatch. start_iteration
+        # quarantined labeled.json; this executor reads it at dispatch time and would raise
+        # FileNotFoundError under the old restore-after-dispatch ordering.
+        c = self._staged_controller()
+        self._drive_to_started_recovery(
+            c, corrective_parameters={"read_path": "artifacts/labeled.json",
+                                      "out_path": "artifacts/species_mapping.report.json"})
+        self.assertFalse((c.run_dir / "artifacts/labeled.json").exists())  # quarantined
+
+        run_dir = c.run_dir
+        observed = {}
+
+        def reading_executor(proposal):
+            params = proposal["parameters"] if isinstance(proposal, dict) else proposal.parameters
+            read_path = run_dir / params["read_path"]
+            observed["read_sha"] = sha256_file(read_path)  # raises if not restored first
+            out = run_dir / params["out_path"]
+            out.parent.mkdir(parents=True, exist_ok=True)
+            out.write_text(json.dumps({"ok": True, "read_sha256": observed["read_sha"]}))
+            return {"path": str(out), "sha256": sha256_file(out), "metrics": {"ok": True}}
+
+        c2, result = self._dispatch(c, self._corrective_registry(reading_executor))
+        self.assertIsNone(result, getattr(result, "message", None))
+        # The executor observed the restored declared output byte-identically at dispatch time.
+        self.assertEqual(observed["read_sha"], self.labeled_baseline_sha)
+        self.assertEqual(c2.stage("labeling")["status"], "completed")
+
     def test_6_non_distinct_recovery_does_not_restore(self):
         # A recovery NOT classified distinct_evidence_artifact must take the original path: no
         # baseline restore, so if its corrective does not itself reproduce the declared output the

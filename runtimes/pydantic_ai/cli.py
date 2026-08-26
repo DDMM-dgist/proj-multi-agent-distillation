@@ -3377,6 +3377,28 @@ def _dispatch_recovery_corrective_action(controller, trigger, recovery, correcti
         return CampaignRunResult(
             CAMPAIGN_FAILED, EXIT_VALIDATION_REJECTED,
             f"recovery corrective action dispatch failed: {exc}", stage=return_stage)
+    # FE-050 (reordered per FE-051): a distinct_evidence_artifact recovery's corrective action
+    # dispatches an executor DISTINCT from the return stage's own route action, and that executor may
+    # itself READ the return stage's declared outputs (e.g. validate_species_mapping_consistency reads
+    # the teacher labeling manifest to expose its species->type-index mapping). start_iteration
+    # quarantined those declared outputs into run_dir/stale/ when the recovery iteration began, so
+    # they must be restored BYTE-IDENTICALLY from the frozen recovery baseline BEFORE the corrective
+    # executor runs -- otherwise the executor fails reading a now-quarantined input. Restoring a
+    # byte-identical baseline output leaves its sha256 in the iteration baseline (unchanged), so it is
+    # NOT what verify_recovery_execution keys on; the corrective's OWN distinct artifact, registered
+    # ADDITIVELY after dispatch (below), is the sole detected change. No Teacher inference / route
+    # re-run happens here. A no-op for every non-distinct recovery.
+    if recovery.get("materialization_transition") == "distinct_evidence_artifact":
+        try:
+            _restore_return_stage_baseline_outputs(c, return_stage, c.state["iterations"][-1])
+        except _RecoveryBaselineRestoreError as exc:
+            if c.stage(return_stage)["status"] == "running":
+                c.defer_stage_execution(return_stage, reason="baseline restore failed")
+            return CampaignRunResult(
+                CAMPAIGN_FAILED, EXIT_VALIDATION_REJECTED,
+                f"recovery corrective action for stage {return_stage!r} could not restore its "
+                "declared outputs byte-identically from the frozen recovery baseline before "
+                f"dispatch: {exc}", stage=return_stage)
     registry = registry if registry is not None else build_executor_registry()
     emitter.emit("executor_started", stage=return_stage, role=role,
                 action=corrective_action["action_type"])
@@ -3441,28 +3463,14 @@ def _dispatch_recovery_corrective_action(controller, trigger, recovery, correcti
             stage=return_stage)
     emitter.emit("executor_completed", stage=return_stage, role=role,
                 detail={"status": outcome.status})
-    # FE-050: a distinct_evidence_artifact recovery's corrective action dispatched an executor
-    # DISTINCT from the return stage's own route action (classified generically by
-    # workflow.recovery_taxonomy.classify_recovery_materialization and persisted on the recovery
-    # record as ``materialization_transition``). It produced NEW evidence and never re-emitted the
-    # stage's declared route outputs, which start_iteration quarantined into run_dir/stale/ when the
-    # recovery iteration began. Restore those declared outputs BYTE-IDENTICALLY from the frozen
-    # baseline (no Teacher inference / route re-run) so the declared-outputs check below passes, and
-    # carry the corrective's own distinct evidence artifact as ADDITIVE return-stage evidence so the
-    # stage's registered artifact set differs from the baseline -- exactly what
-    # verify_recovery_execution requires to accept the corrective as materialized.
+    # FE-050: the distinct_evidence_artifact corrective produced NEW evidence and never re-emitted the
+    # return stage's declared route outputs. Those outputs were already restored BYTE-IDENTICALLY from
+    # the frozen baseline BEFORE dispatch (see the FE-051 reorder above), so the declared-outputs
+    # check below passes. Here we carry the corrective's own distinct evidence artifact as ADDITIVE
+    # return-stage evidence so the stage's registered artifact set differs from the baseline -- exactly
+    # what verify_recovery_execution requires to accept the corrective as materialized.
     additive_evidence = []
     if recovery.get("materialization_transition") == "distinct_evidence_artifact":
-        try:
-            _restore_return_stage_baseline_outputs(c, return_stage, c.state["iterations"][-1])
-        except _RecoveryBaselineRestoreError as exc:
-            if c.stage(return_stage)["status"] == "running":
-                c.defer_stage_execution(return_stage, reason="baseline restore failed")
-            return CampaignRunResult(
-                CAMPAIGN_FAILED, EXIT_VALIDATION_REJECTED,
-                f"recovery corrective action for stage {return_stage!r} reported {outcome.status} "
-                f"but its declared outputs could not be restored byte-identically from the frozen "
-                f"recovery baseline: {exc}", stage=return_stage)
         corrective_artifact = _corrective_evidence_artifact_path(c, outcome, params)
         if corrective_artifact is None:
             if c.stage(return_stage)["status"] == "running":
