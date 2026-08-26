@@ -3212,6 +3212,93 @@ def _propose_recovery_via_reasoning_roles(controller, *, runtime, agent_specs_di
         "proposed and is awaiting human approval (see `approve-recovery`)", stage=failed_stage)
 
 
+class _RecoveryBaselineRestoreError(Exception):
+    """A distinct_evidence_artifact recovery could not restore the return stage's declared outputs
+    byte-identically from the frozen recovery baseline."""
+
+
+def _find_quarantined_baseline(stale_root, stage, name, want_sha256):
+    """Locate the byte-identical quarantined copy of a return-stage declared output that
+    ``invalidate_from``/``quarantine_artifacts`` moved into ``run_dir/stale/<stamp>/<stage>/<name>``
+    when the recovery iteration started. Matched on BOTH (stage subdir, file name) AND sha256, so a
+    like-named file from another stage or a content-different quarantine is never mistaken for it.
+    Returns the ``Path`` or ``None``."""
+    from workflow.integrity import sha256_file
+    if not stale_root.is_dir():
+        return None
+    for stamp_dir in sorted(stale_root.iterdir()):
+        candidate = stamp_dir / stage / name
+        if candidate.is_file() and sha256_file(candidate) == want_sha256:
+            return candidate
+    return None
+
+
+def _restore_return_stage_baseline_outputs(controller, return_stage, iteration):
+    """FE-050: restore ``return_stage``'s declared outputs byte-identically from the iteration's
+    frozen pre-recovery ``baseline_artifacts`` (the physical bytes were quarantined into
+    ``run_dir/stale/`` by ``start_iteration``'s ``invalidate_from``).
+
+    A ``distinct_evidence_artifact`` recovery's corrective action dispatches an executor DISTINCT
+    from the return stage's own route action -- it produces NEW evidence and never re-emits the
+    stage's declared route outputs. Those declared outputs were quarantined when the recovery
+    iteration started, so without restoration the corrective dispatch's declared-outputs check
+    fails MISSING_OUTPUTS even though the recovery is proceeding exactly as approved. Restoration is
+    strictly byte-identical: each restored file's sha256 must equal its frozen baseline sha256, and
+    the source must be the quarantined baseline copy -- never a re-derivation. Fails closed
+    (``_RecoveryBaselineRestoreError``) if any declared output has no frozen baseline or no
+    byte-identical quarantined copy, so nothing can silently fabricate a stage output."""
+    from workflow.integrity import sha256_file
+    c = controller
+    baseline_by_path = {
+        Path(record["path"]).resolve(): record["sha256"]
+        for record in iteration.get("baseline_artifacts", [])
+        if record["stage"] == return_stage
+    }
+    declared = [(c.run_dir / rel).resolve() for rel in c.stage(return_stage).get("outputs", [])]
+    stale_root = c.run_dir / "stale"
+    restored = []
+    for dest in declared:
+        if dest.exists():
+            restored.append(dest)
+            continue
+        want_sha256 = baseline_by_path.get(dest)
+        if want_sha256 is None:
+            raise _RecoveryBaselineRestoreError(
+                f"declared output {dest} has no frozen recovery baseline to restore from")
+        source = _find_quarantined_baseline(stale_root, return_stage, dest.name, want_sha256)
+        if source is None:
+            raise _RecoveryBaselineRestoreError(
+                f"no byte-identical quarantined baseline (sha256 {want_sha256}) found for {dest}")
+        import shutil
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(source, dest)
+        got_sha256 = sha256_file(dest)
+        if got_sha256 != want_sha256:
+            raise _RecoveryBaselineRestoreError(
+                f"restored baseline for {dest} has sha256 {got_sha256}, expected {want_sha256}")
+        restored.append(dest)
+    return restored
+
+
+def _corrective_evidence_artifact_path(controller, outcome, params):
+    """Resolve the run-local artifact a distinct-evidence corrective action produced (from the
+    dispatch ``outcome.artifact`` when freshly EXECUTED, else the corrective's declared
+    ``out_path`` on a resumed DUPLICATE). Returns a resolved ``Path`` that exists, or ``None``."""
+    candidate = None
+    artifact = getattr(outcome, "artifact", None)
+    if isinstance(artifact, dict):
+        candidate = artifact.get("path")
+    if not candidate:
+        candidate = params.get("out_path")
+    if not candidate:
+        return None
+    path = Path(candidate)
+    if not path.is_absolute():
+        path = controller.run_dir / path
+    path = path.resolve()
+    return path if path.exists() else None
+
+
 def _dispatch_recovery_corrective_action(controller, trigger, recovery, corrective_action,
                                          *, registry=None,
                                          emitter=None) -> Optional["CampaignRunResult"]:
@@ -3354,6 +3441,42 @@ def _dispatch_recovery_corrective_action(controller, trigger, recovery, correcti
             stage=return_stage)
     emitter.emit("executor_completed", stage=return_stage, role=role,
                 detail={"status": outcome.status})
+    # FE-050: a distinct_evidence_artifact recovery's corrective action dispatched an executor
+    # DISTINCT from the return stage's own route action (classified generically by
+    # workflow.recovery_taxonomy.classify_recovery_materialization and persisted on the recovery
+    # record as ``materialization_transition``). It produced NEW evidence and never re-emitted the
+    # stage's declared route outputs, which start_iteration quarantined into run_dir/stale/ when the
+    # recovery iteration began. Restore those declared outputs BYTE-IDENTICALLY from the frozen
+    # baseline (no Teacher inference / route re-run) so the declared-outputs check below passes, and
+    # carry the corrective's own distinct evidence artifact as ADDITIVE return-stage evidence so the
+    # stage's registered artifact set differs from the baseline -- exactly what
+    # verify_recovery_execution requires to accept the corrective as materialized.
+    additive_evidence = []
+    if recovery.get("materialization_transition") == "distinct_evidence_artifact":
+        try:
+            _restore_return_stage_baseline_outputs(c, return_stage, c.state["iterations"][-1])
+        except _RecoveryBaselineRestoreError as exc:
+            if c.stage(return_stage)["status"] == "running":
+                c.defer_stage_execution(return_stage, reason="baseline restore failed")
+            return CampaignRunResult(
+                CAMPAIGN_FAILED, EXIT_VALIDATION_REJECTED,
+                f"recovery corrective action for stage {return_stage!r} reported {outcome.status} "
+                f"but its declared outputs could not be restored byte-identically from the frozen "
+                f"recovery baseline: {exc}", stage=return_stage)
+        corrective_artifact = _corrective_evidence_artifact_path(c, outcome, params)
+        if corrective_artifact is None:
+            if c.stage(return_stage)["status"] == "running":
+                c.defer_stage_execution(return_stage, reason="no corrective evidence artifact")
+            return CampaignRunResult(
+                CAMPAIGN_FAILED, EXIT_VALIDATION_REJECTED,
+                f"recovery corrective action for stage {return_stage!r} reported {outcome.status} "
+                "but produced no registrable distinct evidence artifact (a distinct_evidence "
+                "recovery must emit an out_path artifact to materialize a change at the return "
+                "stage)", stage=return_stage)
+        declared_set = {(c.run_dir / rel).resolve()
+                        for rel in c.stage(return_stage).get("outputs", [])}
+        if corrective_artifact not in declared_set:
+            additive_evidence.append(corrective_artifact)
     declared = [(c.run_dir / rel).resolve() for rel in c.stage(return_stage).get("outputs", [])]
     missing = [str(path) for path in declared if not path.exists()]
     if missing:
@@ -3369,13 +3492,13 @@ def _dispatch_recovery_corrective_action(controller, trigger, recovery, correcti
             "declared outputs are still missing: " + ", ".join(missing), stage=return_stage)
     if c.stage(return_stage)["status"] != "completed":
         try:
-            c.complete_external_stage(return_stage, declared)
+            c.complete_external_stage(return_stage, declared + additive_evidence)
         except Exception:
             if c.stage(return_stage)["status"] == "running":
                 c.defer_stage_execution(return_stage, reason="stage could not complete")
             raise
     emitter.emit("artifact_registered", stage=return_stage,
-                detail={"artifacts": [str(p) for p in declared]})
+                detail={"artifacts": [str(p) for p in declared + additive_evidence]})
     return None
 
 
