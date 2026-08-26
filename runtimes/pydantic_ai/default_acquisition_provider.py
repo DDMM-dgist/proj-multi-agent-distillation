@@ -657,6 +657,7 @@ class FrameworkDefaultAcquisitionProvider:
         #     own diversity saturates. No fixed per-class quota, no human N -- a large/diverse class
         #     pool yields more than one frame; a descriptor-degenerate one yields exactly one.
         domain_local_added_by_class: dict[str, int] = {}
+        domain_local_knee_by_class: dict[str, int] = {}  # class-local saturation knee (provenance)
         floor_added: dict[str, int] = {}  # first pick per class (back-compat / presence marker)
         sel_set = set(selected)
         for c in unsupported:
@@ -690,6 +691,7 @@ class FrameworkDefaultAcquisitionProvider:
                     floor_added[c] = pick
                 added += 1
             domain_local_added_by_class[c] = added
+            domain_local_knee_by_class[c] = class_k
             covered.add(c)
 
         # (c) OPTIONAL SECONDARY global FPS top-up to the pool-wide novelty knee. This runs ONLY
@@ -699,17 +701,61 @@ class FrameworkDefaultAcquisitionProvider:
         #     out.
         selected = self._marginal_novelty_topup(vectors, selected, max(int(knee_k), len(selected)))
 
+        n_domain_local = sum(domain_local_added_by_class.values())
         composition = {
             "cumulative_prior_accepted": len(prior_local),
             "domain_local_added_by_class": dict(sorted(domain_local_added_by_class.items())),
-            "n_domain_local_frames": sum(domain_local_added_by_class.values()),
+            "domain_local_knee_by_class": dict(sorted(domain_local_knee_by_class.items())),
+            "n_domain_local_frames": n_domain_local,
             "floor_added_classes": sorted(floor_added),
             "n_floor_added": len(floor_added),
             "knee_k": int(knee_k),
+            "global_pool_knee_k": int(knee_k),
+            "n_global_topup": len(selected) - len(prior_local) - n_domain_local,
             "final_n_selected": len(selected),
             "unsupported_at_reacquisition": list(unsupported),
         }
         return selected, composition
+
+    @staticmethod
+    def _fe046_projection_sizing(global_sizing, composition, ordered_local, final_n):
+        """FE-047: derive the existing-pool projection's sizing evidence for the FE-046 cumulative
+        recovery branch.
+
+        The pool-wide ``global_sizing`` (``recommended_population_size == global knee k``) describes
+        ONLY the INITIAL branch, where selection == FPS[:k] so the two agree by construction. In
+        cumulative recovery the ACTUAL recommended population is the composed set
+        ``cumulative_prior UNION per-class domain-local saturation UNION optional global top-up``,
+        whose size (``final_n``) may EXCEED a fresh global knee -- that is the whole point of
+        cumulative recovery. The projected evidence must therefore report ``final_n`` as
+        ``recommended_population_size`` (== number of selected frames) or deterministic plan
+        validation rejects the self-consistent-by-design plan. The global knee k, the per-class
+        domain-local knees, and the full composition breakdown are preserved as provenance in the
+        rationale (and, independently, in the selection_result's composition); k is NEVER relabeled
+        as the final recommendation. This mutates NO acquisition-science quantity: frame identities,
+        per-class knees, domain-local additions, and top-up are all decided upstream and only
+        REPORTED here."""
+        recorded = int(composition.get("final_n_selected", final_n))
+        if recorded != int(final_n) or len(ordered_local) != int(final_n):
+            raise AcquisitionCapabilityGap(
+                "FE-047 sizing-evidence invariant violated: composed selection count "
+                f"(final_n_selected={recorded}, |ordered_local|={len(ordered_local)}) disagrees with "
+                f"the number of selected frames ({final_n}); refusing to emit inconsistent sizing",
+                gap_kind="CUMULATIVE_SIZING_INCONSISTENT")
+        rationale = (
+            f"FE-046 cumulative recovery: recommended_population_size={final_n} is the composed "
+            f"population (cumulative_prior_accepted={composition['cumulative_prior_accepted']} + "
+            f"domain_local={composition['n_domain_local_frames']} + "
+            f"global_topup={composition['n_global_topup']}). Pool-wide global knee "
+            f"k={composition['global_pool_knee_k']} is retained as provenance ONLY and is NOT the "
+            f"final recommendation (cumulative recovery may exceed a fresh global knee). "
+            f"domain_local_knee_by_class={composition['domain_local_knee_by_class']}; "
+            f"domain_local_added_by_class={composition['domain_local_added_by_class']}; "
+            f"unsupported_at_reacquisition={composition['unsupported_at_reacquisition']}.")
+        return global_sizing.model_copy(update={
+            "recommended_population_size": int(final_n),
+            "selected_positions": list(ordered_local),
+            "rationale": rationale})
 
     def _realize_existing_pool(
         self, controller, context, m, strategy, backend_id, proposal,
@@ -913,6 +959,7 @@ class FrameworkDefaultAcquisitionProvider:
                 dft_labels_used_as_selection_scores=False)
 
         # 3. Selection.
+        composition = None  # set only in the FE-046 cumulative branch (drives the sizing evidence)
         if fe046 is None:
             # INITIAL acquisition (pre-FE-046 behavior, unchanged): diversity selection over the SAME
             # vectors with the SAME FPS/seed as sizing -> the chosen positions equal
@@ -961,12 +1008,28 @@ class FrameworkDefaultAcquisitionProvider:
             selection_result=selection_result,
             teacher_identity_sha256=m.teacher_identity_sha256)
 
+        # FE-047: the pool-wide global sizing (``sizing``, recommended_population_size == global knee
+        # k) describes ONLY the INITIAL branch, where selection == FPS[:k] so the two agree by
+        # construction. In the FE-046 cumulative-recovery branch the ACTUAL recommended population is
+        # the composed set (cumulative_prior UNION per-class domain-local saturation UNION optional
+        # global top-up), whose size may exceed a fresh global knee -- that is the whole point of
+        # cumulative recovery. The projected sizing evidence must therefore report the composed count
+        # as recommended_population_size (== number of selected frames), or deterministic plan
+        # validation rejects the self-consistent-by-design plan. The global knee k, per-class knees,
+        # and the composition breakdown are preserved as provenance in the rationale (and in the
+        # selection_result composition); k is NEVER relabeled as the final recommendation.
+        if composition is None:
+            pool_sizing = sizing
+        else:
+            pool_sizing = self._fe046_projection_sizing(
+                sizing, composition, ordered_local, len(selected_source_global_indices))
+
         existing_pool_projection = build_existing_pool_projection(
             pool_path=pc["manifest_path"],
             eligible_source_categories=admissible_source_categories,
             selected_parent_structure_ids=selected_parent_structure_ids,
             selected_source_global_indices=selected_source_global_indices,
-            labeling_population_sizing=sizing.model_dump(mode="json"),
+            labeling_population_sizing=pool_sizing.model_dump(mode="json"),
             selection_result=selection_result,
             duplicate_handling=pc["duplicate_handling"],
             protected_reference_id=protected_reference_id,

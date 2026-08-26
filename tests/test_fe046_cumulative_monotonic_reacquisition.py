@@ -493,3 +493,128 @@ class TestDomainLocalAutonomousSizing:
         assert by_class["liquid_or_melt_SiO2"] == 9
         assert by_class["oxygen_vacancy_SiO2"] == 7
         assert by_class["condensed_pure_Si_boundary"] == 6
+
+
+# =========================== Class G -- FE-047: cumulative sizing-EVIDENCE / validator consistency
+# The FE-046 cumulative branch composes the selection as cumulative_prior UNION per-class
+# domain-local saturation UNION optional global top-up; its size (final_n) may EXCEED a fresh
+# pool-wide global knee k -- the whole point of cumulative recovery. Pre-FE-047 the existing-pool
+# projection still attached the INITIAL pool-wide sizing (recommended_population_size == global
+# knee k), so when k < final_n the deterministic plan validator rejected the self-consistent-by-
+# design plan ("recommended_population_size != number of selected frames") and the campaign failed
+# (exit 2) on every retry. FE-047 makes the projected sizing report the composed final_n as the
+# recommendation while PRESERVING the global knee k + per-class knees + composition as provenance.
+class TestFE047CumulativeSizingEvidenceConsistency:
+    def _global_sizing(self):
+        # A descriptor-degenerate eligible pool -> pool-wide global knee k == 1 (one frame
+        # represents an identical descriptor space). This deterministically forces the missing
+        # case: k=1 < cumulative_prior + domain-local additions.
+        from framework_v2.acquisition.generic_coverage import (
+            FrameworkSizingParams, recommend_labeling_population_sizing)
+        s = recommend_labeling_population_sizing(
+            [[0.0], [0.0], [0.0]], params=FrameworkSizingParams(), sizing_id="gsz",
+            coverage_gap_sha256="cov", protected_excluded_count=0,
+            target_labeled_population=None, max_teacher_label_calls=None)
+        assert s.recommended_population_size == 1  # global knee k = 1
+        return s
+
+    def _composition(self, final_n=4):
+        # cumulative_prior=2 + domain-local {clsB:1, clsC:1} + top-up 0 -> final_n=4 > k=1
+        return {
+            "cumulative_prior_accepted": 2,
+            "domain_local_added_by_class": {"clsB": 1, "clsC": 1},
+            "domain_local_knee_by_class": {"clsB": 1, "clsC": 1},
+            "n_domain_local_frames": 2,
+            "floor_added_classes": ["clsB", "clsC"],
+            "n_floor_added": 2,
+            "knee_k": 1,
+            "global_pool_knee_k": 1,
+            "n_global_topup": final_n - 4,
+            "final_n_selected": final_n,
+            "unsupported_at_reacquisition": ["clsB", "clsC"],
+        }
+
+    def test_recommended_equals_final_n_and_exceeds_global_knee(self):
+        prov = _provider()
+        gs = self._global_sizing()
+        comp = self._composition(final_n=4)
+        ps = prov._fe046_projection_sizing(gs, comp, [0, 1, 2, 3], 4)
+        # (1) final_n > global_k is valid in cumulative recovery; (2) recommended == final_n.
+        assert ps.recommended_population_size == 4
+        assert ps.recommended_population_size > gs.recommended_population_size
+        assert ps.selected_positions == [0, 1, 2, 3]
+
+    def test_global_knee_and_per_class_knees_preserved_as_provenance(self):
+        prov = _provider()
+        gs = self._global_sizing()
+        ps = prov._fe046_projection_sizing(gs, self._composition(4), [0, 1, 2, 3], 4)
+        # (3) the pool-wide global knee k is retained as provenance and NOT relabeled as final.
+        assert "global knee k=1" in ps.rationale
+        assert "provenance ONLY" in ps.rationale
+        # per-class domain-local knees preserved in the rationale
+        assert "domain_local_knee_by_class" in ps.rationale
+        assert "clsB" in ps.rationale and "clsC" in ps.rationale
+        # (input global sizing object is not mutated -> the INITIAL branch still uses knee k)
+        assert gs.recommended_population_size == 1
+
+    def test_frame_identities_and_domain_local_unchanged_by_fe047(self):
+        # FE-047 is a sizing-EVIDENCE change only: it must not alter which frames are selected nor
+        # the per-class domain-local knees decided upstream.
+        prov = _provider()
+        gs = self._global_sizing()
+        comp = self._composition(4)
+        before_added = dict(comp["domain_local_added_by_class"])
+        before_knee = dict(comp["domain_local_knee_by_class"])
+        ordered = [7, 3, 5, 9]
+        ps = prov._fe046_projection_sizing(gs, comp, ordered, 4)
+        assert ps.selected_positions == ordered  # exact frame ordering preserved
+        assert comp["domain_local_added_by_class"] == before_added  # not mutated
+        assert comp["domain_local_knee_by_class"] == before_knee
+
+    def test_fails_closed_when_composition_count_disagrees(self):
+        prov = _provider()
+        gs = self._global_sizing()
+        comp = self._composition(final_n=5)  # claims 5 but we pass final_n=4 / len(ordered)=4
+        with pytest.raises(AcquisitionCapabilityGap) as ei:
+            prov._fe046_projection_sizing(gs, comp, [0, 1, 2, 3], 4)
+        assert ei.value.gap_kind == "CUMULATIVE_SIZING_INCONSISTENT"
+
+    def _projection(self, sizing_evidence):
+        from framework_v2.acquisition.plan_assembly import build_existing_pool_projection
+        from framework_v2.acquisition.selection import select_candidates_from_indices
+        gen = _gen_result(["a", "b", "c", "d"])
+        sel = select_candidates_from_indices(
+            selection_id="sel", generation_result=gen, selected_indices=[0, 1, 2, 3],
+            disjointness_checker=_pass_checker)
+        return build_existing_pool_projection(
+            pool_path="pool.json", eligible_source_categories=["fam"],
+            selected_parent_structure_ids=["a", "b", "c", "d"],
+            selected_source_global_indices=[0, 1, 2, 3],
+            labeling_population_sizing=sizing_evidence.model_dump(mode="json"),
+            selection_result=sel, duplicate_handling="reject",
+            protected_reference_id=None, protected_candidate_count=0,
+            protected_excluded_count=0, eligible_population_after_exclusion=4)
+
+    def test_deterministic_validator_accepts_fe047_projection_rejects_pre_fix(self):
+        # (7) the deterministic bind-time validator ACCEPTS the FE-047 projection; the PRE-FIX
+        # projection (global knee k attached to a cumulative selection) is REJECTED with the exact
+        # live error -- this is the regression that the eng3 exit-2 failure exposed.
+        from runtimes.pydantic_ai.executors import (
+            _AcquisitionPlanError, _validate_existing_pool_plan)
+        prov = _provider()
+        gs = self._global_sizing()
+        fe047 = prov._fe046_projection_sizing(gs, self._composition(4), [0, 1, 2, 3], 4)
+
+        proj_new = self._projection(fe047)
+        validated = _validate_existing_pool_plan(proj_new)  # must not raise
+        assert validated["n_selected"] == 4
+        # framework_v2 validator predicate (validators.py:210-213) also holds
+        assert (proj_new["labeling_population_sizing"]["recommended_population_size"]
+                == proj_new["n_selected"])
+
+        proj_pre_fix = self._projection(gs)  # global knee k=1 on a 4-frame selection
+        assert (proj_pre_fix["labeling_population_sizing"]["recommended_population_size"]
+                != proj_pre_fix["n_selected"])
+        with pytest.raises(_AcquisitionPlanError) as ei:
+            _validate_existing_pool_plan(proj_pre_fix)
+        assert "recommended_population_size must equal n_selected" in str(ei.value)
