@@ -59,7 +59,11 @@ from framework_v2.acquisition.plan_assembly import (
     build_existing_pool_projection,
     build_legacy_projection,
 )
-from framework_v2.acquisition.selection import select_candidates
+from framework_v2.acquisition.selection import (
+    farthest_point_selection,
+    select_candidates,
+    select_candidates_from_indices,
+)
 
 from .acquisition_planner import (
     AcquisitionPlanningContext,
@@ -512,6 +516,166 @@ class FrameworkDefaultAcquisitionProvider:
         the frame index; a category string itself carries no ``#``."""
         return item_id.rsplit("#", 1)[0]
 
+    # -- FE-046 cumulative + monotonic coverage-gap reacquisition -----------------------------
+    @staticmethod
+    def _latest_coverage_gap_unsupported(controller):
+        """The declared structure classes the MOST RECENT Stage-4 coverage-adequacy gate found
+        UNSUPPORTED, read from the persisted gate event (``coverage_adequacy`` block, FE-042) --
+        never re-derived and never inferred from transient recovery state.
+
+        Returns the ordered unsupported-class list (possibly empty if the latest coverage gate was
+        satisfied), or ``None`` when no coverage-adequacy gate has ever fired (an INITIAL acquisition
+        that must keep the pre-FE-046 behavior)."""
+        for ev in reversed(controller.state.get("events", []) or []):
+            if ev.get("type") == "gate" and isinstance(ev.get("coverage_adequacy"), dict):
+                return list(ev["coverage_adequacy"].get("unsupported_structure_classes") or [])
+        return None
+
+    @staticmethod
+    def _prior_accepted_source_globals(controller):
+        """The UNION of every prior-accepted existing-pool global index across ALL superseded
+        ``acquisition_plan`` inputs (cumulative acquired population). A recovery reacquisition
+        SUPERSEDES its predecessor plan, so by the time the next plan is realized every previously
+        accepted plan is a superseded input; unioning their ``selected_source_global_indices`` is the
+        cumulative set FE-046 must never discard."""
+        import json as _json
+        from pathlib import Path as _Path
+        globals_out: set[int] = set()
+        for rec in controller.state.get("inputs", []) or []:
+            if not rec.get("superseded"):
+                continue
+            snap = rec.get("snapshot")
+            if not snap or not str(snap).endswith("acquisition_plan.json"):
+                continue
+            p = _Path(snap)
+            if not p.is_file():
+                continue
+            try:
+                plan = _json.loads(p.read_text())
+            except (ValueError, OSError):
+                continue
+            for g in plan.get("selected_source_global_indices") or []:
+                globals_out.add(int(g))
+        return globals_out
+
+    @staticmethod
+    def _marginal_novelty_topup(vectors, initial_selected, target_size, *,
+                                candidate_pool=None):
+        """Deterministic farthest-point *marginal-novelty* extension of an already-chosen set.
+
+        Given ``initial_selected`` local indices, greedily add the point whose min-Euclidean distance
+        to the current selected set is largest (ties -> lowest index), restricted to ``candidate_pool``
+        when given, until ``target_size`` is reached. This is the SAME raw-Euclidean FPS the selector
+        and sizing use, generalized to seed from the cumulative/floor set instead of a single index, so
+        the top-up frames are the most novel RELATIVE to everything already retained. Returns the full
+        ordered selection (initial set first, in its given order, then the novelty-ordered additions)."""
+        import numpy as np
+
+        arr = np.asarray(vectors, dtype=float)
+        n = arr.shape[0]
+        selected = list(initial_selected)
+        sel_set = set(selected)
+        pool = set(range(n)) if candidate_pool is None else set(candidate_pool)
+        target = min(int(target_size), len(sel_set | pool))
+        if not selected:
+            # No cumulative/floor seed: fall back to canonical FPS-from-0 over the candidate pool.
+            base = farthest_point_selection(vectors, min(target, n), seed_index=0)
+            return [i for i in base if i in pool][:target] if candidate_pool is not None else base
+
+        min_dist = np.full(n, np.inf)
+        for s in selected:
+            min_dist = np.minimum(min_dist, np.linalg.norm(arr - arr[s], axis=1))
+        while len(selected) < target:
+            remaining = [i for i in pool if i not in sel_set]
+            if not remaining:
+                break
+            nxt = max(remaining, key=lambda i: (float(min_dist[i]), -i))
+            selected.append(nxt)
+            sel_set.add(nxt)
+            min_dist = np.minimum(min_dist, np.linalg.norm(arr - arr[nxt], axis=1))
+        return selected
+
+    def _compose_cumulative_coverage_selection(self, *, vectors, item_ids, eligible_positions,
+                                               knee_k, fe046):
+        """Compose the FE-046 coverage-gap reacquisition selection as
+        ``cumulative_prior_accepted + per_unsupported_class_floor + fps_topup_to_knee``.
+
+        Returns ``(ordered_local_indices, composition_provenance)`` where the indices are into the
+        eligible-subset ``item_ids``/``vectors``. The composed set is a SUPERSET of the cumulative
+        prior-accepted frames plus one frame per still-uncovered unsupported class, so coverage is
+        monotonic by construction (an accepted frame is never dropped, a covered class never lost)."""
+        from validation.coverage_gap_assessment import resolve_config_type_domain
+
+        label_index = fe046["label_index"]
+        unsupported = fe046["unsupported"]
+        floor_targets = fe046["floor_targets"]
+        prior_globals = fe046["prior_accepted_globals"]
+
+        local_of_global = {g: i for i, g in enumerate(eligible_positions)}
+
+        # (a) CUMULATIVE core: retain every prior-accepted frame. Each is in-scope (admissible was
+        #     widened to its family) and non-protected (it was when accepted), so it MUST resolve to
+        #     an eligible local index; a missing one would silently DROP an accepted frame -> fail
+        #     closed rather than violate the cumulative invariant.
+        prior_local: list[int] = []
+        dropped: list[int] = []
+        for g in sorted(prior_globals):
+            loc = local_of_global.get(g)
+            if loc is None:
+                dropped.append(g)
+            else:
+                prior_local.append(loc)
+        if dropped:
+            raise AcquisitionCapabilityGap(
+                "FE-046 cumulative invariant violated: prior-accepted frame global(s) "
+                f"{dropped[:20]} are no longer eligible; refusing to drop an accepted frame",
+                gap_kind="CUMULATIVE_FRAME_DROPPED")
+        selected: list[int] = list(dict.fromkeys(prior_local))
+
+        # Classes ALREADY covered by the cumulative core -- accumulation alone can resolve a class
+        # the prior superseding plan had dropped.
+        covered: set[str] = set()
+        for loc in selected:
+            dom, _ = resolve_config_type_domain(self._source_category_of(item_ids[loc]), label_index)
+            if dom is not None:
+                covered.add(dom)
+
+        # (b) per-class occupancy FLOOR: add the most marginally-novel eligible frame from each
+        #     still-uncovered unsupported class's target families.
+        floor_added: dict[str, int] = {}
+        sel_set = set(selected)
+        for c in unsupported:
+            if c in covered:
+                continue
+            fams = set(floor_targets.get(c, []))
+            pool = [loc for loc in range(len(item_ids))
+                    if loc not in sel_set and self._source_category_of(item_ids[loc]) in fams]
+            if not pool:
+                raise AcquisitionCapabilityGap(
+                    f"FE-046 occupancy floor cannot cover declared class {c!r}: no eligible "
+                    "non-protected frame remains in its target families; failing closed",
+                    gap_kind="POOL_LACKS_STRUCTURE_CLASS")
+            pick = self._marginal_novelty_topup(
+                vectors, selected, len(selected) + 1, candidate_pool=pool)[-1]
+            selected.append(pick)
+            sel_set.add(pick)
+            floor_added[c] = pick
+            covered.add(c)
+
+        # (c) FPS TOP-UP to the novelty knee (size can only grow; never below the cumulative+floor
+        #     core -- so a shrinking knee can never force an accepted frame or a covered class out).
+        selected = self._marginal_novelty_topup(vectors, selected, max(int(knee_k), len(selected)))
+
+        composition = {
+            "cumulative_prior_accepted": len(prior_local),
+            "floor_added_classes": sorted(floor_added),
+            "n_floor_added": len(floor_added),
+            "knee_k": int(knee_k),
+            "final_n_selected": len(selected),
+            "unsupported_at_reacquisition": list(unsupported),
+        }
+        return selected, composition
+
     def _realize_existing_pool(
         self, controller, context, m, strategy, backend_id, proposal,
     ) -> RealizedAcquisition:
@@ -576,6 +740,71 @@ class FrameworkDefaultAcquisitionProvider:
                 "the acquisition recipe declared no admissible source family; cannot derive an "
                 "objective-conditioned eligible population and will not fall back to the full pool",
                 gap_kind="SCOPE_ELIGIBILITY_UNDECIDABLE")
+
+        # -- FE-046: cumulative + monotonic coverage-gap reacquisition ----------------------------
+        # A targeted reacquisition (return_stage=acquisition after a Stage-4 COVERAGE_INSUFFICIENT
+        # gate) must (1) ACCUMULATE the prior-accepted frames rather than supersede-and-replace them,
+        # and (2) guarantee a per-declared-class occupancy FLOOR so every still-unsupported class is
+        # covered in ONE cycle. Pre-FE-046 this branch re-selected a fresh ~knee-sized global-FPS set
+        # with NO occupancy floor, so coverage oscillated (frames for one class were dropped to add
+        # another) and never converged. This block detects the recovery context from PERSISTED facts
+        # (a prior superseded acquisition_plan + the latest coverage gate's unsupported set), derives
+        # the label_map target families, and FAILS CLOSED IMMEDIATELY if any unsupported class is
+        # unremediable from the pool. INITIAL acquisition (no prior plan / no coverage gate) is
+        # untouched: fe046 stays None and the legacy FPS-to-knee selection runs below.
+        fe046 = None
+        unsupported = self._latest_coverage_gap_unsupported(controller)
+        prior_accepted_globals = self._prior_accepted_source_globals(controller)
+        if prior_accepted_globals and unsupported:
+            from collections import Counter as _Counter
+
+            from validation.coverage_gap_assessment import (
+                build_label_index as _build_label_index,
+                derive_reacquisition_targets as _derive_reacquisition_targets,
+            )
+            from .acquisition_readiness import _load_scope_classification_evidence
+
+            project_dir = controller.state.get("project_dir") or "."
+            scope_v2, binding = _load_scope_classification_evidence(controller, project_dir)
+            if scope_v2 is None:
+                raise AcquisitionCapabilityGap(
+                    "coverage-gap reacquisition requires the frozen config_type->structure-class "
+                    f"label_map the Stage-4 gate used, but none is resolvable ({binding}); refusing "
+                    "to reacquire without the occupancy floor's authoritative class map",
+                    gap_kind="SCOPE_LABEL_MAP_UNRESOLVABLE")
+            label_map = scope_v2.model_dump()["label_map"]
+            pool_counts = _Counter(self._source_category_of(iid) for iid in full_item_ids)
+            reacq = _derive_reacquisition_targets(
+                unsupported, label_map, pool_counts,
+                already_eligible_source_categories=admissible_categories)
+            # USER-DIRECTED (FE-046): an unremediable unsupported class -> fail closed IMMEDIATELY.
+            # The pool physically contains no source family the frozen label_map maps to that declared
+            # class, so no reacquisition can ever cover it: a genuine scientific boundary, surfaced
+            # rather than papered over with partial coverage.
+            if reacq["unremediable_classes"]:
+                raise AcquisitionCapabilityGap(
+                    "coverage-gap reacquisition cannot remediate declared structure class(es) "
+                    f"{sorted(reacq['unremediable_classes'])!r}: the pool contains NO source family "
+                    "the frozen label_map maps to them (primary_claim). Failing closed rather than "
+                    "acquiring partial coverage.",
+                    gap_kind="POOL_LACKS_STRUCTURE_CLASS")
+            floor_targets = reacq["target_config_types_by_class"]
+            # Widen the admissible families so (a) every prior-accepted frame stays in scope (the
+            # cumulative invariant: never drop an accepted frame) and (b) each still-unsupported
+            # class's target families are selectable for the floor. This is deterministic remediation
+            # driven by the FROZEN coverage gate's own label_map -- the classes it defines as MUST-be-
+            # covered -- not an LLM scope escape.
+            for g in prior_accepted_globals:
+                if 0 <= g < len(full_item_ids):
+                    admissible_categories.add(self._source_category_of(full_item_ids[g]))
+            for fams in floor_targets.values():
+                admissible_categories.update(fams)
+            fe046 = {
+                "unsupported": list(unsupported),
+                "floor_targets": floor_targets,
+                "prior_accepted_globals": prior_accepted_globals,
+                "label_index": _build_label_index(label_map),
+            }
 
         admissible_positions = [
             i for i, iid in enumerate(full_item_ids)
@@ -646,13 +875,29 @@ class FrameworkDefaultAcquisitionProvider:
                 status="PASS", n_checked=len(selected_ids), n_overlaps=0,
                 dft_labels_used_as_selection_scores=False)
 
-        # 3. Diversity selection over the SAME vectors with the SAME FPS/seed as sizing -> the chosen
-        #    positions equal sizing.selected_positions[:k], so selection and sizing never disagree.
-        selection_result = select_candidates(
-            selection_id=f"{m.frozen_artifact.evidence_id}-selection",
-            generation_result=generation_result, descriptors=vectors,
-            k=k, disjointness_checker=_disjointness_checker,
-            selector="farthest_point_sampling", seed_index=0)
+        # 3. Selection.
+        if fe046 is None:
+            # INITIAL acquisition (pre-FE-046 behavior, unchanged): diversity selection over the SAME
+            # vectors with the SAME FPS/seed as sizing -> the chosen positions equal
+            # sizing.selected_positions[:k], so selection and sizing never disagree.
+            selection_result = select_candidates(
+                selection_id=f"{m.frozen_artifact.evidence_id}-selection",
+                generation_result=generation_result, descriptors=vectors,
+                k=k, disjointness_checker=_disjointness_checker,
+                selector="farthest_point_sampling", seed_index=0)
+        else:
+            # FE-046 coverage-gap reacquisition: compose CUMULATIVE (retain every prior-accepted
+            # frame) + per-unsupported-class occupancy FLOOR (>=1 frame each, chosen by marginal
+            # novelty) + FPS top-up to the novelty knee. The composed set can only GROW relative to
+            # the cumulative+floor core, so coverage never regresses.
+            ordered_local, composition = self._compose_cumulative_coverage_selection(
+                vectors=vectors, item_ids=item_ids, eligible_positions=eligible_positions,
+                knee_k=k, fe046=fe046)
+            selection_result = select_candidates_from_indices(
+                selection_id=f"{m.frozen_artifact.evidence_id}-selection",
+                generation_result=generation_result, selected_indices=ordered_local,
+                disjointness_checker=_disjointness_checker,
+                selector="fe046_cumulative_floor_fps", seed_index=0, composition=composition)
 
         # 4. Map the selected candidate ids back to their GLOBAL pool positions (manifest order over
         #    the FULL pool, not the masked subset) so the Stage-3 executor -- which concatenates all

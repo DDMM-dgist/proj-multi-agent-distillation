@@ -2839,6 +2839,43 @@ def _gate_alleges_accuracy_disagreement(vote_bundle) -> bool:
     return False
 
 
+def _fe046_recovery_progress_check(controller, failed_stage, current_cov):
+    """FE-046 invariant 2 (strict-reduction-or-fail-closed).
+
+    A coverage-gap recovery (an FE-042 Stage-4 ``coverage_adequacy`` REVISE that routes to targeted
+    reacquisition) must STRICTLY reduce the unsupported declared-class set every successful cycle.
+    Compare the current cycle's unsupported set against the most recent DISTINCT prior coverage
+    report's (both read from the persisted ``coverage_adequacy`` gate events -- never re-derived, so
+    the ceiling survives stage invalidation). Return a fail-closed ``CampaignRunResult`` when the set
+    did not shrink (no progress, or oscillation), else ``None`` to let the recovery proceed. Failing
+    HERE -- before the Analyst/Orchestrator are dispatched -- is what stops an uncapped non-convergent
+    reacquisition from burning hosted-provider credits indefinitely."""
+    cur = set(current_cov.get("unsupported_structure_classes") or [])
+    cur_sha = current_cov.get("report_sha256")
+    prior = None
+    for ev in reversed(controller.state.get("events", []) or []):
+        if ev.get("type") != "gate" or ev.get("stage") != failed_stage:
+            continue
+        ca = ev.get("coverage_adequacy")
+        if not isinstance(ca, dict) or ca.get("unsupported_structure_classes") is None:
+            continue
+        if ca.get("report_sha256") == cur_sha:
+            continue  # same coverage report as the current cycle -- not a prior cycle
+        prior = ca
+        break
+    if prior is None:
+        return None  # first coverage-gap cycle: nothing to compare against
+    prev = set(prior.get("unsupported_structure_classes") or [])
+    if cur < prev:  # proper subset => the cycle genuinely reduced the unsupported set
+        return None
+    return CampaignRunResult(
+        CAMPAIGN_FAILED, EXIT_BLOCKED_POLICY,
+        "RECOVERY_NO_PROGRESS: FE-046 requires each coverage-gap recovery to STRICTLY reduce the "
+        f"unsupported declared-class set, but it did not shrink (previous={sorted(prev)}, "
+        f"current={sorted(cur)}). Failing closed instead of looping a non-convergent reacquisition.",
+        stage=failed_stage)
+
+
 def _propose_recovery_via_reasoning_roles(controller, *, runtime, agent_specs_dir, exchange_dir,
                                           repo_root, mock_analyst_response,
                                           mock_orchestrator_response,
@@ -2866,6 +2903,16 @@ def _propose_recovery_via_reasoning_roles(controller, *, runtime, agent_specs_di
     emitter = emitter or CampaignEventEmitter(c.run_dir, quiet=True)
     pending = c.state["pending_recovery"]
     failed_stage = pending["failed_stage"]
+    # FE-046 invariant 2: for a coverage-gap recovery, fail closed BEFORE any (paid) LLM diagnosis/
+    # proposal if the latest reacquisition did not strictly shrink the unsupported declared-class set.
+    cov = pending.get("coverage_adequacy")
+    if isinstance(cov, dict) and cov.get("unsupported_structure_classes") is not None:
+        no_progress = _fe046_recovery_progress_check(c, failed_stage, cov)
+        if no_progress is not None:
+            emitter.emit("recovery_no_progress", stage=failed_stage,
+                        detail={"unsupported_structure_classes":
+                                sorted(cov.get("unsupported_structure_classes") or [])})
+            return no_progress
     emitter.emit("recovery_started", stage=failed_stage)
     # Controller-admissible return-stage subset, surfaced to both the Analyst's recovery-target
     # context and the Orchestrator's return-stage context, and validated against below -- see

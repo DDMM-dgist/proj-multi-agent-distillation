@@ -107,3 +107,65 @@ def select_candidates(
         diversity_evidence=diversity_evidence,
         disjointness_report=report,
     )
+
+
+def select_candidates_from_indices(
+    *,
+    selection_id: str,
+    generation_result: CandidateGenerationResult,
+    selected_indices: Sequence[int],
+    disjointness_checker: Callable[[list[str]], ProtectedDisjointnessReport],
+    selector: str = "cumulative_floor_fps",
+    seed_index: int = 0,
+    composition: dict | None = None,
+) -> CandidateSelectionResult:
+    """Build a selection result from an EXPLICIT, already-ordered index list into
+    ``generation_result.candidate_ids`` -- rather than re-deriving the indices by FPS.
+
+    This is the FE-046 cumulative/monotonic composition path: the caller assembles the final
+    selected set as ``prior_accepted_union + per_unsupported_class_occupancy_floor + fps_topup`` and
+    hands the concrete ordered indices here. The MANDATORY protected-reference disjointness check is
+    still applied to the resulting ids and fails closed exactly like :func:`select_candidates` (the
+    CandidateSelectionResult validator rejects a non-PASS report), so an explicit composition can
+    never bypass the protected-reference invariant. Indices are de-duplicated preserving first-seen
+    order; the FPS-derived novelty ORDER supplied by the caller is preserved."""
+    ids = list(generation_result.candidate_ids)
+    n = len(ids)
+    if not ids:
+        raise ValueError("no candidates to select from")
+
+    seen: set[int] = set()
+    ordered: list[int] = []
+    for raw in selected_indices:
+        i = int(raw)
+        if not (0 <= i < n):
+            raise ValueError(f"selected index {i} out of range for {n} candidate(s)")
+        if i not in seen:
+            seen.add(i)
+            ordered.append(i)
+    if not ordered:
+        raise ValueError("no candidates selected")
+
+    selected_ids = [ids[i] for i in ordered]
+    report = disjointness_checker(selected_ids)
+
+    diversity_evidence = {
+        "selector": selector,
+        "n_candidates": n,
+        "n_selected": len(selected_ids),
+        "seed_index": seed_index,
+        "selection_order_indices": ordered,
+    }
+    if composition is not None:
+        diversity_evidence["composition"] = composition
+
+    return CandidateSelectionResult(
+        selection_id=selection_id,
+        generation_result_sha256=generation_result.content_sha256(),
+        selector=selector,
+        selector_config={"k": len(selected_ids), "seed_index": seed_index,
+                         "composition": "cumulative_union+per_class_floor+fps_topup"},
+        selected_candidate_ids=selected_ids,
+        diversity_evidence=diversity_evidence,
+        disjointness_report=report,
+    )
