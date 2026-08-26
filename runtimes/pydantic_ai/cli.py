@@ -742,6 +742,43 @@ def _protection_consuming_action(action):
     return action in {"acquire_structures", "label_with_teacher", "train_committee"}
 
 
+# Protection reference kinds a protection-consuming action (acquire_structures / label_with_teacher /
+# train_committee) enforces disjointness against, in precedence order. Both kinds materialize a
+# permanently-protected population the Student may never consume; the identity-only kind (FE-023)
+# carries no DFT labels but is an equally-binding protection boundary. EVALUATION-only kinds (e.g.
+# recovered-original-holdout) are deliberately excluded -- they are selected by teacher-validation
+# plan, not by generic protection-consuming actions (see _resolve_teacher_reference_binding).
+_CANONICAL_PROTECTION_REFERENCE_KINDS = ("protected-existing-dft", "protected-structure-identity")
+
+
+def _canonical_protected_reference_yaml(controller, protected_references=None):
+    """The single canonical protected reference_yaml every protection-consuming action resolves
+    against, so acquisition and teacher-labeling (and committee training) enforce disjointness
+    against the SAME protected population regardless of which protection kind the run bound.
+
+    Returns the resolved absolute path of the highest-precedence bound protection reference
+    (``protected-existing-dft`` first, else ``protected-structure-identity``), or ``None`` when the
+    run binds no protection reference at all (an explicitly unprotected campaign). Never silently
+    substitutes an EVALUATION-only reference for the protected population."""
+    if protected_references is None:
+        protected_references = _protected_reference_from_inputs(controller)
+    for kind in _CANONICAL_PROTECTION_REFERENCE_KINDS:
+        ref = protected_references.get(kind)
+        if ref:
+            return ref
+    return None
+
+
+def _stage_declares_protection_audit(stage_cfg):
+    """True iff the stage declares a ``*_protection_audit.json`` output -- i.e. its executor is
+    contractually required to emit a protected-reference exclusion audit, which it can only do when a
+    canonical protected reference_yaml is resolvable."""
+    for out in (stage_cfg.get("outputs") or []):
+        if str(out).endswith("_protection_audit.json"):
+            return True
+    return False
+
+
 def _acquisition_protection_reference_yaml(controller):
     """The EXACT ``reference_yaml`` the ``acquire_structures`` executor enforces protected-reference
     disjointness against -- resolved controller-native so the autonomous acquisition PLANNER can
@@ -753,10 +790,9 @@ def _acquisition_protection_reference_yaml(controller):
     through the same ``{run_dir}`` / ``{artifacts_dir}`` / ``{project_dir}`` substitution. Returns
     ``None`` only when the run declares no acquisition protection reference at all (an explicitly
     unprotected campaign) -- never a silent empty protected set for a misconfigured one."""
-    protected_references = _protected_reference_from_inputs(controller)
-    protected = protected_references.get("protected-existing-dft")
-    if protected:
-        return protected
+    canonical = _canonical_protected_reference_yaml(controller)
+    if canonical:
+        return canonical
     import yaml
     cfg = yaml.safe_load(Path(controller.state["workflow_config"]).read_text()) or {}
     subs = {"run_dir": str(controller.run_dir),
@@ -845,12 +881,17 @@ def _proposal_from_stage(controller, stage_name, stage_cfg):
             raise ValueError("stage proposal reference_yaml does not match the required reference config")
         params["reference_yaml"] = reference_path
     elif _protection_consuming_action(action):
-        protected_reference = protected_references.get("protected-existing-dft")
-        if protected_reference:
-            existing = params.get("reference_yaml")
+        protected_reference = _canonical_protected_reference_yaml(controller, protected_references)
+        existing = params.get("reference_yaml")
+        if protected_reference is not None:
             if existing is not None and str(Path(existing).resolve()) != protected_reference:
                 raise ValueError("stage proposal reference_yaml does not match the controller-bound protected reference")
             params["reference_yaml"] = protected_reference
+        elif existing is None and _stage_declares_protection_audit(stage_cfg):
+            raise ValueError(
+                f"protection-consuming action {action!r} declares a protection audit output but no "
+                "canonical protected reference (protected-existing-dft or protected-structure-identity) "
+                "is bound to this run -- cannot emit the required protection audit; fail closed")
     if action == "acquire_structures" and not (
             params.get("acquisition_plan_path") or params.get("acquisition_plan")):
         # An AcquisitionPlan bound to the run (autonomously by the run-campaign planner, or supplied
