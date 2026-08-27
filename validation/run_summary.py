@@ -75,6 +75,25 @@ def validate_run_summary_report(manifest_path, submitted_artifacts=None, allowed
     outcome = payload.get("campaign_outcome")
     if not isinstance(outcome, str) or not outcome.strip():
         raise ValueError("run summary requires a non-empty campaign_outcome")
+    unresolved = payload.get("unresolved_human_inputs", [])
+    if not isinstance(unresolved, list):
+        raise ValueError("run summary unresolved_human_inputs must be a list")
+    if outcome == "ALL_STAGES_PASSED":
+        bad_stages = [stage["name"] for stage in stages
+                      if stage["status"] not in {"completed", "not_applicable"}
+                      or stage["gate"] not in {"PASS", "NOT_APPLICABLE"}]
+        if bad_stages:
+            raise ValueError("ALL_STAGES_PASSED requires every required stage completed and gated")
+        missing_artifacts = [stage["name"] for stage in stages
+                             if stage["status"] == "completed" and not stage.get("artifacts")]
+        if missing_artifacts:
+            raise ValueError("ALL_STAGES_PASSED requires registered artifact hashes for completed stages")
+        active_recoveries = [r for r in recoveries
+                             if r.get("status") not in {"superseded", "resolved", "completed", "cancelled", "withdrawn"}]
+        if active_recoveries:
+            raise ValueError("ALL_STAGES_PASSED cannot be reported with active/pending recoveries")
+        if unresolved:
+            raise ValueError("ALL_STAGES_PASSED cannot be reported with unresolved human input")
 
     validate_evidence(manifest_path, payload.get("evidence"), submitted_artifacts, False,
                       allowed_evidence, label="run_summary")

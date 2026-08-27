@@ -471,6 +471,42 @@ def _exec_force_error_channel(proposal):
     return _artifact({"channel": metrics}, p.get("out_path"))
 
 
+def _render_run_summary_markdown(report):
+    lines = [
+        f"# Run Summary: {report['run_id']}",
+        "",
+        f"Campaign outcome: `{report['campaign_outcome']}`",
+        "",
+        "## Stages",
+        "",
+        "| Stage | Status | Gate | Artifacts |",
+        "|---|---|---|---:|",
+    ]
+    for stage in report["stages"]:
+        lines.append(
+            f"| {stage['name']} | {stage['status']} | {stage['gate']} | {len(stage.get('artifacts') or [])} |")
+    lines.extend(["", "## Recoveries", ""])
+    if report["recoveries"]:
+        for recovery in report["recoveries"]:
+            lines.append(
+                f"- recovery-{int(recovery['id']):03d}: {recovery['status']} "
+                f"({recovery.get('failed_stage')})")
+    else:
+        lines.append("- none")
+    lines.extend(["", "## Unresolved Human Inputs", ""])
+    if report.get("unresolved_human_inputs"):
+        for item in report["unresolved_human_inputs"]:
+            lines.append(f"- {item}")
+    else:
+        lines.append("- none")
+    lines.extend(["", "## Evidence", ""])
+    for ev in report["evidence"]:
+        integ = ev.get("integrity") or {}
+        lines.append(f"- {ev.get('role')}: `{ev.get('path')}` sha256={integ.get('sha256')}")
+    lines.append("")
+    return "\n".join(lines)
+
+
 def _exec_generate_run_summary(proposal):
     """Composite analyst driver for the ``analysis`` production stage: reads the state snapshot
     ``runtimes.pydantic_ai.cli._assemble_run_summary_state`` mechanically assembled from the CURRENT
@@ -485,9 +521,16 @@ def _exec_generate_run_summary(proposal):
     state = json.loads(state_path.read_text())
 
     stages = state["stages"]
-    if all(stage["gate"] in ("PASS", "NOT_APPLICABLE") for stage in stages):
+    active_recoveries = [r for r in state.get("recoveries", [])
+                         if r.get("status") not in {"superseded", "resolved", "completed", "cancelled", "withdrawn"}]
+    unresolved_human_inputs = list(p.get("unresolved_human_inputs") or state.get("unresolved_human_inputs") or [])
+    all_complete = all(stage["status"] in ("completed", "not_applicable")
+                       and stage["gate"] in ("PASS", "NOT_APPLICABLE")
+                       and (stage["status"] != "completed" or bool(stage.get("artifacts")))
+                       for stage in stages)
+    if all_complete and not active_recoveries and not unresolved_human_inputs:
         campaign_outcome = "ALL_STAGES_PASSED"
-    elif any(stage["gate"] in ("REVISE", "FAIL") for stage in stages):
+    elif active_recoveries or any(stage["gate"] in ("REVISE", "FAIL") for stage in stages):
         campaign_outcome = "RECOVERY_IN_PROGRESS_OR_REQUIRED"
     else:
         campaign_outcome = "IN_PROGRESS"
@@ -505,6 +548,7 @@ def _exec_generate_run_summary(proposal):
         "gate_history": state["gate_history"],
         "recoveries": state["recoveries"],
         "campaign_outcome": campaign_outcome,
+        "unresolved_human_inputs": unresolved_human_inputs,
         "identified_gaps": identified_gaps,
         "limitations": limitations,
         "evidence": evidence,
@@ -512,9 +556,15 @@ def _exec_generate_run_summary(proposal):
     report_path = Path(p["report_path"])
     report_path.parent.mkdir(parents=True, exist_ok=True)
     report_path.write_text(json.dumps(report, indent=2) + "\n")
+    markdown_path = Path(p.get("markdown_path") or report_path.with_suffix(".md"))
+    markdown_path.parent.mkdir(parents=True, exist_ok=True)
+    markdown_path.write_text(_render_run_summary_markdown(report))
     from validation.run_summary import validate_run_summary_report
     validate_run_summary_report(report_path)
-    return {"path": str(report_path.resolve()), "report": report, "integrity": artifact_digest(report_path)}
+    return {"path": str(report_path.resolve()), "report": report,
+            "integrity": artifact_digest(report_path),
+            "markdown_path": str(markdown_path.resolve()),
+            "markdown_integrity": artifact_digest(markdown_path)}
 
 
 def _exec_compute_coordination(proposal):
