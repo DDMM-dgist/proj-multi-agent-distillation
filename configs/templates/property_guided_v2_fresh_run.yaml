@@ -1,0 +1,135 @@
+schema_version: 1
+workflow: property_guided_distillation_v2
+
+teacher:
+  adapter: HUMAN_OPERATIONAL_INPUT_REQUIRED
+  ase_calculator:
+    factory: HUMAN_OPERATIONAL_INPUT_REQUIRED
+    kwargs: HUMAN_OPERATIONAL_INPUT_REQUIRED
+
+student:
+  adapter: HUMAN_OPERATIONAL_INPUT_REQUIRED
+  architecture: HUMAN_OPERATIONAL_INPUT_REQUIRED
+  committee:
+    n_seeds: 4
+    seed_policy: HUMAN_OPERATIONAL_INPUT_REQUIRED
+
+system:
+  material: HUMAN_SCIENTIFIC_INPUT_REQUIRED
+  species: HUMAN_SCIENTIFIC_INPUT_REQUIRED
+  composition_scope: HUMAN_SCIENTIFIC_INPUT_REQUIRED
+
+scientific_target:
+  contract: HumanTargetPropertyContract
+  target_property_family: HUMAN_SCIENTIFIC_INPUT_REQUIRED
+  required_observables: []
+  simulation_conditions: {}
+  deployment_context: {}
+  user_defined_observables: []
+  scientific_rationale: HUMAN_SCIENTIFIC_INPUT_REQUIRED
+  acceptance_sources: []
+
+target_operationalization:
+  component: TargetOperationalization
+  observable_registry: v2_default_observable_registry
+  threshold_policy: preserve_unbound_thresholds
+
+region:
+  provider: HUMAN_OPERATIONAL_INPUT_REQUIRED
+  allowed_providers:
+    - EXPLICIT_METADATA
+    - STRUCTURAL_DISCOVERY
+    - HYBRID
+  explicit_metadata:
+    source_field: HUMAN_OPERATIONAL_INPUT_REQUIRED
+  discovered:
+    representation_ref: structural_representation
+    clustering_ref: discovery
+  hybrid:
+    parent_provider: EXPLICIT_METADATA
+    subregion_provider: STRUCTURAL_DISCOVERY
+
+structural_representation:
+  backend: HUMAN_OPERATIONAL_INPUT_REQUIRED
+  allowed_backends:
+    - COMPOSITION
+    - SOAP
+    - PRETRAINED_MLIP
+    - MACE_EMBEDDING
+  parameters: HUMAN_OPERATIONAL_INPUT_REQUIRED
+  species_handling: HUMAN_OPERATIONAL_INPUT_REQUIRED
+
+discovery:
+  method: HUMAN_OPERATIONAL_INPUT_REQUIRED
+  parameters: HUMAN_OPERATIONAL_INPUT_REQUIRED
+  reduction: null
+
+initial_curation:
+  phase: INITIAL
+  sampler: HUMAN_OPERATIONAL_INPUT_REQUIRED
+  allowed_samplers:
+    - RANDOM
+    - FPS
+    - DIRECT_LIKE
+  stopping_policy: HUMAN_SCIENTIFIC_INPUT_REQUIRED
+
+recovery:
+  phase: MODEL_INFORMED
+  sampler: HUMAN_OPERATIONAL_INPUT_REQUIRED
+  allowed_samplers:
+    - UNCERTAINTY
+    - UNCERTAINTY_DIVERSITY
+    - FPS
+    - DIRECT_LIKE
+  stopping_policy: HUMAN_SCIENTIFIC_INPUT_REQUIRED
+  teacher_retraining_allowed: false
+  new_dft_allowed: false
+
+protected_data:
+  split_policy: HUMAN_OPERATIONAL_INPUT_REQUIRED
+  protected_test_reuse_for_training_allowed: false
+  protected_test_reuse_for_replay_allowed: false
+  protected_test_reuse_as_augmentation_parent_allowed: false
+
+replay:
+  enabled: false
+  ratio: 0.0
+  eligible_roles:
+    - TRAIN
+  protected_roles_excluded:
+    - VALIDATION
+    - TEST
+    - PROTECTED
+
+supercell:
+  training_strategy:
+    enabled: false
+    replication_matrix: HUMAN_OPERATIONAL_INPUT_REQUIRED
+  transferability_validation:
+    enabled: false
+    replication_matrix: HUMAN_OPERATIONAL_INPUT_REQUIRED
+
+judge_policy:
+  deterministic_first: true
+  multiple_blind_judges_required_for_numeric_gates: false
+  llm_allowed_for:
+    - target_operationalization
+    - literature_reference_retrieval
+    - scientific_ambiguity
+    - strategy_recommendation
+    - explanation_summary
+
+efficiency_logging:
+  raw_components_required: true
+  arbitrary_scalar_total_cost_required: false
+
+validation:
+  target_validation_contract: TargetValidationContract
+  deployment_validation: HUMAN_OPERATIONAL_INPUT_REQUIRED
+
+execution_limits:
+  fresh_campaign_execution_allowed_from_template: false
+  student_training_allowed: false
+  teacher_inference_allowed: false
+  md_allowed: false
+  benchmark_sweeps_allowed: false
