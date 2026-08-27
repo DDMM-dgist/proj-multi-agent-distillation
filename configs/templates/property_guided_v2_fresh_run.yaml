@@ -1,5 +1,17 @@
-schema_version: 1
-workflow: property_guided_distillation_v2
+# Property-guided distillation V2 fresh-run template.
+#
+# Every field belongs to exactly one input class:
+#   REQUIRED_SCIENTIFIC_INPUT   - human must define WHAT physics matters
+#                                 (encoded here as HUMAN_SCIENTIFIC_INPUT_REQUIRED)
+#   REQUIRED_OPERATIONAL_INPUT  - human/operator must provide HOW to run it
+#                                 (encoded here as HUMAN_OPERATIONAL_INPUT_REQUIRED)
+#   OPTIONAL_EXPERIMENT_VARIABLE - an experiment knob with a safe off/default value
+#   FRAMEWORK_DEFAULT           - fixed by the framework; not a tunable threshold
+#
+# No arbitrary numeric thresholds appear in this template. Acceptance criteria
+# are bound only through the operationalized TargetValidationContract, never here.
+schema_version: 1              # FRAMEWORK_DEFAULT
+workflow: property_guided_distillation_v2  # FRAMEWORK_DEFAULT
 
 teacher:
   adapter: HUMAN_OPERATIONAL_INPUT_REQUIRED
@@ -11,7 +23,7 @@ student:
   adapter: HUMAN_OPERATIONAL_INPUT_REQUIRED
   architecture: HUMAN_OPERATIONAL_INPUT_REQUIRED
   committee:
-    n_seeds: 4
+    n_seeds: 4                 # OPTIONAL_EXPERIMENT_VARIABLE (committee size)
     seed_policy: HUMAN_OPERATIONAL_INPUT_REQUIRED
 
 system:
@@ -30,9 +42,9 @@ scientific_target:
   acceptance_sources: []
 
 target_operationalization:
-  component: TargetOperationalization
-  observable_registry: v2_default_observable_registry
-  threshold_policy: preserve_unbound_thresholds
+  component: TargetOperationalization       # FRAMEWORK_DEFAULT
+  observable_registry: v2_default_observable_registry  # FRAMEWORK_DEFAULT
+  threshold_policy: preserve_unbound_thresholds        # FRAMEWORK_DEFAULT (no invented thresholds)
 
 region:
   provider: HUMAN_OPERATIONAL_INPUT_REQUIRED
@@ -92,8 +104,8 @@ protected_data:
   protected_test_reuse_as_augmentation_parent_allowed: false
 
 replay:
-  enabled: false
-  ratio: 0.0
+  enabled: false               # OPTIONAL_EXPERIMENT_VARIABLE (off by default)
+  ratio: 0.0                   # OPTIONAL_EXPERIMENT_VARIABLE (explicit positive ratio required if enabled)
   eligible_roles:
     - TRAIN
   protected_roles_excluded:
@@ -103,15 +115,15 @@ replay:
 
 supercell:
   training_strategy:
-    enabled: false
+    enabled: false             # OPTIONAL_EXPERIMENT_VARIABLE (off by default)
     replication_matrix: HUMAN_OPERATIONAL_INPUT_REQUIRED
   transferability_validation:
-    enabled: false
+    enabled: false             # OPTIONAL_EXPERIMENT_VARIABLE (off by default)
     replication_matrix: HUMAN_OPERATIONAL_INPUT_REQUIRED
 
 judge_policy:
-  deterministic_first: true
-  multiple_blind_judges_required_for_numeric_gates: false
+  deterministic_first: true    # FRAMEWORK_DEFAULT (deterministic gates precede any Judge)
+  multiple_blind_judges_required_for_numeric_gates: false  # FRAMEWORK_DEFAULT
   llm_allowed_for:
     - target_operationalization
     - literature_reference_retrieval
@@ -120,14 +132,14 @@ judge_policy:
     - explanation_summary
 
 efficiency_logging:
-  raw_components_required: true
-  arbitrary_scalar_total_cost_required: false
+  raw_components_required: true            # FRAMEWORK_DEFAULT (dimensions stay separate)
+  arbitrary_scalar_total_cost_required: false  # FRAMEWORK_DEFAULT (no single scalar cost)
 
 validation:
   target_validation_contract: TargetValidationContract
   deployment_validation: HUMAN_OPERATIONAL_INPUT_REQUIRED
 
-execution_limits:
+execution_limits:               # FRAMEWORK_DEFAULT (template never auto-runs compute)
   fresh_campaign_execution_allowed_from_template: false
   student_training_allowed: false
   teacher_inference_allowed: false

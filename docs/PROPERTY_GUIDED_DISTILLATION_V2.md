@@ -92,3 +92,85 @@ internal safety. It is not the V2 paper-facing scientific contribution.
   `framework_v2/experiment_controls.py`
 - Deterministic-first Judge policy:
   `framework_v2/v2_judge_policy.py`
+
+## Maturity: Scaffold vs Implementation vs Runtime vs Verification
+
+These four layers are distinct and must not be conflated:
+
+- **Scaffold** — the paper-facing workflow shape and public contract surface
+  (the modules in the Implementation Map). Present and hardened.
+- **Implementation** — the deterministic Python contracts and pure functions
+  that encode the invariants (eligibility, closure, staged recovery,
+  efficiency accounting). Present and unit-tested.
+- **Runtime integration** — wiring these contracts to real executors
+  (Teacher inference, Student committee training, MD, DFT). Adapters exist;
+  a real Fresh run has **not** been executed and requires human operational
+  input plus HPC approval.
+- **Verification** — a real end-to-end campaign producing scientific evidence.
+  Only synthetic, mock-only control loops have run so far
+  (`tests/test_v2_synthetic_e2e.py`). Runtime verification is still required
+  before any scientific claim.
+
+## Sampler Semantics
+
+- **DIRECT-like** is *structural-stratified diversity selection*: per-region
+  coverage first, residual filled by global FPS when a representation is
+  present or a stable round-robin quota when it is absent. It is **not** the
+  published DIRECT method and must not be cited as such.
+- **Under-budget is an explicit unresolved state, not a silent truncation.**
+  When the requested count cannot be met from eligible candidates the sampler
+  returns `SelectionStatus.SELECTION_BUDGET_INSUFFICIENT` with an empty
+  selection and an `unresolved_reason`, rather than returning an arbitrary
+  alphabetical subset.
+- Selection is invariant under region-ID renaming: relabeling regions does not
+  change which candidates are chosen.
+
+## Structural Representation (SOAP dependency behavior)
+
+The SOAP backend depends on the optional `dscribe` package. Representation is
+content-hashed and stable across runs. If a requested backend's dependency is
+unavailable the representation adapter fails closed with a typed error rather
+than silently degrading to a different descriptor; the composition backend has
+no third-party dependency and is always available.
+
+## Protected Evaluation Binding
+
+`EvaluationPopulationRegionBinding` binds the frozen, hash-pinned protected
+evaluation population to structural regions. Metric aggregation groups **only**
+by this binding's `frame_to_region` map, so training-only members never leak
+into evaluation metrics. A required region with no evidence, a missing required
+frame, or mixed reference channels fails closed. Training eligibility is derived
+by the single authoritative invariant in `framework_v2/protected_eligibility.py`:
+a candidate is training-eligible only if it is not protected and carries the
+TRAIN split role in the frozen split; protected/test data can never enter
+training, recovery candidates, replay, or augmentation parents.
+
+## Staged Recovery Lifecycle
+
+Recovery is an ordered, state-guarded execution graph, not a single leap:
+
+```text
+PLANNED -> LABELS_READY -> DATASET_READY -> STUDENT_READY -> EVALUATION_READY
+```
+
+Each transition authorizes exactly one next request (Teacher labeling ->
+training-dataset update -> redistillation -> next evaluation). A downstream
+artifact may exist only once its producing transition has run — the bundle
+validator rejects any bundle that pretends a future artifact already exists.
+Redistillation keeps the Teacher frozen and requests no new DFT.
+
+## Efficiency: Zero vs Unknown
+
+Raw efficiency dimensions are kept separate; there is no arbitrary scalar total
+cost. Every numeric field is optional and defaults to `None` meaning
+**unknown**, which is distinct from a measured `0`. A measured value must carry
+`measurement_provenance`; cost evidence is therefore never fabricated. Judge
+routing surfaces its own accounted cost (zero Judge/LLM calls for a
+deterministic gate, exactly one for an allowed scientific-ambiguity reason).
+
+## Historical Stage-8 Identities Preserved
+
+The old 12-stage engine and its Stage-8 population/domain identities remain
+byte-stable for historical campaigns and internal safety. V2 adapts that
+historical evidence to provider-neutral regions without renaming, re-scoring,
+or promoting historical diagnostic frames into primary pass/fail logic.
