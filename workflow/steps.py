@@ -708,6 +708,7 @@ def evaluate_multi_population(student_config, committee_manifest, plan, training
             "frames_path": str(Path(pop.frames_path).resolve()),
             "structures_sha256": pop.structures_sha256,
             "source_manifest_sha256": pop.source_manifest_sha256,
+            "primary_accuracy_population": pop.primary_accuracy_population,
             "n_frames": len(frames),
         }
         populations_out.append(pop_provenance)

@@ -100,6 +100,22 @@ from framework_v2.evaluation_population import (  # noqa: F401
     TEACHER_VS_DFT,
 )
 
+from framework_v2.stage8_acceptance import (  # noqa: F401
+    Stage8Role,
+    DomainAssignment,
+    Stage8PrimaryPopulationPolicy,
+    FrameDomainRecord,
+    Stage8PopulationDomainManifest,
+    ElementalAlignmentPolicy,
+    Stage8AcceptancePolicy,
+    build_population_domain_manifest,
+    elemental_fraction_design,
+    aligned_energy_residuals_meV,
+    force_component_rmse,
+    per_domain_aligned_energy_rmse,
+    evaluate_stage8_acceptance,
+)
+
 from framework_v2.blind_test import (  # noqa: F401
     BlindTestBoundary,
     BlindTestAccessAttempt,

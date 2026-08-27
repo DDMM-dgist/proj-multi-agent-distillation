@@ -118,6 +118,11 @@ class EvaluationPopulation(ContractBase):
     # optional so a purely-distillation holdout without a separate manifest
     # is still expressible; the orchestrator records whatever is bound.
     source_manifest_sha256: str | None = None
+    # DFT-protected populations normally provide DFT channels only. A run may
+    # explicitly promote one such population to the primary Stage-8 accuracy
+    # population, where all three labels live on the same protected frames and
+    # Student-vs-Teacher is also a governed accuracy channel.
+    primary_accuracy_population: bool = False
     # whether the orchestrator must prove this population is disjoint from
     # the training set before computing any channel. True for every genuine
     # held-out population; only an explicit diagnostic mode would relax it.
@@ -132,6 +137,11 @@ class EvaluationPopulation(ContractBase):
                 "not a Stage-8 evaluation population"
             )
         allowed = ROLE_ALLOWED_CHANNELS[self.role]
+        if (
+            self.role == EvaluationPopulationRole.DFT_PROTECTED_HOLDOUT
+            and self.primary_accuracy_population
+        ):
+            allowed = frozenset(set(allowed) | {STUDENT_VS_TEACHER})
         illegal = [c for c in self.required_channels if c not in allowed]
         if illegal:
             raise ValueError(

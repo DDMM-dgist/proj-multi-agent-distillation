@@ -1,0 +1,32 @@
+{
+  "acceptance_policy_path": "/home/hyunjin/distill-real-user/runs/sio2-sox-allegro-simplenn-ffv4t-eng6/artifacts/stage8_contract/stage8_acceptance_policy.json",
+  "acceptance_policy_sha256": "f858b11931569843af68d906c20bec1921e9e2f31c6e049a0915255a6b9c57fd",
+  "contract_kind": "stage8_primary_accuracy_multi_population_plan",
+  "energy_alignment_policy_path": "/home/hyunjin/distill-real-user/runs/sio2-sox-allegro-simplenn-ffv4t-eng6/artifacts/stage8_contract/stage8_energy_alignment_policy.json",
+  "energy_alignment_policy_sha256": "ed8d993fce040852f1342d8b83cd026172e92c06c8a7e7fd3afd136497139bf0",
+  "plan_id": "eng6-stage8-primary-accuracy-v1",
+  "plan_sha256": "5738bf08c57f204eda5519d309ffc60f314d28c383a17d73422cad29f83d057b",
+  "populations": [
+    {
+      "forbid_training_overlap": true,
+      "frames_path": "/home/hyunjin/distill-real-user/runs/sio2-sox-allegro-simplenn-ffv4t-eng6/artifacts/stage8_contract/stage8_primary_claim_1016.extxyz",
+      "population_id": "PRIMARY_STAGE8_ACCURACY_POPULATION",
+      "primary_accuracy_population": true,
+      "required_channels": [
+        "student_vs_teacher",
+        "teacher_vs_dft",
+        "student_vs_dft"
+      ],
+      "role": "DFT_PROTECTED_HOLDOUT",
+      "schema_version": 1,
+      "source_manifest_sha256": "19422187c01af4431139fa86f513d5f98f6c038eb60162a73ff951da4a6f9e80",
+      "structures_sha256": "099b2f8c3e3e4ba51d815cfbecdd00ec0e628f32fde119ff74a475c8a1460c7e"
+    }
+  ],
+  "primary_population_domain_manifest_path": "/home/hyunjin/distill-real-user/runs/sio2-sox-allegro-simplenn-ffv4t-eng6/artifacts/stage8_contract/stage8_population_domain_manifest.json",
+  "primary_population_domain_manifest_sha256": "19422187c01af4431139fa86f513d5f98f6c038eb60162a73ff951da4a6f9e80",
+  "primary_population_policy_path": "/home/hyunjin/distill-real-user/runs/sio2-sox-allegro-simplenn-ffv4t-eng6/artifacts/stage8_contract/stage8_primary_population_policy.json",
+  "primary_population_policy_sha256": "8896f64e42dff32a9b43f4e781a3985dbe870f97893306eb83c623263063aab6",
+  "schema_version": 1,
+  "source_population": "DFT_PROTECTED_HOLDOUT"
+}

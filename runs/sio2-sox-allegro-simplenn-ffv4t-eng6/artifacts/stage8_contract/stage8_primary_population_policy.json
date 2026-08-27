@@ -1,0 +1,189 @@
+{
+  "assignments": [
+    {
+      "domain": "amorphous_SiOx_sub_stoichiometric",
+      "rationale": "SiOx interface variant",
+      "role": "PRIMARY_CLAIM",
+      "schema_version": 1,
+      "source_category": "SiOx_crystal_amorphous_interfaces"
+    },
+    {
+      "domain": "amorphous_SiOx_sub_stoichiometric",
+      "rationale": "sub-stoichiometric SiOx",
+      "role": "PRIMARY_CLAIM",
+      "schema_version": 1,
+      "source_category": "SiOx_int_AL"
+    },
+    {
+      "domain": "amorphous_SiOx_sub_stoichiometric",
+      "rationale": "sub-stoichiometric SiOx (max AL)",
+      "role": "PRIMARY_CLAIM",
+      "schema_version": 1,
+      "source_category": "SiOx_max_AL"
+    },
+    {
+      "domain": "amorphous_bulk_SiO2",
+      "rationale": "direct name mapping",
+      "role": "PRIMARY_CLAIM",
+      "schema_version": 1,
+      "source_category": "bulk_amo"
+    },
+    {
+      "domain": "crystalline_SiO2",
+      "rationale": "crystalline SiO2",
+      "role": "PRIMARY_CLAIM",
+      "schema_version": 1,
+      "source_category": "bulk_cryst"
+    },
+    {
+      "domain": "high_pressure_SiO2",
+      "rationale": "high-pressure crystalline SiO2",
+      "role": "PRIMARY_CLAIM",
+      "schema_version": 1,
+      "source_category": "bulk_cryst_hp"
+    },
+    {
+      "domain": "OUT_OF_SCOPE_DIAGNOSTIC",
+      "rationale": "human-approved Stage-8 diagnostic-only exclusion",
+      "role": "DIAGNOSTIC_ONLY",
+      "schema_version": 1,
+      "source_category": "cluster"
+    },
+    {
+      "domain": "high_pressure_SiO2",
+      "rationale": "high-pressure SiO2 (intermediate AL)",
+      "role": "PRIMARY_CLAIM",
+      "schema_version": 1,
+      "source_category": "highpressure_int_AL"
+    },
+    {
+      "domain": "high_pressure_SiO2",
+      "rationale": "high-pressure SiO2 (max AL)",
+      "role": "PRIMARY_CLAIM",
+      "schema_version": 1,
+      "source_category": "highpressure_max_AL"
+    },
+    {
+      "domain": "liquid_or_melt_SiO2",
+      "rationale": "liquid/melt SiO2",
+      "role": "PRIMARY_CLAIM",
+      "schema_version": 1,
+      "source_category": "liquid"
+    },
+    {
+      "domain": "amorphous_bulk_SiO2",
+      "rationale": "quench-derived amorphous SiO2",
+      "role": "PRIMARY_CLAIM",
+      "schema_version": 1,
+      "source_category": "quench"
+    },
+    {
+      "domain": "amorphous_bulk_SiO2",
+      "rationale": "quench-derived amorphous SiO2 (intermediate AL)",
+      "role": "PRIMARY_CLAIM",
+      "schema_version": 1,
+      "source_category": "quench_int_AL"
+    },
+    {
+      "domain": "amorphous_bulk_SiO2",
+      "rationale": "quench-derived amorphous SiO2 (max AL)",
+      "role": "PRIMARY_CLAIM",
+      "schema_version": 1,
+      "source_category": "quench_max_AL"
+    },
+    {
+      "domain": "condensed_pure_Si_boundary",
+      "rationale": "amorphous Si (x=2 boundary)",
+      "role": "PRIMARY_CLAIM",
+      "schema_version": 1,
+      "source_category": "silicon_bulk_amo"
+    },
+    {
+      "domain": "condensed_pure_Si_boundary",
+      "rationale": "crystalline Si",
+      "role": "PRIMARY_CLAIM",
+      "schema_version": 1,
+      "source_category": "silicon_crystalline_main"
+    },
+    {
+      "domain": "condensed_pure_Si_boundary",
+      "rationale": "Si defect structures",
+      "role": "PRIMARY_CLAIM",
+      "schema_version": 1,
+      "source_category": "silicon_defects"
+    },
+    {
+      "domain": "condensed_pure_Si_boundary",
+      "rationale": "liquid Si",
+      "role": "PRIMARY_CLAIM",
+      "schema_version": 1,
+      "source_category": "silicon_liquid"
+    },
+    {
+      "domain": "condensed_pure_Si_boundary",
+      "rationale": "human-approved Stage-8 diagnostic-only supporting-evidence exclusion",
+      "role": "DIAGNOSTIC_ONLY",
+      "schema_version": 1,
+      "source_category": "silicon_others"
+    },
+    {
+      "domain": "condensed_pure_Si_boundary",
+      "rationale": "Si surfaces",
+      "role": "PRIMARY_CLAIM",
+      "schema_version": 1,
+      "source_category": "silicon_surfaces"
+    },
+    {
+      "domain": "surface_SiO2",
+      "rationale": "surface SiO2",
+      "role": "PRIMARY_CLAIM",
+      "schema_version": 1,
+      "source_category": "surfaces"
+    },
+    {
+      "domain": "surface_SiO2",
+      "rationale": "surface SiO2 (intermediate AL)",
+      "role": "PRIMARY_CLAIM",
+      "schema_version": 1,
+      "source_category": "surfaces_int_AL"
+    },
+    {
+      "domain": "surface_SiO2",
+      "rationale": "surface SiO2 (max AL)",
+      "role": "PRIMARY_CLAIM",
+      "schema_version": 1,
+      "source_category": "surfaces_max_AL"
+    },
+    {
+      "domain": "oxygen_vacancy_SiO2",
+      "rationale": "oxygen vacancy SiO2",
+      "role": "PRIMARY_CLAIM",
+      "schema_version": 1,
+      "source_category": "vacancy"
+    },
+    {
+      "domain": "oxygen_vacancy_SiO2",
+      "rationale": "oxygen vacancy SiO2 (intermediate AL)",
+      "role": "PRIMARY_CLAIM",
+      "schema_version": 1,
+      "source_category": "vacancy_int_AL"
+    }
+  ],
+  "authority": "source_category",
+  "diagnostic_domains": [
+    "OUT_OF_SCOPE_DIAGNOSTIC",
+    "condensed_pure_Si_boundary"
+  ],
+  "policy_id": "eng6-stage8-primary-population-v1",
+  "primary_domains": [
+    "amorphous_bulk_SiO2",
+    "crystalline_SiO2",
+    "high_pressure_SiO2",
+    "liquid_or_melt_SiO2",
+    "surface_SiO2",
+    "oxygen_vacancy_SiO2",
+    "amorphous_SiOx_sub_stoichiometric",
+    "condensed_pure_Si_boundary"
+  ],
+  "schema_version": 1
+}

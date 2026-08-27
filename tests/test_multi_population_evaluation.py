@@ -39,9 +39,20 @@ def test_role_channel_firewall_distillation_rejects_dft():
         _pop("d", Role.DISTILLATION_HOLDOUT, "a" * 64, [STUDENT_VS_DFT])
 
 
-def test_role_channel_firewall_dft_rejects_student_vs_teacher():
+def test_role_channel_firewall_dft_rejects_student_vs_teacher_without_primary_accuracy_scope():
     with pytest.raises(ValueError, match="not permitted"):
         _pop("d", Role.DFT_PROTECTED_HOLDOUT, "a" * 64, [STUDENT_VS_TEACHER])
+
+
+def test_primary_accuracy_dft_population_permits_all_three_channels():
+    pop = _pop(
+        "primary",
+        Role.DFT_PROTECTED_HOLDOUT,
+        "a" * 64,
+        [STUDENT_VS_TEACHER, STUDENT_VS_DFT, TEACHER_VS_DFT],
+        primary_accuracy_population=True,
+    )
+    assert pop.primary_accuracy_population is True
 
 
 def test_empty_required_channels_rejected():

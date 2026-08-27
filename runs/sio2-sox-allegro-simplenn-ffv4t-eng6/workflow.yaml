@@ -1,0 +1,571 @@
+run_id: sio2-sox-allegro-simplenn-ffv4t
+scientific_stage_entry_enforcement: true
+inputs:
+- path: /home/hyunjin/distill-real-user/configs/runs/sio2-sox-allegro-simplenn-r27/student.simple-nn.yaml
+  copy: true
+- path: /home/hyunjin/distill-real-user/configs/runs/sio2-sox-allegro-simplenn-r27/acquisition.augment-atoms.yaml
+  copy: true
+- path: /home/hyunjin/distill-real-user/configs/runs/sio2-sox-allegro-simplenn-r27/md_backend.yaml
+  copy: true
+- path: /home/hyunjin/distill-real-user/configs/runs/sio2-sox-allegro-simplenn-r27/uncertainty.yaml
+  copy: true
+- path: /home/hyunjin/distill-real-user/docs/FRESH_SOURCE_BUNDLE_ASSEMBLED_v1/teacher/teacher_config_reference.yaml
+  copy: true
+- path: /home/hyunjin/distill-real-user/docs/FRESH_CAMPAIGN_VALIDATION_CONTRACTS_v1/reference.yaml
+  copy: true
+- path: /home/hyunjin/distill-real-user/docs/FRESH_CAMPAIGN_VALIDATION_CONTRACTS_v1/validation_profile.yaml
+  copy: true
+- path: /home/hyunjin/distill-real-user/docs/FRESH_CAMPAIGN_VALIDATION_CONTRACTS_v1/distillation_scope.yaml
+  copy: true
+- path: /home/hyunjin/distill-real-user/docs/FRESH_CAMPAIGN_VALIDATION_CONTRACTS_v1/dataset_policy.yaml
+  copy: true
+- path: /home/hyunjin/distill-real-user/local_inputs/sio2_fresh/student_descriptor/params_Si
+  copy: true
+- path: /home/hyunjin/distill-real-user/local_inputs/sio2_fresh/student_descriptor/params_O
+  copy: true
+- path: /home/hyunjin/distill-real-user/templates/student/simple-nn.input.yaml.template
+  copy: true
+- path: /home/hyunjin/distill-real-user/local_inputs/sio2_fresh/teacher/teacher_current_compiled.nequip.pth
+  copy: false
+- path: /home/hyunjin/distill-real-user/docs/FRESH_SOURCE_BUNDLE_ASSEMBLED_v1/sanitized_pool/sanitized_pool_manifest.json
+  copy: false
+- path: /home/hyunjin/distill-real-user/docs/FRESH_SOURCE_BUNDLE_ASSEMBLED_v1/sanitized_pool/structure_id_map.json
+  copy: false
+- path: /home/hyunjin/distill-real-user/docs/FRESH_SOURCE_BUNDLE_ASSEMBLED_v1/sanitized_pool/SiOx_crystal_amorphous_interfaces.sanitized.xyz
+  copy: false
+- path: /home/hyunjin/distill-real-user/docs/FRESH_SOURCE_BUNDLE_ASSEMBLED_v1/sanitized_pool/SiOx_int_AL.sanitized.xyz
+  copy: false
+- path: /home/hyunjin/distill-real-user/docs/FRESH_SOURCE_BUNDLE_ASSEMBLED_v1/sanitized_pool/SiOx_max_AL.sanitized.xyz
+  copy: false
+- path: /home/hyunjin/distill-real-user/docs/FRESH_SOURCE_BUNDLE_ASSEMBLED_v1/sanitized_pool/bulk_amo.sanitized.xyz
+  copy: false
+- path: /home/hyunjin/distill-real-user/docs/FRESH_SOURCE_BUNDLE_ASSEMBLED_v1/sanitized_pool/bulk_cryst.sanitized.xyz
+  copy: false
+- path: /home/hyunjin/distill-real-user/docs/FRESH_SOURCE_BUNDLE_ASSEMBLED_v1/sanitized_pool/bulk_cryst_hp.sanitized.xyz
+  copy: false
+- path: /home/hyunjin/distill-real-user/docs/FRESH_SOURCE_BUNDLE_ASSEMBLED_v1/sanitized_pool/cluster.sanitized.xyz
+  copy: false
+- path: /home/hyunjin/distill-real-user/docs/FRESH_SOURCE_BUNDLE_ASSEMBLED_v1/sanitized_pool/highpressure_int_AL.sanitized.xyz
+  copy: false
+- path: /home/hyunjin/distill-real-user/docs/FRESH_SOURCE_BUNDLE_ASSEMBLED_v1/sanitized_pool/highpressure_max_AL.sanitized.xyz
+  copy: false
+- path: /home/hyunjin/distill-real-user/docs/FRESH_SOURCE_BUNDLE_ASSEMBLED_v1/sanitized_pool/liquid.sanitized.xyz
+  copy: false
+- path: /home/hyunjin/distill-real-user/docs/FRESH_SOURCE_BUNDLE_ASSEMBLED_v1/sanitized_pool/quench.sanitized.xyz
+  copy: false
+- path: /home/hyunjin/distill-real-user/docs/FRESH_SOURCE_BUNDLE_ASSEMBLED_v1/sanitized_pool/quench_int_AL.sanitized.xyz
+  copy: false
+- path: /home/hyunjin/distill-real-user/docs/FRESH_SOURCE_BUNDLE_ASSEMBLED_v1/sanitized_pool/quench_max_AL.sanitized.xyz
+  copy: false
+- path: /home/hyunjin/distill-real-user/docs/FRESH_SOURCE_BUNDLE_ASSEMBLED_v1/sanitized_pool/silicon_bulk_amo.sanitized.xyz
+  copy: false
+- path: /home/hyunjin/distill-real-user/docs/FRESH_SOURCE_BUNDLE_ASSEMBLED_v1/sanitized_pool/silicon_crystalline_main.sanitized.xyz
+  copy: false
+- path: /home/hyunjin/distill-real-user/docs/FRESH_SOURCE_BUNDLE_ASSEMBLED_v1/sanitized_pool/silicon_defects.sanitized.xyz
+  copy: false
+- path: /home/hyunjin/distill-real-user/docs/FRESH_SOURCE_BUNDLE_ASSEMBLED_v1/sanitized_pool/silicon_liquid.sanitized.xyz
+  copy: false
+- path: /home/hyunjin/distill-real-user/docs/FRESH_SOURCE_BUNDLE_ASSEMBLED_v1/sanitized_pool/silicon_others.sanitized.xyz
+  copy: false
+- path: /home/hyunjin/distill-real-user/docs/FRESH_SOURCE_BUNDLE_ASSEMBLED_v1/sanitized_pool/silicon_surfaces.sanitized.xyz
+  copy: false
+- path: /home/hyunjin/distill-real-user/docs/FRESH_SOURCE_BUNDLE_ASSEMBLED_v1/sanitized_pool/surfaces.sanitized.xyz
+  copy: false
+- path: /home/hyunjin/distill-real-user/docs/FRESH_SOURCE_BUNDLE_ASSEMBLED_v1/sanitized_pool/surfaces_int_AL.sanitized.xyz
+  copy: false
+- path: /home/hyunjin/distill-real-user/docs/FRESH_SOURCE_BUNDLE_ASSEMBLED_v1/sanitized_pool/surfaces_max_AL.sanitized.xyz
+  copy: false
+- path: /home/hyunjin/distill-real-user/docs/FRESH_SOURCE_BUNDLE_ASSEMBLED_v1/sanitized_pool/vacancy.sanitized.xyz
+  copy: false
+- path: /home/hyunjin/distill-real-user/docs/FRESH_SOURCE_BUNDLE_ASSEMBLED_v1/sanitized_pool/vacancy_int_AL.sanitized.xyz
+  copy: false
+- path: /home/hyunjin/distill-real-user/docs/FRESH_CAMPAIGN_STAGE1_OPERATIONAL_POPULATION_RULE_v1/operational_population_primary_claim.extxyz
+  copy: true
+- path: /home/hyunjin/distill-real-user/local_inputs/sio2_fresh/recovered_original_holdout/reference.yaml
+  copy: true
+validation_contract_sources:
+  distillation_scope: /home/hyunjin/distill-real-user/docs/FRESH_CAMPAIGN_VALIDATION_CONTRACTS_v1/distillation_scope.yaml
+  validation_profile: /home/hyunjin/distill-real-user/docs/FRESH_CAMPAIGN_VALIDATION_CONTRACTS_v1/validation_profile.yaml
+  dataset_policy: /home/hyunjin/distill-real-user/docs/FRESH_CAMPAIGN_VALIDATION_CONTRACTS_v1/dataset_policy.yaml
+teacher_evidence_sources:
+  teacher_model_path: /home/hyunjin/distill-real-user/local_inputs/sio2_fresh/teacher/teacher_current_compiled.nequip.pth
+  operational_evaluation_population_path: /home/hyunjin/distill-real-user/docs/FRESH_CAMPAIGN_STAGE1_OPERATIONAL_POPULATION_RULE_v1/operational_population_primary_claim.extxyz
+  original_training_db_path: /home/hyunjin/distill-real-user/local_inputs/sio2_fresh/teacher_training_provenance/extracted/kisti_pack/dataset.xyz
+  split_source_manifest_paths:
+  - /home/hyunjin/distill-real-user/configs/provenance/teacher_training_split_manifest.json
+  target_split: test
+  label_energy_key: energy
+  label_forces_key: forces
+recovery_capability_roster:
+  data_repair: data-curator
+  model_retrain: ml-trainer
+  simulation_rerun: simulation
+  root_cause_analysis: analyst
+  orchestration: orchestrator
+recovery_policy: null
+protected_reference_roles:
+- reconstructed_teacher_test_population
+stages:
+- name: teacher_baseline
+  command: null
+  outputs:
+  - artifacts/teacher_baseline.json
+  - artifacts/teacher_baseline_operational.extxyz
+  - artifacts/teacher_baseline_labels.manifest.json
+  teacher_validation_component:
+  - OPERATIONAL_ROBUSTNESS
+  - DEPLOYMENT_APPLICABILITY
+  contract:
+    kind: validation_manifest
+    manifest: artifacts/teacher_baseline.json
+    validator: validation.teacher_baseline.validate_teacher_baseline_report
+    options:
+      accepted_applicability:
+      - SUPPORTED
+      - CONDITIONAL
+      - NOT_ESTABLISHED
+  gate:
+    criteria:
+    - TeacherBaselineReport binds the exact Teacher config, distillation_scope, and validation_profile evidence used
+    - Teacher calculator loads with the declared element/type mapping without runtime reconciliation or fallback
+    - Teacher inference succeeds on every declared operational deployment slice with no NaN or Inf outputs
+    - operational stability metrics are kept distinct from physical accuracy claims
+    - no historical SiO2 numerical conclusion is imported as a fresh campaign result
+  pydantic_ai:
+    role: simulation
+    action: build_teacher_baseline
+    approval_boundary: costly_teacher_labeling
+    idempotency_key: sio2-sox-allegro-simplenn-ffv4t:teacher_baseline:001
+    parameters:
+      teacher_config: '{run_dir}/inputs/004-teacher_config_reference.yaml'
+      distillation_scope: '{run_dir}/inputs/007-distillation_scope.yaml'
+      validation_profile: '{run_dir}/inputs/006-validation_profile.yaml'
+      report_path: '{run_dir}/artifacts/teacher_baseline.json'
+      labeled_output: '{run_dir}/artifacts/teacher_baseline_operational.extxyz'
+      label_manifest_path: '{run_dir}/artifacts/teacher_baseline_labels.manifest.json'
+      structures_path: '{run_dir}/inputs/039-operational_population_primary_claim.extxyz'
+      reference_yaml: '{run_dir}/inputs/005-reference.yaml'
+      deployment_domain:
+        declared_domains:
+        - amorphous_bulk_SiO2
+        - crystalline_SiO2
+        - high_pressure_SiO2
+        - liquid_or_melt_SiO2
+        - surface_SiO2
+        - oxygen_vacancy_SiO2
+        - amorphous_SiOx_sub_stoichiometric
+        - condensed_pure_Si_boundary
+        source_evidence: rule-grounded operational population (run-bound input 039; 9295 geometry-only frames) materialized deterministically per the frozen campaign spec docs/FRESH_CAMPAIGN_STAGE1_OPERATIONAL_POPULATION_RULE_v1 (01_stage1_operational_population_rule_v1.json). Rule = ALL sanitized-pool geometries whose config_type classifies ClaimRole.PRIMARY_CLAIM under the frozen DeploymentScopeContractV2, canonical-fingerprint-disjoint from the protected reconstructed Teacher TEST (1142 unique); no subsampling. Derivation 11424 source -> 10312 PRIMARY_CLAIM -> minus 1017 protected (1 dup-equivalent) -> 9295 final; population sha256 64f9df08cdd65304adb1a594ff86abc736b5d2a5478f1bd3cc0ed0cdb735f824; all 8 primary domains represented; leakage-free, ZERO DFT labels
+        applicability_evidence_note: OPERATIONAL_ROBUSTNESS (finite Teacher inference, no NaN/Inf) is assessed over the FULL prospective PRIMARY_CLAIM source coverage (9295 frames across all 8 primary domains); the short-MD sanity subset is a bounded liveness check, not a per-class applicability claim. The 8 declared_domains are the frozen deployment scope; per-class physical-accuracy applicability remains NOT_ESTABLISHED at baseline.
+        dft_labels_used: false
+        protected_reference_labels_used: false
+      applicability_status: NOT_ESTABLISHED
+      applicability_limitations:
+      - Teacher physical accuracy versus DFT is assessed in this campaign's dedicated reference_validation stage (ORIGINAL_HELDOUT_FIDELITY, Teacher-vs-DFT over the recovered original held-out TEST partition), NOT at teacher_baseline
+      - full-envelope deployment applicability is NOT_ESTABLISHED at baseline; this stage asserts operational robustness (finite Teacher inference + short-MD sanity) only
+      teacher_md_sanity:
+        n_structures: 3
+        temperature_K: 300.0
+        timestep_fs: 0.5
+        friction_per_fs: 0.01
+        n_steps: 2000
+        snapshot_interval: 100
+        force_spike_threshold_eV_per_angstrom: 50.0
+        min_distance_threshold_angstrom: 0.5
+        seed: 20260821
+      require_lineage: false
+- name: reference_validation
+  command: null
+  outputs:
+  - artifacts/reference_validation.json
+  - artifacts/teacher_reference_predictions.extxyz
+  teacher_validation_component:
+  - TRAINING_CORPUS_CONSISTENCY
+  - ORIGINAL_HELDOUT_FIDELITY
+  contract:
+    kind: validation_manifest
+    manifest: artifacts/reference_validation.json
+    validator: validation.reference_validation.validate_reference_validation_report
+  gate:
+    criteria:
+    - Teacher-vs-DFT energy and force metrics are computed on the recovered original held-out TEST partition (recovered-original-holdout reference, target_split=test) using the current frozen Teacher checkpoint and the reference's own source DFT labels
+    - the reference is the DFT-labeled EVALUATION population of the Teacher's own original held-out TEST split; its structure identities and DFT labels are hash-verified before any metric is computed
+    - Teacher predictions on the held-out TEST are freshly computed for this campaign; no historical Teacher prediction, RMSE, MAE, or evaluation result is reused as the fresh campaign result
+    - Teacher-vs-DFT metrics are reported globally and by config_type or declared structural domain
+    - held-out TEST DFT truth is consumed only at this predictive-fidelity stage and is never exposed to the early blind Student route
+  pydantic_ai:
+    role: simulation
+    action: validate_teacher_reference
+    approval_boundary: costly_teacher_labeling
+    idempotency_key: sio2-sox-allegro-simplenn-ffv4t:reference_validation:001
+    parameters:
+      teacher_config: '{run_dir}/inputs/004-teacher_config_reference.yaml'
+      reference_yaml: '{run_dir}/inputs/040-reference.yaml'
+      predictions_path: '{run_dir}/artifacts/teacher_reference_predictions.extxyz'
+      report_path: '{run_dir}/artifacts/reference_validation.json'
+      include_stress: false
+    note: ORIGINAL_HELDOUT_FIDELITY execution binding. Serves the Teacher predictive-fidelity component the pre-campaign TeacherValidationPlan selects once the source held-out evidence is bound via teacher_evidence_sources. Reference = recovered-original-holdout (kind recovered-original-holdout, 1142 target_split=test frames with source DFT labels), the algorithmically reconstructed original Teacher held-out partition; Teacher-vs-DFT is computed fresh on the frozen Teacher checkpoint. This stage's costly Teacher inference is gated behind costly_teacher_labeling.
+- name: acquisition
+  command: null
+  outputs:
+  - artifacts/acquisition_candidates.extxyz
+  - artifacts/acquisition.manifest.json
+  - artifacts/acquisition_protection_audit.json
+  gate:
+    criteria:
+    - every acquired frame carries parent_structure_id linking to a real sanitized-pool seed structure
+    - seed selection is documented against the frozen deployment domain
+    - seeds are drawn ONLY from the sanitized geometry-only pool; no DFT labels are used as acquisition-selection scores
+    - none of the reconstructed-Teacher-test population (or its descendants) is admitted into the Student data route
+    - protected-reference exclusion is checked deterministically against the run-bound reconstructed-Teacher-test identity
+  contract:
+    kind: validation_manifest
+    manifest: artifacts/acquisition_protection_audit.json
+    validator: validation.protected_reference.validate_protection_audit_report
+    options:
+      reference_yaml: '{run_dir}/inputs/005-reference.yaml'
+  pydantic_ai:
+    role: data-curator
+    action: acquire_structures
+    approval_boundary: costly_teacher_labeling
+    idempotency_key: sio2-sox-allegro-simplenn-ffv4t:acquisition:001
+    parameters:
+      acquisition_config: '{run_dir}/inputs/001-acquisition.augment-atoms.yaml'
+      teacher_config: '{run_dir}/inputs/004-teacher_config_reference.yaml'
+      out_path: '{run_dir}/artifacts/acquisition_candidates.extxyz'
+      manifest_path: '{run_dir}/artifacts/acquisition.manifest.json'
+      selected_source_indices: []
+      reference_yaml: '{run_dir}/inputs/005-reference.yaml'
+      sanitized_pool_manifest: '{run_dir}/inputs/013-sanitized_pool_manifest.json'
+      structure_id_map: '{run_dir}/inputs/014-structure_id_map.json'
+    note: Fresh Round-0 coverage-driven acquisition. Parents/augmentation parameters derived from sanitized geometry-only source evidence under the 8-domain frozen scope. NO legacy parent set, domain quota, or historical allocation inherited.
+- name: data_coverage
+  command: null
+  outputs:
+  - artifacts/data_coverage.json
+  contract:
+    kind: validation_manifest
+    manifest: artifacts/data_coverage.json
+    validator: validation.data_coverage.validate_data_coverage_report
+    options:
+      accepted_statuses:
+      - COMPLETE
+      - PARTIAL
+      validation_contract_path: '{run_dir}/validation_contract.json'
+  gate:
+    criteria:
+    - teacher_training_data_access is recorded at the evidence level actually available (geometry-only) and its limitations are stated
+    - coverage is computed per config_type across the declared coverage_dimensions
+    - acquisition dataset lineage matches acquisition.manifest.json
+    - reconstructed-Teacher-test structures are excluded before coverage statistics for the Student-training candidate pool are computed
+    - unassessable dimensions are marked NOT_ASSESSABLE rather than fabricated
+  pydantic_ai:
+    role: data-curator
+    action: build_data_coverage_report
+    approval_boundary: null
+    idempotency_key: sio2-sox-allegro-simplenn-ffv4t:data_coverage:001
+    parameters:
+      candidate_dataset: '{run_dir}/artifacts/acquisition_candidates.extxyz'
+      acquisition_manifest: '{run_dir}/artifacts/acquisition.manifest.json'
+      report_path: '{run_dir}/artifacts/data_coverage.json'
+      dataset_policy: '{run_dir}/inputs/008-dataset_policy.yaml'
+      reference_yaml: '{run_dir}/inputs/005-reference.yaml'
+      selected_source_indices: []
+      deployment_domain:
+        system: Si-O (silica and oxygen-deficient silicon oxide; 8 canonical condensed structural classes)
+        composition_scope:
+        - SiO2 (stoichiometric, x = 0)
+        - SiOx (sub-stoichiometric, 0 < x < 2)
+        - Si (fully reduced boundary, x = 2)
+        structure_classes:
+        - amorphous_bulk_SiO2
+        - crystalline_SiO2
+        - high_pressure_SiO2
+        - liquid_or_melt_SiO2
+        - surface_SiO2
+        - oxygen_vacancy_SiO2
+        - amorphous_SiOx_sub_stoichiometric
+        - condensed_pure_Si_boundary
+        temperature_K:
+        - representative points only; no numerical envelope bound asserted
+        pressure_GPa:
+        - representative points only; no numerical envelope bound asserted
+    note: deployment_domain is copied verbatim from this run's own distillation_scope.yaml / validation_profile.yaml deployment_domain block so the contract's validation_contract_path cross-check resolves against the SAME value.
+- name: teacher_labeling
+  command: null
+  outputs:
+  - artifacts/teacher_labeled.extxyz
+  - artifacts/teacher_labels.manifest.json
+  - artifacts/teacher_labeling_protection_audit.json
+  gate:
+    criteria:
+    - every frame in teacher_labeled.extxyz has Teacher energies and forces (and stress iff Teacher stress support was confirmed)
+    - teacher_labels.manifest.json records the exact Teacher checkpoint SHA-256, config hash, element mapping, and package versions
+    - no reconstructed-Teacher-test structure or descendant appears in teacher_labeled.extxyz
+    - every labeled frame preserves source and parent_structure_id lineage
+  contract:
+    kind: validation_manifest
+    manifest: artifacts/teacher_labeling_protection_audit.json
+    validator: validation.protected_reference.validate_protection_audit_report
+    options:
+      reference_yaml: '{run_dir}/inputs/005-reference.yaml'
+  pydantic_ai:
+    role: data-curator
+    action: label_with_teacher
+    approval_boundary: costly_teacher_labeling
+    idempotency_key: sio2-sox-allegro-simplenn-ffv4t:teacher_labeling:001
+    parameters:
+      teacher_config: '{run_dir}/inputs/004-teacher_config_reference.yaml'
+      structures_path: '{run_dir}/artifacts/acquisition_candidates.extxyz'
+      out_path: '{run_dir}/artifacts/teacher_labeled.extxyz'
+      manifest_path: '{run_dir}/artifacts/teacher_labels.manifest.json'
+      include_stress: false
+      selected_source_indices: []
+- name: dataset_split
+  command: null
+  outputs:
+  - artifacts/dataset/train.extxyz
+  - artifacts/dataset/validation.extxyz
+  - artifacts/dataset/test.extxyz
+  - artifacts/dataset/split_manifest.json
+  - artifacts/dataset_split_protection_audit.json
+  gate:
+    criteria:
+    - Student train/validation/test split is performed by parent_structure_id and parent families are disjoint
+    - none of the reconstructed-Teacher-test population or its descendants appears in Student train, validation, or distillation-test splits
+    - artifacts/dataset/test.extxyz is the Student distillation holdout (Student-vs-Teacher) and is distinct from the protected reconstructed-Teacher-test DFT reference
+    - split_manifest.json records RNG seed, fractions, frame counts, and per-split parent-family counts
+  contract:
+    kind: validation_manifest
+    manifest: artifacts/dataset_split_protection_audit.json
+    validator: validation.protected_reference.validate_protection_audit_report
+    options:
+      reference_yaml: '{run_dir}/inputs/005-reference.yaml'
+  pydantic_ai:
+    role: data-curator
+    action: generate_group_split
+    idempotency_key: sio2-sox-allegro-simplenn-ffv4t:dataset_split:001
+    parameters:
+      dataset: '{run_dir}/artifacts/teacher_labeled.extxyz'
+      output_dir: '{run_dir}/artifacts/dataset'
+      manifest: '{run_dir}/artifacts/dataset/split_manifest.json'
+      protection_audit_path: '{run_dir}/artifacts/dataset_split_protection_audit.json'
+      reference_yaml: '{run_dir}/inputs/005-reference.yaml'
+- name: training
+  command: null
+  outputs:
+  - artifacts/student_committee.manifest.json
+  - artifacts/committee
+  produces_student_results: true
+  gate:
+    criteria:
+    - committee has the frozen number of independent Student seeds and every checkpoint is registered
+    - training consumes this run's own Controller-produced artifacts/dataset/train.extxyz (raw Teacher labels; no inherited prior-campaign preprocessing or recipe selection)
+    - student_committee.manifest.json records per-seed configs, RNG seeds, training losses, stopping state, and wall time
+    - no reconstructed-Teacher-test DFT reference structure or descendant is consumed by training or tuning
+  pydantic_ai:
+    role: ml-trainer
+    action: train_committee
+    approval_boundary: costly_training
+    requires_post_split_augmentation: true
+    idempotency_key: sio2-sox-allegro-simplenn-ffv4t:training:001
+    parameters:
+      student_config: '{run_dir}/inputs/000-student.simple-nn.yaml'
+      dataset: '{run_dir}/artifacts/dataset/final_train.extxyz'
+      output_dir: '{run_dir}/artifacts/committee'
+      manifest_path: '{run_dir}/artifacts/student_committee.manifest.json'
+      selected_source_indices: []
+      reference_yaml: '{run_dir}/inputs/005-reference.yaml'
+    note: Trains the FIRST Student for this fresh campaign from scratch on this run's own dataset_split train split with raw Teacher energy/force labels. Committee = 4 independent seeds so the uncertainty stage has a real multi-seed disagreement signal.
+- name: evaluation
+  command: null
+  outputs:
+  - artifacts/evaluated.extxyz
+  - artifacts/accuracy_report.json
+  - artifacts/stage8_contract/stage8_primary_population_policy.json
+  - artifacts/stage8_contract/stage8_energy_alignment_policy.json
+  - artifacts/stage8_contract/stage8_acceptance_policy.json
+  - artifacts/stage8_contract/stage8_population_domain_manifest.json
+  - artifacts/stage8_contract/stage8_primary_claim_1016.extxyz
+  - artifacts/stage8_contract/stage8_diagnostic_only_126.extxyz
+  - artifacts/stage8_contract/stage8_multi_population_evaluation_plan.json
+  gate:
+    criteria:
+    - PRIMARY_CLAIM Stage-8 PASS/FAIL is evaluated on the 1016-frame protected DFT holdout slice spanning all 8 frozen PRIMARY_CLAIM domains; cluster and silicon_others frames are diagnostic-only.
+    - Domain membership is assigned by frozen frame/source identity -> source_category -> deployment-scope mapping; raw config_type is annotation only and unmapped or ambiguous provenance fails closed.
+    - 'Student-vs-Teacher uses the frozen prospective per-domain caps: aligned energy RMSE <= 25.0 meV/atom and force-component RMSE <= 0.30 eV/Angstrom for every PRIMARY_CLAIM domain.'
+    - Teacher-vs-DFT is required complete reference evidence on the same PRIMARY population and alignment convention, not a newly thresholded Stage-8 PASS criterion.
+    - Student-vs-DFT reports direct metrics and the zero-margin triangle-inequality consistency envelope against Teacher-vs-DFT plus the frozen Student-vs-Teacher caps.
+    - Energy alignment uses one common composition-aware elemental-fraction least-squares projection over the 1016-frame PRIMARY population for all three pairwise channels.
+  pydantic_ai:
+    role: ml-trainer
+    action: evaluate_heldout_fidelity
+    approval_boundary: null
+    idempotency_key: sio2-sox-allegro-simplenn-ffv4t:evaluation:001
+    parameters:
+      student_config: '{run_dir}/inputs/000-student.simple-nn.yaml'
+      committee_manifest: '{run_dir}/artifacts/student_committee.manifest.json'
+      frames_path: '{run_dir}/artifacts/stage8_contract/stage8_primary_claim_1016.extxyz'
+      labeled_output: '{run_dir}/artifacts/evaluated.extxyz'
+      report_path: '{run_dir}/artifacts/accuracy_report.json'
+      reference_yaml: '{run_dir}/inputs/005-reference.yaml'
+      required_channels:
+      - student_vs_teacher
+      - teacher_vs_dft
+      - student_vs_dft
+      stage8_population_domain_manifest: '{run_dir}/artifacts/stage8_contract/stage8_population_domain_manifest.json'
+      stage8_primary_population_policy: '{run_dir}/artifacts/stage8_contract/stage8_primary_population_policy.json'
+      stage8_energy_alignment_policy: '{run_dir}/artifacts/stage8_contract/stage8_energy_alignment_policy.json'
+      stage8_acceptance_policy: '{run_dir}/artifacts/stage8_contract/stage8_acceptance_policy.json'
+      multi_population_evaluation_plan: '{run_dir}/artifacts/stage8_contract/stage8_multi_population_evaluation_plan.json'
+    note: Student-vs-Teacher is computed on the run's own distillation holdout; the DFT channels are computed on the access-controlled protected reconstructed-Teacher-test population whose Stage-8 partition the planner decides in-run per access_partitions.json.
+  note: Stage-8 PRIMARY accuracy is bound to the 1016-frame PRIMARY_CLAIM slice of the protected recovered Teacher-test DFT holdout. The 8-frame Stage-6 distillation test remains supplementary diagnostic evidence only; it is not sufficient for PRIMARY_CLAIM PASS. Teacher inference on this bound population must occur only after this contract is committed and verify_inputs passes.
+- name: uncertainty
+  command: null
+  outputs:
+  - artifacts/uncertainty_report.json
+  contract:
+    kind: validation_manifest
+    manifest: artifacts/uncertainty_report.json
+    validator: validation.uncertainty.validate_uncertainty_report
+  gate:
+    criteria:
+    - committee force disagreement is computed on a declared held-out or deployment-relevant population
+    - conformal force-error calibration FIT and coverage EVAL use disjoint partitions of the protected reconstructed-Teacher-test population, decided in-run by the planner
+    - the report cites the exact Student committee manifest hash
+    - any acquisition/recovery proposal triggered by uncertainty respects the protected-reference exclusion policy
+  pydantic_ai:
+    role: ml-trainer
+    action: build_uncertainty_report
+    approval_boundary: null
+    idempotency_key: sio2-sox-allegro-simplenn-ffv4t:uncertainty:001
+    parameters:
+      committee_manifest: '{run_dir}/artifacts/student_committee.manifest.json'
+      population_frames: '{run_dir}/artifacts/evaluated.extxyz'
+      population_role: student_committee_disagreement_population
+      report_path: '{run_dir}/artifacts/uncertainty_report.json'
+    note: population_frames points at evaluation's own artifacts/evaluated.extxyz output (per-seed student force arrays embedded), so no new inference is introduced. Split-conformal calibration per 05_uncertainty_policy_v2.json uses in-run planner partitions of the protected reconstructed-Teacher-test population.
+- name: deployment_md
+  command: null
+  outputs:
+  - artifacts/md.manifest.json
+  - artifacts/deployment_md/trajectory.dump
+  - artifacts/deployment_md/thermo.log
+  - artifacts/deployment_md/input.lmp
+  contract:
+    kind: md_manifest
+    manifest: artifacts/md.manifest.json
+    committee_manifest: artifacts/student_committee.manifest.json
+    required_evidence:
+    - input
+    - trajectory
+    - thermo_log
+  gate:
+    criteria:
+    - MD used a specific committee checkpoint whose SHA-256 is bound in md.manifest.json
+    - the realized MD composition lies within the pre-declared composition scope (inputs/007-distillation_scope.yaml::deployment_domain.composition_scope)
+    - the realized executable MD protocol matches the pre-approved representative deployment point (inputs/006-validation_profile.yaml::shared_md_protocol; ambient amorphous SiO2 300 K / 0 GPa)
+    - every declared required_evidence role is present with an integrity record
+    - explicit human approval for deployment_md is recorded before submission
+  pydantic_ai:
+    role: simulation
+    action: run_student_md
+    approval_boundary: production_md
+    idempotency_key: sio2-sox-allegro-simplenn-ffv4t:deployment_md:001
+    parameters:
+      md_config: '{run_dir}/inputs/002-md_backend.yaml'
+      student_config: '{run_dir}/inputs/000-student.simple-nn.yaml'
+      template_name: prod_md.in.template
+      context_yaml: '{run_dir}/artifacts/deployment_md/context.yaml'
+      input_path: '{run_dir}/artifacts/deployment_md/input.lmp'
+      run_dir: '{run_dir}/artifacts/deployment_md'
+      manifest_path: '{run_dir}/artifacts/md.manifest.json'
+      committee_manifest: '{run_dir}/artifacts/student_committee.manifest.json'
+      evidence_paths:
+      - trajectory={run_dir}/artifacts/deployment_md/trajectory.dump
+      - thermo_log={run_dir}/artifacts/deployment_md/thermo.log
+- name: physical_validation
+  command: null
+  outputs:
+  - artifacts/validation_report.json
+  contract:
+    kind: validation_manifest
+    manifest: artifacts/validation_report.json
+    validator: validation.report.validate_validation_report
+    options:
+      required_observables:
+      - rdf_Si_Si
+      - rdf_Si_O
+      - rdf_O_O
+      - coordination_Si
+      - coordination_O
+      - density
+      - nve_drift
+      required_pass_observables:
+      - nve_drift
+  gate:
+    criteria:
+    - every required observable in validation_profile.yaml is present with a numeric value and unit
+    - each observable's reference_source is the one declared in the frozen profile (teacher for structural; other for nve_drift)
+    - nve_drift PASSES its declared threshold
+    - no threshold was softened after seeing this run's results
+  pydantic_ai:
+    role: simulation
+    action: build_physical_validation_report
+    approval_boundary: null
+    idempotency_key: sio2-sox-allegro-simplenn-ffv4t:physical_validation:001
+    parameters:
+      validation_profile: '{run_dir}/inputs/006-validation_profile.yaml'
+      frames_path: '{run_dir}/artifacts/deployment_md/trajectory.dump'
+      report_path: '{run_dir}/artifacts/validation_report.json'
+      student_config: '{run_dir}/inputs/000-student.simple-nn.yaml'
+      timestep_fs: 0.5
+      sample_interval_steps: 100
+- name: analysis
+  command: null
+  outputs:
+  - artifacts/analysis.md
+  - artifacts/analysis.json
+  - artifacts/analysis/run_state.snapshot.json
+  contract:
+    kind: validation_manifest
+    manifest: artifacts/analysis.json
+    validator: validation.run_summary.validate_run_summary_report
+  gate:
+    criteria:
+    - RunSummary lists every gate verdict, registered artifact hash, and every REVISE/FAIL recovery cycle
+    - analysis explicitly distinguishes Teacher-vs-DFT reference accuracy, Student-vs-Teacher distillation fidelity, and Student-vs-DFT absolute accuracy
+    - reference_validation ORIGINAL_HELDOUT_FIDELITY result is recorded with its Teacher-vs-DFT metrics and provenance
+    - every open item or caveat raised by Judges or Analyst is recorded
+    - no conclusion is stated beyond what the run-bound evidence supports
+  pydantic_ai:
+    role: analyst
+    action: generate_run_summary
+    approval_boundary: null
+    idempotency_key: sio2-sox-allegro-simplenn-ffv4t:analysis:001
+    parameters:
+      report_path: '{run_dir}/artifacts/analysis.json'
+protected_reference:
+  kind: protected-structure-identity
+  reference_id: reconstructed-teacher-test-1142
+  reference_class: PROTECTION_ONLY_STRUCTURE_IDENTITY
+  reference_yaml: /home/hyunjin/distill-real-user/docs/FRESH_CAMPAIGN_VALIDATION_CONTRACTS_v1/reference.yaml
+  logical_test_frames: 1142
+  protected_source_rows: 1143
+  protected_source_indices_file: docs/FFV2_PROTECTED_POPULATION_v1/protected_source_indices_1143.txt
+  geometry_only_structures: docs/FFV2_PROTECTED_POPULATION_v1/protected_teacher_test_geometry_only_1142.extxyz
+  split_provenance: docs/FRESH_SOURCE_BUNDLE_ASSEMBLED_v1/teacher/provenance_recovery/teacher_test_indices.txt
+  split_report: docs/FRESH_SOURCE_BUNDLE_ASSEMBLED_v1/teacher/provenance_recovery/split_and_domain_report.json
+  allowed_uses:
+  - protected_stage8_evaluation
+  - uncertainty_calibration_fit
+  - uncertainty_calibration_eval
+  prohibited_uses:
+  - student_training
+  - student_validation_tuning
+  - acquisition_seed
+  - augmentation_parent
+  - recovery_training
+  - reference_validation_early_stage
+  descendants_of_protected_structures: PROHIBITED
+  in_run_partitioning: DECIDED_BY_PLANNER_PER_ACCESS_PARTITIONS

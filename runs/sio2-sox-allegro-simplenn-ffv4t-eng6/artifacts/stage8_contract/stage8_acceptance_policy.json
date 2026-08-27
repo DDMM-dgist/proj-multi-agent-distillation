@@ -1,0 +1,20 @@
+{
+  "alignment_policy_sha256": "60a7e1898ff91de3c174ab0c16827c8da665abaaa902b44d1a40bed4ac45eacf",
+  "energy_rmse_cap_meV_per_atom": 25.0,
+  "force_rmse_cap_eV_per_angstrom": 0.3,
+  "policy_id": "eng6-stage8-acceptance-v1",
+  "primary_population_policy_sha256": "2c0d30b57ac52c98c599fe0dde8aa6273261b6ca39a3c3a673381f9f24db42b6",
+  "required_primary_domains": [
+    "amorphous_bulk_SiO2",
+    "crystalline_SiO2",
+    "high_pressure_SiO2",
+    "liquid_or_melt_SiO2",
+    "surface_SiO2",
+    "oxygen_vacancy_SiO2",
+    "amorphous_SiOx_sub_stoichiometric",
+    "condensed_pure_Si_boundary"
+  ],
+  "schema_version": 1,
+  "student_vs_dft_envelope_margin": 0.0,
+  "teacher_vs_dft_semantics": "required_reference_evidence_only"
+}

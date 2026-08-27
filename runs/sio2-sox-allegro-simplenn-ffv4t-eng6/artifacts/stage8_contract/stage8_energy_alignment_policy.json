@@ -1,0 +1,11 @@
+{
+  "design": "elemental_fraction",
+  "fit_scope": "common_PRIMARY_CLAIM_population",
+  "policy_id": "eng6-stage8-elemental-fraction-alignment-v1",
+  "projection": "least_squares_orthogonal_projection",
+  "schema_version": 1,
+  "species": [
+    "Si",
+    "O"
+  ]
+}
