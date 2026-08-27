@@ -56,14 +56,18 @@ from framework_v2.v2_sampling import (
 )
 from framework_v2.v2_workflow import (
     ConvergenceKind,
+    FinalValidationStatus,
     V2WorkflowStatus,
     V2WorkflowStep,
     advance_v2_workflow_plan,
     build_efficiency_evidence_bundle,
     build_final_target_validation_request,
+    build_final_target_validation_result,
     build_v2_final_evidence_record,
     build_v2_workflow_plan,
     convergence_from_existing_artifact,
+    record_final_analysis_evidence,
+    record_final_validation_result,
     route_after_tracking,
 )
 
@@ -146,14 +150,34 @@ def test_property_guided_v2_mock_control_loop():
     assert plan.current_step == V2WorkflowStep.DISTILL
 
     # DISTILL emits an external Teacher-labeling request and *waits*; the plan
-    # never executes Teacher inference itself.
+    # never executes Teacher inference itself and does not reach TRACK until the
+    # real Student committee artifact exists.
     plan = advance_v2_workflow_plan(
         plan,
         produced_artifact_type="TeacherLabelingRequest",
         produced_artifact_sha256="labeling_request_0",
     )
-    assert plan.current_step == V2WorkflowStep.TRACK
+    assert plan.current_step == V2WorkflowStep.DISTILL
     assert plan.status == V2WorkflowStatus.WAITING_FOR_ARTIFACT
+    assert plan.execution_allowed is False
+    plan = advance_v2_workflow_plan(
+        plan,
+        produced_artifact_type="TeacherLabelArtifact",
+        produced_artifact_sha256="labels_0",
+    )
+    assert plan.current_step == V2WorkflowStep.DISTILL
+    plan = advance_v2_workflow_plan(
+        plan,
+        produced_artifact_type="TrainingDatasetArtifact",
+        produced_artifact_sha256="dataset_0",
+    )
+    assert plan.current_step == V2WorkflowStep.DISTILL
+    plan = advance_v2_workflow_plan(
+        plan,
+        produced_artifact_type="StudentCommitteeArtifact",
+        produced_artifact_sha256="committee_0",
+    )
+    assert plan.current_step == V2WorkflowStep.TRACK
     assert plan.execution_allowed is False
 
     binding0 = bind_evaluation_population_to_regions(
@@ -292,10 +316,30 @@ def test_property_guided_v2_mock_control_loop():
     )
     assert plan.current_step == V2WorkflowStep.DISTILL
     assert plan.recovery_bundle_sha256 == done.content_sha256()
+    # re-entering DISTILL cleared the prior iteration's intermediate artifacts
+    assert plan.student_committee_sha256 is None
+    # redistillation re-gates through the full artifact chain; only the new
+    # Student committee artifact returns to TRACK.
     plan = advance_v2_workflow_plan(
         plan,
         produced_artifact_type="RedistillationRequest",
         produced_artifact_sha256="redistill_request_1",
+    )
+    assert plan.current_step == V2WorkflowStep.DISTILL
+    plan = advance_v2_workflow_plan(
+        plan,
+        produced_artifact_type="TeacherLabelArtifact",
+        produced_artifact_sha256="labels_1",
+    )
+    plan = advance_v2_workflow_plan(
+        plan,
+        produced_artifact_type="TrainingDatasetArtifact",
+        produced_artifact_sha256="dataset_1",
+    )
+    plan = advance_v2_workflow_plan(
+        plan,
+        produced_artifact_type="StudentCommitteeArtifact",
+        produced_artifact_sha256="committee_1",
     )
     assert plan.current_step == V2WorkflowStep.TRACK
 
@@ -369,6 +413,23 @@ def test_property_guided_v2_mock_control_loop():
     )
     assert plan.status == V2WorkflowStatus.WAITING_FOR_ARTIFACT
 
+    # A request alone cannot COMPLETE; a deterministic FE-067 RESULT (PASS) plus
+    # deterministic FE-068 final-analysis evidence are required first.
+    final_result = build_final_target_validation_result(
+        result_id="final_result",
+        request=final_request,
+        status=FinalValidationStatus.PASS,
+        fe067_evidence_sha256="fe067_evidence",
+        validation_provenance=[ledger1.content_sha256()],
+        per_region_status={"A": "PASS", "B": "PASS"},
+    )
+    plan = record_final_validation_result(plan, final_result)
+    assert plan.final_validation_status == FinalValidationStatus.PASS
+    assert plan.status == V2WorkflowStatus.VALIDATION_READY
+    plan = record_final_analysis_evidence(
+        plan, final_analysis_evidence_sha256="fe068_final_analysis"
+    )
+
     efficiency_bundle = build_efficiency_evidence_bundle(
         bundle_id="efficiency", ledger=ledger1
     )
@@ -392,7 +453,8 @@ def test_property_guided_v2_mock_control_loop():
         campaign_id="mock",
         human_target_sha256=target.content_sha256(),
         target_operationalization_sha256=op.content_sha256(),
-        final_validation_request=final_request,
+        final_validation_result=final_result,
+        final_analysis_evidence_sha256="fe068_final_analysis",
         ledger=ledger1,
         efficiency_bundle=efficiency_bundle,
         convergence_records=convergence,
@@ -403,6 +465,7 @@ def test_property_guided_v2_mock_control_loop():
     )
     assert final_evidence.teacher_frozen is True
     assert final_evidence.new_dft_performed is False
+    assert final_evidence.final_validation_result_sha256 == final_result.content_sha256()
 
     plan = advance_v2_workflow_plan(
         plan,

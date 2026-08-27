@@ -47,6 +47,12 @@ class V2WorkflowStatus(str, Enum):
     COMPLETE = "COMPLETE"
 
 
+class FinalValidationStatus(str, Enum):
+    PASS = "PASS"
+    FAIL = "FAIL"
+    UNRESOLVED = "UNRESOLVED"
+
+
 class CoverageEvidenceRecord(ContractBase):
     record_id: str
     campaign_id: str
@@ -148,11 +154,17 @@ class V2WorkflowPlan(ContractBase):
     structural_region_manifest_sha256: str | None = None
     sampler_result_sha256: str | None = None
     teacher_labeling_request_sha256: str | None = None
+    teacher_label_artifact_sha256: str | None = None
+    training_dataset_artifact_sha256: str | None = None
+    student_committee_sha256: str | None = None
     student_training_request_sha256: str | None = None
     evaluation_binding_sha256: str | None = None
     error_ledger_sha256: str | None = None
     recovery_bundle_sha256: str | None = None
     final_validation_request_sha256: str | None = None
+    final_validation_result_sha256: str | None = None
+    final_validation_status: FinalValidationStatus | None = None
+    final_analysis_evidence_sha256: str | None = None
     final_evidence_sha256: str | None = None
 
     unresolved_reason: str = ""
@@ -161,6 +173,7 @@ class V2WorkflowPlan(ContractBase):
 
 class ExecutorEndpointStatus(str, Enum):
     CONFIRMED_REUSABLE = "CONFIRMED_REUSABLE"
+    REUSABLE_VIA_THIN_ADAPTER = "REUSABLE_VIA_THIN_ADAPTER"
     NEEDS_SOURCE_CONFIRMATION = "NEEDS_SOURCE_CONFIRMATION"
     NEW_ADAPTER_REQUIRED = "NEW_ADAPTER_REQUIRED"
 
@@ -170,6 +183,9 @@ class V2ExecutorEndpoint(ContractBase):
     expected_existing_executor_capability: str
     source_file: str
     known_existing_symbol: str | None = None
+    registered_action_type: str | None = None
+    requires_hpc_approval: bool = False
+    approval_boundary: str | None = None
     status: ExecutorEndpointStatus
     notes: str = ""
 
@@ -200,12 +216,47 @@ class FinalTargetValidationRequest(ContractBase):
     provenance: list[str]
 
 
+class FinalTargetValidationResult(ContractBase):
+    """Deterministic outcome of FE-067 final target validation.
+
+    A request alone can never COMPLETE the workflow; this typed result is the
+    RESULT identity the final evidence record must bind.  It carries the request
+    SHA it answers, the FE-067 evidence SHA, the PASS/FAIL/UNRESOLVED verdict,
+    validation provenance, and the final Student and protected-evaluation
+    identities so the verdict cannot be silently re-attributed.
+    """
+
+    result_id: str
+    campaign_id: str
+    request_sha256: str
+    status: FinalValidationStatus
+    fe067_evidence_sha256: str
+    final_student_committee_sha256: str
+    protected_evaluation_population_sha256: str
+    validation_provenance: list[str]
+    per_region_status: dict[str, str] = Field(default_factory=dict)
+    unresolved_reason: str = ""
+
+    @model_validator(mode="after")
+    def _valid(self):
+        if not self.validation_provenance:
+            raise ValueError("final validation result requires validation provenance")
+        if self.status == FinalValidationStatus.UNRESOLVED and not self.unresolved_reason:
+            raise ValueError("unresolved final validation requires unresolved_reason")
+        return self
+
+
 class V2FinalEvidenceRecord(ContractBase):
     record_id: str
     campaign_id: str
     human_target_sha256: str
     target_operationalization_sha256: str
     target_validation_request_sha256: str
+    final_validation_result_sha256: str
+    final_validation_status: FinalValidationStatus
+    final_analysis_evidence_sha256: str
+    final_student_committee_sha256: str
+    protected_evaluation_population_sha256: str
     error_ledger_sha256: str
     efficiency_bundle_sha256: str
     convergence_evidence_sha256s: list[str]
@@ -225,6 +276,12 @@ class V2FinalEvidenceRecord(ContractBase):
             raise ValueError("V2 final evidence forbids new DFT")
         if not self.protected_population_sha256s:
             raise ValueError("V2 final evidence requires protected population identity")
+        if self.final_validation_status != FinalValidationStatus.PASS:
+            raise ValueError("V2 final evidence requires a PASS final validation result")
+        if not self.final_validation_result_sha256.strip():
+            raise ValueError("V2 final evidence must bind the final validation RESULT identity")
+        if not self.final_analysis_evidence_sha256.strip():
+            raise ValueError("V2 final evidence requires deterministic FE-068 analysis evidence")
         return self
 
 
@@ -291,11 +348,40 @@ def advance_v2_workflow_plan(
             raise ValueError("CURATE expects sampler result or unresolved selection")
 
     elif plan.current_step == V2WorkflowStep.DISTILL:
-        if produced_artifact_type not in {"TeacherLabelingRequest", "RedistillationRequest"}:
-            raise ValueError("DISTILL emits external execution request")
-        update["teacher_labeling_request_sha256"] = produced_artifact_sha256
-        update["current_step"] = V2WorkflowStep.TRACK
-        update["status"] = V2WorkflowStatus.WAITING_FOR_ARTIFACT
+        # DISTILL never advances on a *request*.  It emits an external
+        # execution request and then waits until the real artifact chain
+        # (Teacher labels -> updated dataset -> Student committee) actually
+        # completes.  Only a Student-ready committee artifact permits TRACK.
+        if produced_artifact_type in {"TeacherLabelingRequest", "RedistillationRequest"}:
+            update["teacher_labeling_request_sha256"] = produced_artifact_sha256
+            update["status"] = V2WorkflowStatus.WAITING_FOR_ARTIFACT
+        elif produced_artifact_type == "TeacherLabelArtifact":
+            if plan.teacher_labeling_request_sha256 is None:
+                raise ValueError(
+                    "TeacherLabelArtifact requires an emitted labeling request first"
+                )
+            update["teacher_label_artifact_sha256"] = produced_artifact_sha256
+            update["status"] = V2WorkflowStatus.WAITING_FOR_ARTIFACT
+        elif produced_artifact_type == "TrainingDatasetArtifact":
+            if plan.teacher_label_artifact_sha256 is None:
+                raise ValueError(
+                    "TrainingDatasetArtifact requires completed Teacher labels first"
+                )
+            update["training_dataset_artifact_sha256"] = produced_artifact_sha256
+            update["status"] = V2WorkflowStatus.WAITING_FOR_ARTIFACT
+        elif produced_artifact_type == "StudentCommitteeArtifact":
+            if plan.training_dataset_artifact_sha256 is None:
+                raise ValueError(
+                    "StudentCommitteeArtifact requires an updated training dataset first"
+                )
+            update["student_committee_sha256"] = produced_artifact_sha256
+            update["current_step"] = V2WorkflowStep.TRACK
+            update["status"] = V2WorkflowStatus.READY_TO_EXECUTE_EXTERNAL_ACTION
+        else:
+            raise ValueError(
+                "DISTILL emits an external execution request and only advances on the "
+                "Student-ready committee artifact"
+            )
 
     elif plan.current_step == V2WorkflowStep.TRACK:
         if produced_artifact_type != "ErrorLedger":
@@ -309,18 +395,97 @@ def advance_v2_workflow_plan(
         update["recovery_bundle_sha256"] = produced_artifact_sha256
         update["current_step"] = V2WorkflowStep.DISTILL
         update["status"] = V2WorkflowStatus.READY_TO_EXECUTE_EXTERNAL_ACTION
+        # Re-entering DISTILL must re-gate through the staged artifact chain;
+        # do not carry a prior iteration's intermediate artifacts forward.
+        update["teacher_labeling_request_sha256"] = None
+        update["teacher_label_artifact_sha256"] = None
+        update["training_dataset_artifact_sha256"] = None
+        update["student_committee_sha256"] = None
 
     elif plan.current_step == V2WorkflowStep.VALIDATE:
+        # A *request* is never sufficient to COMPLETE.  The chain is:
+        # request -> FinalTargetValidationResult(PASS) -> deterministic final
+        # analysis evidence (FE-068) -> V2FinalEvidenceRecord -> COMPLETE.
         if produced_artifact_type == "FinalTargetValidationRequest":
             update["final_validation_request_sha256"] = produced_artifact_sha256
             update["status"] = V2WorkflowStatus.WAITING_FOR_ARTIFACT
         elif produced_artifact_type == "V2FinalEvidenceRecord":
+            if (
+                plan.final_validation_result_sha256 is None
+                or plan.final_validation_status != FinalValidationStatus.PASS
+            ):
+                raise ValueError(
+                    "COMPLETE requires a PASS FinalTargetValidationResult before the "
+                    "final evidence record"
+                )
+            if plan.final_analysis_evidence_sha256 is None:
+                raise ValueError(
+                    "COMPLETE requires deterministic final analysis evidence (FE-068)"
+                )
             update["final_evidence_sha256"] = produced_artifact_sha256
             update["status"] = V2WorkflowStatus.COMPLETE
         else:
             raise ValueError("VALIDATE expects final validation request/evidence")
 
     return plan.model_copy(update=update)
+
+
+def record_final_validation_result(
+    plan: V2WorkflowPlan,
+    result: FinalTargetValidationResult,
+) -> V2WorkflowPlan:
+    """Bind a deterministic FinalTargetValidationResult onto a VALIDATE plan.
+
+    A FinalTargetValidationRequest must already have been emitted, and the
+    result must reference exactly that request.  The resulting status is driven
+    by the PASS/FAIL/UNRESOLVED verdict; only PASS opens the door to a final
+    evidence record.
+    """
+    if plan.current_step != V2WorkflowStep.VALIDATE:
+        raise ValueError("final validation result may only bind on the VALIDATE step")
+    if plan.final_validation_request_sha256 is None:
+        raise ValueError("final validation result requires an emitted request first")
+    if result.request_sha256 != plan.final_validation_request_sha256:
+        raise ValueError("final validation result does not reference the emitted request")
+
+    status_map = {
+        FinalValidationStatus.PASS: V2WorkflowStatus.VALIDATION_READY,
+        FinalValidationStatus.FAIL: V2WorkflowStatus.EVIDENCE_INCOMPLETE,
+        FinalValidationStatus.UNRESOLVED: V2WorkflowStatus.SCIENTIFIC_INPUT_REQUIRED,
+    }
+    update: dict[str, Any] = {
+        "final_validation_result_sha256": result.content_sha256(),
+        "final_validation_status": result.status,
+        "status": status_map[result.status],
+        "provenance": [*plan.provenance, result.content_sha256()],
+    }
+    if result.status != FinalValidationStatus.PASS:
+        update["unresolved_reason"] = result.unresolved_reason or (
+            f"final target validation returned {result.status.value}"
+        )
+    return plan.model_copy(update=update)
+
+
+def record_final_analysis_evidence(
+    plan: V2WorkflowPlan,
+    *,
+    final_analysis_evidence_sha256: str,
+) -> V2WorkflowPlan:
+    """Bind the deterministic FE-068 final analysis evidence onto the plan.
+
+    Only meaningful once a PASS validation result is bound; the final evidence
+    record cannot COMPLETE the workflow without it.
+    """
+    if plan.final_validation_status != FinalValidationStatus.PASS:
+        raise ValueError(
+            "final analysis evidence requires a PASS final validation result first"
+        )
+    return plan.model_copy(
+        update={
+            "final_analysis_evidence_sha256": final_analysis_evidence_sha256,
+            "provenance": [*plan.provenance, final_analysis_evidence_sha256],
+        }
+    )
 
 
 def latest_region_states(
@@ -481,30 +646,45 @@ def default_v2_executor_adapter_map() -> V2ExecutorAdapterMap:
                 v2_request_type="TeacherLabelingRequest",
                 expected_existing_executor_capability="canonical Teacher labeling / label selected candidate structures",
                 source_file="runtimes/pydantic_ai/executors.py",
-                known_existing_symbol=None,
-                status=ExecutorEndpointStatus.NEEDS_SOURCE_CONFIRMATION,
-                notes="inspect existing teacher-label execution action before binding",
+                known_existing_symbol="_exec_label_with_teacher",
+                registered_action_type="label_with_teacher",
+                requires_hpc_approval=True,
+                approval_boundary="costly_teacher_labeling",
+                status=ExecutorEndpointStatus.REUSABLE_VIA_THIN_ADAPTER,
+                notes="adapters.acquisition.label_with_teacher; role=data-curator; HPC approval gated",
             ),
             V2ExecutorEndpoint(
                 v2_request_type="TrainingDatasetUpdateRequest",
                 expected_existing_executor_capability="build/update Student training dataset from prior train population + new labels",
                 source_file="runtimes/pydantic_ai/executors.py",
-                known_existing_symbol=None,
-                status=ExecutorEndpointStatus.NEEDS_SOURCE_CONFIRMATION,
+                known_existing_symbol="_exec_generate_group_split",
+                registered_action_type="generate_group_split",
+                requires_hpc_approval=False,
+                approval_boundary=None,
+                status=ExecutorEndpointStatus.REUSABLE_VIA_THIN_ADAPTER,
+                notes="workflow.steps.split_dataset + prepare_student_distillation_dataset; role=data-curator; deterministic",
             ),
             V2ExecutorEndpoint(
                 v2_request_type="RedistillationRequest",
                 expected_existing_executor_capability="Student committee training/redistillation",
                 source_file="runtimes/pydantic_ai/executors.py",
-                known_existing_symbol=None,
-                status=ExecutorEndpointStatus.NEEDS_SOURCE_CONFIRMATION,
+                known_existing_symbol="_exec_train_committee",
+                registered_action_type="train_committee",
+                requires_hpc_approval=True,
+                approval_boundary="costly_training",
+                status=ExecutorEndpointStatus.REUSABLE_VIA_THIN_ADAPTER,
+                notes="workflow.steps.train_committee; role=ml-trainer; HPC approval gated",
             ),
             V2ExecutorEndpoint(
                 v2_request_type="NextEvaluationRequest",
                 expected_existing_executor_capability="protected evaluation / Stage-8 style E-F comparison",
                 source_file="runtimes/pydantic_ai/executors.py",
-                known_existing_symbol=None,
-                status=ExecutorEndpointStatus.NEEDS_SOURCE_CONFIRMATION,
+                known_existing_symbol="_exec_evaluate_committee",
+                registered_action_type="evaluate_heldout_fidelity",
+                requires_hpc_approval=True,
+                approval_boundary="costly_training",
+                status=ExecutorEndpointStatus.REUSABLE_VIA_THIN_ADAPTER,
+                notes="workflow.steps.evaluate_committee / evaluate_multi_population (Stage-8 FE-062); role=ml-trainer; HPC approval gated",
             ),
             V2ExecutorEndpoint(
                 v2_request_type="FinalTargetValidationRequest",
@@ -522,6 +702,90 @@ def default_v2_executor_adapter_map() -> V2ExecutorAdapterMap:
                 notes="exact executor-side final summary builder needs source confirmation",
             ),
         ],
+    )
+
+
+class ExecutorDispatchProposal(ContractBase):
+    """Non-executing binding of a V2 request to a real registered executor.
+
+    This is a plan, not an execution.  ``executes_immediately`` is always
+    False; a human authorizes the actual dispatch downstream.  The HPC-approval
+    requirement is derived from the registered action descriptor, never
+    self-granted.
+    """
+
+    v2_request_type: str
+    registered_action_type: str
+    executor_symbol: str
+    source_file: str
+    requires_human_approval: bool
+    approval_boundary: str | None = None
+    identity_provenance: list[str]
+    executes_immediately: bool = False
+
+    @model_validator(mode="after")
+    def _non_executing(self):
+        if self.executes_immediately:
+            raise ValueError("V2 executor dispatch proposals never execute immediately")
+        if not self.identity_provenance:
+            raise ValueError("executor dispatch proposal requires identity provenance")
+        return self
+
+
+def resolve_executor_dispatch(
+    adapter_map: V2ExecutorAdapterMap,
+    v2_request_type: str,
+    *,
+    identity_provenance: list[str],
+    action_registry: dict[str, Any] | None = None,
+) -> ExecutorDispatchProposal:
+    """Resolve a V2 request type to a non-executing dispatch proposal.
+
+    ``framework_v2`` stays pure: the caller injects the real
+    ``build_executor_registry()`` result as ``action_registry`` when it wants
+    the approval boundary cross-checked against the live descriptor.  When
+    injected, a mismatch between the adapter map and the registry fails closed.
+    """
+    endpoint = next(
+        (e for e in adapter_map.endpoints if e.v2_request_type == v2_request_type),
+        None,
+    )
+    if endpoint is None:
+        raise ValueError(f"no executor endpoint mapped for {v2_request_type}")
+    if endpoint.registered_action_type is None or endpoint.known_existing_symbol is None:
+        raise ValueError(
+            f"{v2_request_type} is not bound to a registered executor "
+            f"(status={endpoint.status.value})"
+        )
+
+    requires_approval = endpoint.requires_hpc_approval
+    approval_boundary = endpoint.approval_boundary
+    if action_registry is not None:
+        descriptor = action_registry.get(endpoint.registered_action_type)
+        if descriptor is None:
+            raise ValueError(
+                f"registered action {endpoint.registered_action_type} absent from "
+                "injected executor registry"
+            )
+        live_boundary = getattr(descriptor, "approval_boundary", None)
+        live_requires = live_boundary is not None
+        if live_requires != requires_approval or live_boundary != approval_boundary:
+            raise ValueError(
+                "executor adapter approval boundary disagrees with live registry for "
+                f"{endpoint.registered_action_type}: adapter="
+                f"({requires_approval},{approval_boundary}) registry="
+                f"({live_requires},{live_boundary})"
+            )
+
+    return ExecutorDispatchProposal(
+        v2_request_type=endpoint.v2_request_type,
+        registered_action_type=endpoint.registered_action_type,
+        executor_symbol=endpoint.known_existing_symbol,
+        source_file=endpoint.source_file,
+        requires_human_approval=requires_approval,
+        approval_boundary=approval_boundary,
+        identity_provenance=list(identity_provenance),
+        executes_immediately=False,
     )
 
 
@@ -562,13 +826,44 @@ def build_final_target_validation_request(
     )
 
 
+def build_final_target_validation_result(
+    *,
+    result_id: str,
+    request: FinalTargetValidationRequest,
+    status: FinalValidationStatus,
+    fe067_evidence_sha256: str,
+    validation_provenance: list[str],
+    per_region_status: dict[str, str] | None = None,
+    unresolved_reason: str = "",
+) -> FinalTargetValidationResult:
+    """Bind a deterministic FE-067 validation outcome to its request.
+
+    The final Student and protected-evaluation identities are pulled from the
+    request so the verdict cannot be re-attributed to a different Student or
+    evaluation population.
+    """
+    return FinalTargetValidationResult(
+        result_id=result_id,
+        campaign_id=request.campaign_id,
+        request_sha256=request.content_sha256(),
+        status=status,
+        fe067_evidence_sha256=fe067_evidence_sha256,
+        final_student_committee_sha256=request.final_student_committee_sha256,
+        protected_evaluation_population_sha256=request.protected_evaluation_population_sha256,
+        validation_provenance=validation_provenance,
+        per_region_status=per_region_status or {},
+        unresolved_reason=unresolved_reason,
+    )
+
+
 def build_v2_final_evidence_record(
     *,
     record_id: str,
     campaign_id: str,
     human_target_sha256: str,
     target_operationalization_sha256: str,
-    final_validation_request: FinalTargetValidationRequest,
+    final_validation_result: FinalTargetValidationResult,
+    final_analysis_evidence_sha256: str,
     ledger: ErrorLedger,
     efficiency_bundle: EfficiencyEvidenceBundle,
     convergence_records: list[ConvergenceEvidenceRecord],
@@ -577,12 +872,26 @@ def build_v2_final_evidence_record(
     fe067_bridge_ref: str | None = None,
     fe068_bridge_ref: str | None = None,
 ) -> V2FinalEvidenceRecord:
+    if final_validation_result.status != FinalValidationStatus.PASS:
+        raise ValueError(
+            "V2 final evidence requires a PASS final validation result; got "
+            f"{final_validation_result.status.value}"
+        )
+    if not final_analysis_evidence_sha256.strip():
+        raise ValueError("V2 final evidence requires deterministic FE-068 analysis evidence")
     return V2FinalEvidenceRecord(
         record_id=record_id,
         campaign_id=campaign_id,
         human_target_sha256=human_target_sha256,
         target_operationalization_sha256=target_operationalization_sha256,
-        target_validation_request_sha256=final_validation_request.content_sha256(),
+        target_validation_request_sha256=final_validation_result.request_sha256,
+        final_validation_result_sha256=final_validation_result.content_sha256(),
+        final_validation_status=final_validation_result.status,
+        final_analysis_evidence_sha256=final_analysis_evidence_sha256,
+        final_student_committee_sha256=final_validation_result.final_student_committee_sha256,
+        protected_evaluation_population_sha256=(
+            final_validation_result.protected_evaluation_population_sha256
+        ),
         error_ledger_sha256=ledger.content_sha256(),
         efficiency_bundle_sha256=efficiency_bundle.content_sha256(),
         convergence_evidence_sha256s=[r.content_sha256() for r in convergence_records],
@@ -593,7 +902,9 @@ def build_v2_final_evidence_record(
         fe067_bridge_ref=fe067_bridge_ref,
         fe068_bridge_ref=fe068_bridge_ref,
         provenance=[
-            final_validation_request.content_sha256(),
+            final_validation_result.content_sha256(),
+            final_validation_result.request_sha256,
+            final_analysis_evidence_sha256,
             ledger.content_sha256(),
             efficiency_bundle.content_sha256(),
             *[r.content_sha256() for r in convergence_records],
@@ -606,8 +917,11 @@ __all__ = [
     "ConvergenceKind",
     "CoverageEvidenceRecord",
     "EfficiencyEvidenceBundle",
+    "ExecutorDispatchProposal",
     "ExecutorEndpointStatus",
     "FinalTargetValidationRequest",
+    "FinalTargetValidationResult",
+    "FinalValidationStatus",
     "ParetoRecord",
     "V2ExecutorAdapterMap",
     "V2ExecutorEndpoint",
@@ -618,6 +932,7 @@ __all__ = [
     "advance_v2_workflow_plan",
     "build_efficiency_evidence_bundle",
     "build_final_target_validation_request",
+    "build_final_target_validation_result",
     "build_v2_final_evidence_record",
     "build_v2_workflow_plan",
     "convergence_from_existing_artifact",
@@ -625,5 +940,8 @@ __all__ = [
     "default_v2_executor_adapter_map",
     "latest_region_states",
     "pareto_records_from_ledger",
+    "record_final_analysis_evidence",
+    "record_final_validation_result",
+    "resolve_executor_dispatch",
     "route_after_tracking",
 ]
