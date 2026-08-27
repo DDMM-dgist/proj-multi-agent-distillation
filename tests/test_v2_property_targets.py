@@ -29,18 +29,15 @@ def test_target_family_cannot_be_silently_changed():
         operationalize_target(target)
 
 
-def test_broad_family_selects_only_allowed_observables():
+def test_broad_family_does_not_fabricate_gate_contract():
     target = HumanTargetPropertyContract(
         contract_id="target",
         target_property_family=TargetPropertyFamily.STRUCTURAL,
     )
-    contract = operationalize_target(target)
-
-    assert contract.target_property_family == TargetPropertyFamily.STRUCTURAL
-    assert contract.observables
-    assert {b.observable.family for b in contract.observables} == {
-        TargetPropertyFamily.STRUCTURAL
-    }
+    # A broad family is valid but pending: no REQUIRED observables yet, so the
+    # backward-compatible wrapper must not fabricate a closure contract.
+    with pytest.raises(ValueError, match="REQUIRED observables"):
+        operationalize_target(target)
 
 
 def test_explicitly_required_observable_is_preserved():

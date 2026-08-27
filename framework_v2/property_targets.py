@@ -39,6 +39,19 @@ class AcceptanceStatus(str, Enum):
     HUMAN_SCIENTIFIC_INPUT_REQUIRED = "HUMAN_SCIENTIFIC_INPUT_REQUIRED"
 
 
+class ObservableSelectionRole(str, Enum):
+    REQUIRED = "REQUIRED"
+    RECOMMENDED = "RECOMMENDED"
+    EVIDENCE_ONLY = "EVIDENCE_ONLY"
+    NOT_SELECTED = "NOT_SELECTED"
+
+
+class OperationalizationStatus(str, Enum):
+    PENDING_OPERATIONALIZATION = "PENDING_OPERATIONALIZATION"
+    READY_FOR_VALIDATION_CONTRACT = "READY_FOR_VALIDATION_CONTRACT"
+    ACCEPTANCE_THRESHOLD_UNBOUND = "ACCEPTANCE_THRESHOLD_UNBOUND"
+
+
 class HumanTargetPropertyContract(ContractBase):
     """Required scientific input for every new V2 campaign."""
 
@@ -135,6 +148,32 @@ class TargetValidationContract(ContractBase):
             if binding.observable.family != self.target_property_family:
                 raise ValueError("target operationalization changed the human target family")
         return self
+
+
+class TargetOperationalizationRequest(ContractBase):
+    request_id: str
+    human_target_sha256: str
+    registry_sha256: str
+    requires_human_confirmation_for_broad_family: bool = True
+
+
+class OperationalizationDecision(ContractBase):
+    observable_name: str
+    role: ObservableSelectionRole
+    rationale: str
+    decision_provenance: list[str]
+    acceptance_status: AcceptanceStatus
+    criterion: dict[str, Any] | None = None
+    criterion_provenance: list[str] = Field(default_factory=list)
+
+
+class TargetOperationalizationResult(ContractBase):
+    result_id: str
+    request_sha256: str
+    human_target_sha256: str
+    target_property_family: TargetPropertyFamily
+    decisions: list[OperationalizationDecision]
+    status: OperationalizationStatus
 
 
 def default_observable_registry() -> ObservableRegistry:
@@ -251,20 +290,139 @@ def default_observable_registry() -> ObservableRegistry:
     return ObservableRegistry(registry_id="v2_default_observable_registry", observables=specs)
 
 
+def create_operationalization_request(
+    human_target: HumanTargetPropertyContract,
+    registry: ObservableRegistry,
+    *,
+    request_id: str,
+) -> TargetOperationalizationRequest:
+    return TargetOperationalizationRequest(
+        request_id=request_id,
+        human_target_sha256=human_target.content_sha256(),
+        registry_sha256=registry.content_sha256(),
+    )
+
+
+def operationalize_target_request(
+    human_target: HumanTargetPropertyContract,
+    *,
+    registry: ObservableRegistry | None = None,
+    decisions: list[OperationalizationDecision] | None = None,
+    request_id: str = "target_operationalization_request_v2",
+    result_id: str = "target_operationalization_result_v2",
+) -> TargetOperationalizationResult:
+    """Lifecycle entrypoint: human required observables become REQUIRED closure
+    decisions; a broad family yields RECOMMENDED candidates only (PENDING), never
+    a fabricated gate contract."""
+
+    registry = registry or default_observable_registry()
+    request = create_operationalization_request(human_target, registry, request_id=request_id)
+
+    if decisions is None and human_target.required_observables:
+        decisions = [
+            OperationalizationDecision(
+                observable_name=name,
+                role=ObservableSelectionRole.REQUIRED,
+                rationale="explicitly required by human target",
+                decision_provenance=[human_target.content_sha256()],
+                acceptance_status=registry.get(name).acceptance_status,
+            )
+            for name in human_target.required_observables
+        ]
+    elif decisions is None:
+        decisions = [
+            OperationalizationDecision(
+                observable_name=name,
+                role=ObservableSelectionRole.RECOMMENDED,
+                rationale="candidate observable for selected family; not closure-required",
+                decision_provenance=[registry.content_sha256(), human_target.content_sha256()],
+                acceptance_status=registry.get(name).acceptance_status,
+            )
+            for name in registry.names_for_family(human_target.target_property_family)
+        ]
+
+    for d in decisions:
+        spec = registry.get(d.observable_name)
+        if spec.family != human_target.target_property_family:
+            raise ValueError("operationalization changed human target family")
+        if (
+            d.observable_name in human_target.required_observables
+            and d.role != ObservableSelectionRole.REQUIRED
+        ):
+            raise ValueError("human-required observable must remain REQUIRED")
+
+    required = [d for d in decisions if d.role == ObservableSelectionRole.REQUIRED]
+    if not required:
+        status = OperationalizationStatus.PENDING_OPERATIONALIZATION
+    elif any(d.acceptance_status != AcceptanceStatus.BOUND for d in required):
+        status = OperationalizationStatus.ACCEPTANCE_THRESHOLD_UNBOUND
+    else:
+        status = OperationalizationStatus.READY_FOR_VALIDATION_CONTRACT
+
+    return TargetOperationalizationResult(
+        result_id=result_id,
+        request_sha256=request.content_sha256(),
+        human_target_sha256=human_target.content_sha256(),
+        target_property_family=human_target.target_property_family,
+        decisions=decisions,
+        status=status,
+    )
+
+
+def build_target_validation_contract(
+    result: TargetOperationalizationResult,
+    registry: ObservableRegistry,
+    *,
+    contract_id: str = "target_validation_v2",
+) -> TargetValidationContract:
+    required = [d for d in result.decisions if d.role == ObservableSelectionRole.REQUIRED]
+    if not required:
+        raise ValueError(
+            "cannot build TargetValidationContract before REQUIRED observables are selected"
+        )
+    missing = [d.observable_name for d in required if d.acceptance_status != AcceptanceStatus.BOUND]
+    return TargetValidationContract(
+        contract_id=contract_id,
+        human_target_sha256=result.human_target_sha256,
+        target_property_family=result.target_property_family,
+        observables=[
+            TargetObservableBinding(
+                observable=registry.get(d.observable_name),
+                selected_by=d.role.value,
+                selection_provenance=d.decision_provenance,
+            )
+            for d in required
+        ],
+        threshold_status=(
+            AcceptanceStatus.BOUND if not missing else AcceptanceStatus.ACCEPTANCE_THRESHOLD_UNBOUND
+        ),
+        missing_threshold_observables=missing,
+    )
+
+
 def operationalize_target(
     human_target: HumanTargetPropertyContract,
     registry: ObservableRegistry | None = None,
     *,
     contract_id: str = "target_validation_v2",
 ) -> TargetValidationContract:
-    """Bind target observables without changing the human-selected family."""
+    """Backward-compatible wrapper for the explicit-required-observables path.
+
+    A broad family (no ``required_observables``) is a valid but *pending* target:
+    it has no closure-required observables yet, so we do not fabricate a gate
+    contract.  Callers must drive the lifecycle via
+    :func:`operationalize_target_request` and then
+    :func:`build_target_validation_contract` once required observables exist.
+    """
 
     registry = registry or default_observable_registry()
+    if not human_target.required_observables:
+        raise ValueError(
+            "broad-family target has no REQUIRED observables; use "
+            "operationalize_target_request() to obtain RECOMMENDED candidates and "
+            "build_target_validation_contract() once required observables are selected"
+        )
     requested = list(human_target.required_observables)
-    if not requested:
-        requested = registry.names_for_family(human_target.target_property_family)
-    if human_target.target_property_family == TargetPropertyFamily.USER_DEFINED:
-        requested = requested or ["user_defined_plugin"]
 
     bindings: list[TargetObservableBinding] = []
     missing_thresholds: list[str] = []
@@ -305,10 +463,18 @@ __all__ = [
     "HumanTargetPropertyContract",
     "ObservableRegistry",
     "ObservableRequirement",
+    "ObservableSelectionRole",
     "ObservableSpec",
+    "OperationalizationDecision",
+    "OperationalizationStatus",
     "TargetObservableBinding",
+    "TargetOperationalizationRequest",
+    "TargetOperationalizationResult",
     "TargetPropertyFamily",
     "TargetValidationContract",
+    "build_target_validation_contract",
+    "create_operationalization_request",
     "default_observable_registry",
     "operationalize_target",
+    "operationalize_target_request",
 ]
