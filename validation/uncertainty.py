@@ -15,6 +15,7 @@ from validation.report import validate_evidence
 from workflow.integrity import sha256_file
 
 CALIBRATION_STATUSES = {"uncalibrated", "calibrated"}
+CALIBRATION_DECISIONS = {"PASS", "FAIL", "HUMAN_SCIENTIFIC_INPUT_REQUIRED"}
 
 
 def _finite(value):
@@ -115,6 +116,51 @@ def validate_uncertainty_report(manifest_path, submitted_artifacts=None, allowed
                 "'calibrated' -- committee force disagreement must stay disclosed as a ranking/"
                 "fidelity signal, not silently presented as calibrated uncertainty"
             )
+    else:
+        for field in ("quantity", "nominal_coverage", "fit", "eval", "conformal"):
+            if field not in calibration:
+                raise ValueError(f"calibrated uncertainty report requires calibration.{field}")
+        nominal = calibration.get("nominal_coverage")
+        if not _finite(nominal) or not (0.0 < float(nominal) < 1.0):
+            raise ValueError("calibration.nominal_coverage must be a finite probability")
+        quantity = calibration.get("quantity")
+        if not isinstance(quantity, str) or not quantity.strip():
+            raise ValueError("calibration.quantity must name the calibrated quantity")
+        for block_name in ("fit", "eval"):
+            block = calibration.get(block_name)
+            if not isinstance(block, dict):
+                raise ValueError(f"calibration.{block_name} must be an object")
+            if not _nonnegative_integer(block.get("n_frames")) or block["n_frames"] <= 0:
+                raise ValueError(f"calibration.{block_name}.n_frames must be positive")
+            if not isinstance(block.get("path"), str) or not block["path"].strip():
+                raise ValueError(f"calibration.{block_name}.path is required")
+            if not isinstance(block.get("frame_fingerprints_sha256"), str) or not block["frame_fingerprints_sha256"].strip():
+                raise ValueError(f"calibration.{block_name}.frame_fingerprints_sha256 is required")
+        if calibration["fit"]["frame_fingerprints_sha256"] == calibration["eval"]["frame_fingerprints_sha256"]:
+            raise ValueError("calibration FIT and EVAL fingerprints must be disjoint")
+        conformal = calibration.get("conformal")
+        if not isinstance(conformal, dict):
+            raise ValueError("calibration.conformal must be an object")
+        for field in ("qhat", "epsilon", "score_count"):
+            if not _finite(conformal.get(field)) or float(conformal[field]) < 0:
+                raise ValueError(f"calibration.conformal.{field} must be non-negative finite")
+        coverage = calibration.get("coverage_eval")
+        if not isinstance(coverage, dict):
+            raise ValueError("calibrated uncertainty report requires calibration.coverage_eval")
+        for field in ("observed_coverage", "covered_count", "total_count"):
+            if field not in coverage:
+                raise ValueError(f"calibration.coverage_eval.{field} is required")
+        if not _finite(coverage["observed_coverage"]) or not (0.0 <= float(coverage["observed_coverage"]) <= 1.0):
+            raise ValueError("calibration.coverage_eval.observed_coverage must be a probability")
+        if not _nonnegative_integer(coverage["covered_count"]) or not _nonnegative_integer(coverage["total_count"]):
+            raise ValueError("calibration.coverage_eval counts must be non-negative integers")
+        if coverage["total_count"] <= 0 or coverage["covered_count"] > coverage["total_count"]:
+            raise ValueError("calibration.coverage_eval counts are inconsistent")
+        decision = calibration.get("decision")
+        if decision not in CALIBRATION_DECISIONS:
+            raise ValueError("calibration.decision must be one of " + str(sorted(CALIBRATION_DECISIONS)))
+        if decision == "PASS" and not isinstance(calibration.get("coverage_acceptance"), dict):
+            raise ValueError("calibration cannot PASS without bound coverage_acceptance parameters")
 
     validate_evidence(manifest_path, payload.get("evidence"), submitted_artifacts, False,
                       allowed_evidence, label="uncertainty")

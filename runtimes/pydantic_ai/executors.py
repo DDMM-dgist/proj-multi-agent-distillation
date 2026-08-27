@@ -116,6 +116,58 @@ def _exec_build_uncertainty_report(proposal):
             values.append(float(frame_score))
         return scores, values
 
+    def _force_error_records(frames_list, u_values):
+        if len(frames_list) != len(u_values):
+            raise ValueError("force-error records require one uncertainty value per frame")
+        records = []
+        for index, (atoms, u_frame) in enumerate(zip(frames_list, u_values)):
+            if "dft_forces" not in atoms.arrays:
+                raise ValueError(f"calibration frame {index} is missing dft_forces")
+            per_seed = []
+            for seed in seeds:
+                field = f"student_forces_seed{seed:02d}"
+                if field not in atoms.arrays:
+                    raise ValueError(f"calibration frame {index} is missing committee forces: {field}")
+                per_seed.append(np.asarray(atoms.arrays[field], dtype=float))
+            pred = np.mean(np.stack(per_seed), axis=0)
+            ref = np.asarray(atoms.arrays["dft_forces"], dtype=float)
+            if pred.shape != ref.shape or pred.ndim != 2 or pred.shape[1] != 3:
+                raise ValueError(f"calibration frame {index} has incompatible force shapes")
+            err = float(np.max(np.abs(pred - ref)))
+            records.append({
+                "frame_id": str(atoms.info.get("structure_id", index)),
+                "u_frame": float(u_frame),
+                "actual_force_component_error_eV_per_angstrom": err,
+            })
+        return records
+
+    def _rank_correlation(xs, ys):
+        if len(xs) < 2 or len(xs) != len(ys):
+            return None
+        def ranks(values):
+            order = sorted(range(len(values)), key=lambda i: (values[i], i))
+            out = [0.0] * len(values)
+            for rank, idx in enumerate(order):
+                out[idx] = float(rank)
+            return np.asarray(out, dtype=float)
+        rx = ranks([float(x) for x in xs])
+        ry = ranks([float(y) for y in ys])
+        if float(rx.std()) == 0.0 or float(ry.std()) == 0.0:
+            return None
+        return float(np.corrcoef(rx, ry)[0, 1])
+
+    def _load_uncertainty_policy():
+        path = p.get("uncertainty_policy") or p.get("uncertainty_policy_path")
+        if not path:
+            return None, None, None
+        policy_path = Path(path).resolve()
+        policy = json.loads(policy_path.read_text())
+        note = policy.get("_scientific_semantics_note") or {}
+        target_percent = note.get("nominal_coverage_target_percent")
+        if not isinstance(target_percent, (int, float)):
+            raise ValueError("uncertainty policy lacks nominal_coverage_target_percent")
+        return policy_path, policy, float(target_percent) / 100.0
+
     # Governed calibration/eval isolation: when an access-partition contract is bound, the
     # uncertainty report's PRIMARY population is the disjoint ``uncertainty_calibration_fit``
     # role, and the disjoint ``uncertainty_calibration_eval`` role is summarized separately as an
@@ -170,11 +222,78 @@ def _exec_build_uncertainty_report(proposal):
     if not frames:
         raise ValueError("uncertainty population_frames is empty")
     frame_scores, u_values = _frame_disagreement(frames)
+    policy_path, uncertainty_policy, nominal_coverage = _load_uncertainty_policy()
     calibration_evidence = p.get("calibration_evidence")
-    if calibration_evidence:
+    if governed_partition is not None and uncertainty_policy is not None:
+        epsilon = float(p.get("conformal_epsilon", 1e-12))
+        if epsilon < 0:
+            raise ValueError("conformal_epsilon must be non-negative")
+        fit_records = _force_error_records(frames, u_values)
+        fit_scores = [r["actual_force_component_error_eV_per_angstrom"] / (r["u_frame"] + epsilon)
+                      for r in fit_records]
+        if not fit_scores:
+            raise ValueError("calibration FIT population is empty")
+        ordered = sorted(float(x) for x in fit_scores)
+        rank = int(np.ceil((len(ordered) + 1) * nominal_coverage))
+        qhat = ordered[min(max(rank, 1), len(ordered)) - 1]
+        eval_records = _force_error_records(eval_frames, eval_values)
+        covered = [r["actual_force_component_error_eV_per_angstrom"] <= qhat * (r["u_frame"] + epsilon)
+                   for r in eval_records]
+        covered_count = int(sum(bool(x) for x in covered))
+        total_count = int(len(covered))
+        observed = covered_count / total_count if total_count else 0.0
+        coverage_acceptance = p.get("coverage_acceptance")
+        if coverage_acceptance:
+            min_cov = coverage_acceptance.get("min_observed_coverage")
+            if not isinstance(min_cov, (int, float)):
+                raise ValueError("coverage_acceptance.min_observed_coverage must be numeric")
+            decision = "PASS" if observed >= float(min_cov) else "FAIL"
+        else:
+            decision = "HUMAN_SCIENTIFIC_INPUT_REQUIRED"
+        calibration = {
+            "status": "calibrated",
+            "quantity": "frame_max_abs_force_component_error_of_committee_mean_vs_dft",
+            "uncertainty_signal": f"committee_force_std_sigma_F_{aggregate}",
+            "nominal_coverage": nominal_coverage,
+            "policy_id": uncertainty_policy.get("policy_id"),
+            "fit": governed_partition["calibration_fit"],
+            "eval": governed_partition["calibration_eval"],
+            "conformal": {
+                "estimator": "split_conformal_normalized_force_error_radius",
+                "radius_formula": "qhat * (u_frame + epsilon)",
+                "qhat": float(qhat),
+                "epsilon": float(epsilon),
+                "score_count": len(fit_scores),
+                "finite_sample_rank": rank,
+            },
+            "coverage_eval": {
+                "observed_coverage": float(observed),
+                "covered_count": covered_count,
+                "total_count": total_count,
+            },
+            "association_diagnostics": {
+                "fit_spearman_rank_correlation_sigma_vs_error": _rank_correlation(
+                    [r["u_frame"] for r in fit_records],
+                    [r["actual_force_component_error_eV_per_angstrom"] for r in fit_records]),
+                "eval_spearman_rank_correlation_sigma_vs_error": _rank_correlation(
+                    [r["u_frame"] for r in eval_records],
+                    [r["actual_force_component_error_eV_per_angstrom"] for r in eval_records]),
+            },
+            "decision": decision,
+        }
+        if coverage_acceptance:
+            calibration["coverage_acceptance"] = coverage_acceptance
+        else:
+            calibration["human_scientific_input_required"] = (
+                "nominal coverage is frozen, but no preregistered binomial/coverage acceptance "
+                "test parameters are bound; calibrated evidence is reported without fabricating "
+                "a PASS threshold")
+    elif calibration_evidence:
         calibration = {"status": "calibrated", "caveat": p.get(
             "calibration_caveat", "calibrated against the cited calibration_evidence")}
     else:
+        if p.get("require_calibrated"):
+            raise ValueError("calibrated uncertainty requires access_partition_path and uncertainty_policy")
         calibration = {
             "status": "uncalibrated",
             "caveat": ("committee force disagreement (sigma_F) is treated as a committee "
@@ -183,6 +302,10 @@ def _exec_build_uncertainty_report(proposal):
         }
     evidence = [_evidence("committee_manifest", committee_manifest),
                _evidence("population", population_path)]
+    if governed_partition is not None:
+        evidence.append(_evidence("calibration_eval_population", governed_partition["calibration_eval"]["path"]))
+    if policy_path is not None:
+        evidence.append(_evidence("uncertainty_policy", policy_path))
     if calibration_evidence:
         evidence.append(_evidence("calibration_evidence", calibration_evidence))
     default_role = (governed_partition["calibration_fit"]["role"] if governed_partition
