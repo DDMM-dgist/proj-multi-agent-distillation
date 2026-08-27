@@ -95,6 +95,11 @@ RECOVERY_CAPABILITY_MATERIALIZATION = {
 }
 ADJUDICATION_DECISIONS = {"ACCEPT_DECLARED_LIMITATION", "REQUIRE_SCIENTIFIC_RECOVERY"}
 ADJUDICATION_SCOPE_EFFECT = "restrict_scope_to_declared_limitations"
+RECOVERY_SUPERSESSION_REASON_CODES = frozenset({
+    "triggering_condition_resolved_by_superseding_framework_fix",
+    "triggering_condition_resolved_by_superseding_evidence",
+    "duplicate_or_redundant_recovery",
+})
 
 VALIDATION_CONTRACT_COMPONENTS = (
     "teacher_applicability_domain", "validation_scope", "dataset_split_policy",
@@ -2762,6 +2767,93 @@ class RunController:
             raise RuntimeError("pending recovery proposal integrity check failed") from exc
         return matches[0]
 
+    def supersede_recovery(self, recovery_id, supersession):
+        """Mark an obsolete proposed recovery as terminal superseded without approval or execution."""
+        if not isinstance(recovery_id, int):
+            raise ValueError("supersede_recovery requires integer recovery_id")
+        if not isinstance(supersession, dict):
+            raise ValueError("supersede_recovery requires a structured supersession record")
+        reason_code = supersession.get("reason_code")
+        if reason_code not in RECOVERY_SUPERSESSION_REASON_CODES:
+            raise ValueError(
+                "supersession reason_code must be one of "
+                f"{sorted(RECOVERY_SUPERSESSION_REASON_CODES)}"
+            )
+        rationale = supersession.get("rationale")
+        if not isinstance(rationale, str) or not rationale.strip():
+            raise ValueError("supersession requires non-empty rationale")
+        pending = self.state.get("pending_recovery")
+        if not pending or pending.get("status") != "proposed" or pending.get("recovery_id") != recovery_id:
+            raise RuntimeError("requested recovery is not the current proposed pending recovery")
+        matches = [item for item in self.state.get("recoveries", []) if item.get("id") == recovery_id]
+        evidence_refs = supersession.get("evidence", [])
+        if not isinstance(evidence_refs, list) or not evidence_refs:
+            raise ValueError("supersession requires at least one evidence reference")
+        checked_evidence = []
+        for item in evidence_refs:
+            if not isinstance(item, dict):
+                raise ValueError("supersession evidence entries must be objects")
+            raw_path = item.get("path")
+            expected_sha = item.get("sha256")
+            if not isinstance(raw_path, str) or not raw_path.strip():
+                raise ValueError("supersession evidence requires path")
+            if not isinstance(expected_sha, str) or not expected_sha.strip():
+                raise ValueError("supersession evidence requires sha256")
+            path = Path(raw_path)
+            if not path.is_absolute():
+                path = self.run_dir / path
+            path = path.resolve()
+            digest = artifact_digest(path)
+            if digest.get("kind") != "file" or digest.get("sha256") != expected_sha:
+                raise RuntimeError(f"supersession evidence integrity check failed: {path}")
+            checked_evidence.append({
+                "path": str(path),
+                "kind": digest["kind"],
+                "size": digest["size"],
+                "sha256": expected_sha,
+                "role": item.get("role"),
+            })
+        if len(matches) != 1:
+            raise RuntimeError("pending recovery record is missing or ambiguous")
+        recovery = matches[0]
+        if recovery.get("status") != "proposed":
+            raise RuntimeError("only a proposed recovery can be superseded through this transition")
+        current_revision = git_revision(self.state["project_dir"])
+        disposition = {
+            "previous_status": "proposed",
+            "new_status": "superseded",
+            "reason_code": reason_code,
+            "rationale": rationale.strip(),
+            "superseding_code_revision": supersession.get("superseding_code_revision"),
+            "current_code_revision": current_revision,
+            "evidence": checked_evidence,
+            "failed_stage": recovery.get("failed_stage"),
+            "failure_category": (recovery.get("plan") or {}).get("failure_category"),
+            "gate_binding": recovery.get("gate_binding"),
+        }
+        recovery.update(
+            status="superseded",
+            superseded_at=now(),
+            supersession=disposition,
+            superseded_reason=reason_code,
+        )
+        self.state["pending_recovery"] = None
+        event = {
+            "at": recovery["superseded_at"],
+            "type": "recovery_superseded",
+            "recovery_id": recovery_id,
+            **disposition,
+        }
+        self.state.setdefault("events", []).append(event)
+        path = Path(recovery.get("path", ""))
+        if path:
+            if not path.is_absolute():
+                path = self.run_dir / path
+            path.write_text(json.dumps(recovery, indent=2) + "\n")
+            recovery["integrity"] = artifact_digest(path)
+        self.save()
+        return recovery
+
     def approve_recovery(self, approved_by, note=None):
         """Record explicit human approval, enforcing separation of proposal and approval
         authority.
@@ -3430,6 +3522,10 @@ def main():
     approve.add_argument("run_dir")
     approve.add_argument("--approved-by", required=True)
     approve.add_argument("--note")
+    supersede = sub.add_parser("supersede-recovery")
+    supersede.add_argument("run_dir")
+    supersede.add_argument("recovery_id", type=int)
+    supersede.add_argument("supersession")
     iteration = sub.add_parser("start-iteration")
     iteration.add_argument("run_dir")
     authorize = sub.add_parser("authorize-recovery")
@@ -3466,6 +3562,9 @@ def main():
         controller.propose_recovery(args.plan)
     elif args.action == "approve-recovery":
         controller.approve_recovery(args.approved_by, args.note)
+    elif args.action == "supersede-recovery":
+        supersession = json.loads(Path(args.supersession).read_text())
+        controller.supersede_recovery(args.recovery_id, supersession)
     elif args.action == "start-iteration":
         controller.start_iteration()
     elif args.action == "authorize-recovery":

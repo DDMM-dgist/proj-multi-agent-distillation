@@ -1027,7 +1027,7 @@ FREEZE_REVISION = (
     "every other frozen file is untouched. "
     "fe045-verify-inputs-superseded-source (FE-045) re-freezes workflow/controller.py "
     "11aa89390906353c83120908886482e593e9cca7e42f210be9ee528be13e7579 -> "
-    "2cb69859af792d5d7007c9808abd1ad7a8da53c0883055f7718fd9d0ebb5fac0 for a single scoping change to "
+    "ca5dc016801b619991c3a0bd50f335ad0c5e21d33c924353f8d1d3d91218c339 for a single scoping change to "
     "verify_inputs(): the per-input SOURCE-byte re-check (verify_artifact(source, source_integrity), "
     "which raises 'declared workflow input changed after initialization' on mismatch) is now gated "
     "behind `if not record.get('superseded')`, mirroring the existing active/superseded semantics of "
@@ -1043,6 +1043,14 @@ FREEZE_REVISION = (
     "ACTIVE input. No stage set, gate-vote, recovery-taxonomy, capability-routing, protected-reference, "
     "schema_version, approval-boundary, threshold, or Judge change; no science, acquisition, coverage, "
     "or recovery logic touched; every other frozen file is untouched. "
+    "FE-064 recovery-proposal-supersession re-freezes workflow/controller.py "
+    "2cb69859af792d5d7007c9808abd1ad7a8da53c0883055f7718fd9d0ebb5fac0 -> "
+    "ca5dc016801b619991c3a0bd50f335ad0c5e21d33c924353f8d1d3d91218c339 to add the "
+    "minimal proposed->superseded recovery lifecycle transition, plus a CLI wrapper. The transition "
+    "requires structured provenance, keeps the proposal history immutable apart from terminal "
+    "lifecycle metadata, emits recovery_superseded, clears pending_recovery, and does not approve, "
+    "activate, execute, or mark the recovery resolved. No stage set, gate-vote, scientific threshold, "
+    "protected-reference, or Judge behavior changed; every other frozen file is untouched. "
     "FE-049 (recovery corrective-action parameter-contract validation + species-mapping exposure "
     "action) re-freezes runtimes/pydantic_ai/actions.py: it deliberately grows the role/action-set, "
     "ADDING ONE new backed data-curator action_type, 'validate_species_mapping_consistency' (a READY "
@@ -1085,7 +1093,7 @@ FROZEN = {
     "orchestration/specs.py":
         "4b6dc829fe2b6b594cc87e8a62bd944ea9df181cd7f420ae3732c861ce8e43cb",
     "workflow/controller.py":
-        "2cb69859af792d5d7007c9808abd1ad7a8da53c0883055f7718fd9d0ebb5fac0",
+        "ca5dc016801b619991c3a0bd50f335ad0c5e21d33c924353f8d1d3d91218c339",
     "orchestration/schema/agent_result.schema.json":
         "a38afea9c06c21e647376efd835dec32a16b2f247583a090560cb1843e0eda31",
     "orchestration/schema/agent_spec.schema.json":
