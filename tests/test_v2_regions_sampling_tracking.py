@@ -214,7 +214,14 @@ def test_error_ledger_persist_reload_and_recovery_before_after(tmp_path):
         before_metric={"force": 0.5},
         after_metric={"force": 0.2},
         delta={"force": -0.3},
-        efficiency=RawEfficiencyRecord(added_structures=2, wall_time_seconds=1.0),
+        efficiency=RawEfficiencyRecord(
+            added_structures=2,
+            wall_time_seconds=1.0,
+            measurement_provenance={
+                "added_structures": ["selection_log"],
+                "wall_time_seconds": ["wall_clock"],
+            },
+        ),
     )
     ledger = ErrorLedger(ledger_id="l", campaign_id="c").append(record)
     path = tmp_path / "ledger.json"

@@ -9,7 +9,15 @@ from typing import Any
 from pydantic import Field, model_validator
 
 from framework_v2.contracts import ContractBase, utc_now_iso
-from framework_v2.v2_sampling import RegionClosureState
+from framework_v2.region_evaluation import (
+    EvaluationPopulationRegionBinding,
+    RegionEvaluationRecord,
+)
+from framework_v2.v2_sampling import (
+    RegionClosureState,
+    RegionStoppingPolicy,
+    SignalCriterionEvaluation,
+)
 
 
 class ReferenceChannel(str, Enum):
@@ -19,46 +27,80 @@ class ReferenceChannel(str, Enum):
     TARGET_PROPERTY = "target_property"
 
 
+# Numeric efficiency fields: "unknown" is not "zero"; a measured value must
+# carry measurement provenance so cost evidence is never fabricated.
+NUMERIC_EFFICIENCY_FIELDS = (
+    "selected_structures",
+    "cumulative_training_structures",
+    "added_structures",
+    "teacher_evaluations",
+    "replay_structures",
+    "epochs",
+    "continuation_rounds",
+    "gpu_time_seconds",
+    "wall_time_seconds",
+    "recovery_iterations",
+    "llm_calls",
+    "judge_calls",
+    "token_count",
+    "orchestration_latency_seconds",
+    "energy_error",
+    "force_error",
+    "unresolved_region_count",
+)
+
+_NONNEGATIVE_EFFICIENCY_FIELDS = (
+    "selected_structures",
+    "cumulative_training_structures",
+    "added_structures",
+    "teacher_evaluations",
+    "replay_structures",
+    "epochs",
+    "continuation_rounds",
+    "recovery_iterations",
+    "llm_calls",
+    "judge_calls",
+    "token_count",
+    "gpu_time_seconds",
+    "wall_time_seconds",
+    "orchestration_latency_seconds",
+    "unresolved_region_count",
+)
+
+
 class RawEfficiencyRecord(ContractBase):
-    selected_structures: int = 0
-    cumulative_training_structures: int = 0
-    added_structures: int = 0
-    teacher_evaluations: int = 0
-    replay_structures: int = 0
-    epochs: int = 0
-    continuation_rounds: int = 0
+    selected_structures: int | None = None
+    cumulative_training_structures: int | None = None
+    added_structures: int | None = None
+    teacher_evaluations: int | None = None
+    replay_structures: int | None = None
+    epochs: int | None = None
+    continuation_rounds: int | None = None
     gpu_time_seconds: float | None = None
     wall_time_seconds: float | None = None
-    recovery_iterations: int = 0
-    llm_calls: int = 0
-    judge_calls: int = 0
+    recovery_iterations: int | None = None
+    llm_calls: int | None = None
+    judge_calls: int | None = None
     token_count: int | None = None
     orchestration_latency_seconds: float | None = None
     energy_error: float | None = None
     force_error: float | None = None
     target_property_metrics: dict[str, float] = Field(default_factory=dict)
     region_coverage: dict[str, float] = Field(default_factory=dict)
-    unresolved_region_count: int = 0
+    unresolved_region_count: int | None = None
     outcome: str = ""
     stopping_reason: str = ""
+    measurement_provenance: dict[str, list[str]] = Field(default_factory=dict)
 
     @model_validator(mode="after")
-    def _nonnegative_counts(self):
-        for field in (
-            "selected_structures",
-            "cumulative_training_structures",
-            "added_structures",
-            "teacher_evaluations",
-            "replay_structures",
-            "epochs",
-            "continuation_rounds",
-            "recovery_iterations",
-            "llm_calls",
-            "judge_calls",
-            "unresolved_region_count",
-        ):
-            if getattr(self, field) < 0:
+    def _measured_values_have_provenance(self):
+        for field in _NONNEGATIVE_EFFICIENCY_FIELDS:
+            value = getattr(self, field)
+            if value is not None and value < 0:
                 raise ValueError(f"{field} must be non-negative")
+        for field in NUMERIC_EFFICIENCY_FIELDS:
+            if getattr(self, field) is not None and field not in self.measurement_provenance:
+                raise ValueError(f"{field} is measured but lacks provenance")
         return self
 
 
@@ -86,6 +128,7 @@ class RegionErrorRecord(ContractBase):
     target_property_requirement: str = "evidence_only"
     coverage: dict[str, Any] = Field(default_factory=dict)
     efficiency: RawEfficiencyRecord = Field(default_factory=RawEfficiencyRecord)
+    criterion_evaluations: list[SignalCriterionEvaluation] = Field(default_factory=list)
     failure_reason: str = ""
     intervention: str = ""
     before_metric: dict[str, float] = Field(default_factory=dict)
@@ -146,9 +189,81 @@ class ErrorLedger(ContractBase):
         return cls.model_validate(json.loads(Path(path).read_text()))
 
 
+def _failure_reason(
+    state: RegionClosureState, evals: list[SignalCriterionEvaluation]
+) -> str:
+    if state == RegionClosureState.RECOVER:
+        failed = [e.signal for e in evals if e.passed is False]
+        if failed:
+            return "failed required criteria: " + ", ".join(sorted(failed))
+        return "region requires recovery"
+    if state == RegionClosureState.HUMAN_SCIENTIFIC_INPUT_REQUIRED:
+        return "unbound required criterion needs human scientific input"
+    if state == RegionClosureState.EVIDENCE_NOT_EVALUATED:
+        return "required closure evidence not evaluated"
+    return ""
+
+
+def build_error_ledger_iteration(
+    *,
+    ledger: ErrorLedger,
+    iteration: int,
+    evaluation_binding: EvaluationPopulationRegionBinding,
+    region_evaluations: list[RegionEvaluationRecord],
+    closure_policy: RegionStoppingPolicy,
+    target_validation_sha256: str | None,
+    training_population_sha256: str,
+    efficiency: RawEfficiencyRecord,
+    uncertainty_evidence_sha256: str | None = None,
+    coverage_evidence_sha256: str | None = None,
+) -> ErrorLedger:
+    out = ledger
+    for rev in sorted(region_evaluations, key=lambda r: r.region_id):
+        evals = closure_policy.evaluate_signals(rev.namespaced_signals)
+        state = closure_policy.state_for(rev.namespaced_signals)
+        record = RegionErrorRecord(
+            campaign_id=ledger.campaign_id,
+            iteration=iteration,
+            region_id=rev.region_id,
+            region_membership_sha256=rev.region_membership_sha256,
+            state=state,
+            cumulative_training_population_sha256=training_population_sha256,
+            energy_error=rev.energy_rmse_meV_per_atom,
+            force_error=rev.force_component_rmse_eV_per_angstrom,
+            uncertainty={
+                k: v for k, v in rev.namespaced_signals.items() if k.startswith("uncertainty.")
+            },
+            target_property_metrics={
+                k: v for k, v in rev.namespaced_signals.items() if k.startswith("target.")
+            },
+            coverage={
+                k: v for k, v in rev.namespaced_signals.items() if k.startswith("coverage.")
+            },
+            efficiency=efficiency,
+            failure_reason=_failure_reason(state, evals),
+            evidence_refs=[
+                evaluation_binding.content_sha256(),
+                rev.content_sha256(),
+                *filter(
+                    None,
+                    [
+                        target_validation_sha256,
+                        uncertainty_evidence_sha256,
+                        coverage_evidence_sha256,
+                    ],
+                ),
+            ],
+            criterion_evaluations=evals,
+        )
+        out = out.append(record)
+    return out
+
+
 __all__ = [
     "ErrorLedger",
+    "NUMERIC_EFFICIENCY_FIELDS",
     "RawEfficiencyRecord",
     "ReferenceChannel",
     "RegionErrorRecord",
+    "build_error_ledger_iteration",
 ]
