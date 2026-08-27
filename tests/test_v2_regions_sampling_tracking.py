@@ -268,34 +268,27 @@ def test_region_recovery_uses_only_deficient_regions_and_no_protected():
     assert sample_candidates(req).selected_ids == ["a"]
 
 
-def test_replay_train_only_and_supercell_lineage():
-    with pytest.raises(ValueError, match="TRAIN-role"):
-        DFTReplayPolicy(
-            policy_id="replay",
-            enabled=True,
-            ratio=0.1,
-            eligible_frame_ids=["protected"],
-            frame_roles={"protected": ReplayEligibilityRole.PROTECTED},
-            provenance_refs=["split"],
-        )
+def test_replay_requires_positive_ratio_and_supercell_plannable_without_labels():
+    with pytest.raises(ValueError, match="positive explicit ratio"):
+        DFTReplayPolicy(policy_id="replay", enabled=True, ratio=0.0, provenance_refs=["split"])
 
     policy = DFTReplayPolicy(
         policy_id="replay",
         enabled=True,
         ratio=0.1,
-        eligible_frame_ids=["train"],
-        frame_roles={"train": ReplayEligibilityRole.TRAIN},
+        selected_frame_ids=["train"],
         provenance_refs=["split"],
     )
     assert policy.ratio == 0.1
 
-    with pytest.raises(ValueError, match="Teacher labeling provenance"):
-        SupercellStrategy(
-            strategy_id="supercell",
-            use=SupercellUse.TRAINING_STRATEGY,
-            parent_ids=["a"],
-            replication_matrix=[[2, 0, 0], [0, 2, 0], [0, 0, 2]],
-        )
+    # a TRAINING_STRATEGY supercell is a plan; it can exist before Teacher labels
+    strategy = SupercellStrategy(
+        strategy_id="supercell",
+        use=SupercellUse.TRAINING_STRATEGY,
+        parent_ids=["a"],
+        replication_matrix=[[2, 0, 0], [0, 2, 0], [0, 0, 2]],
+    )
+    assert strategy.parent_ids == ["a"]
 
 
 def test_deterministic_first_judge_policy():
