@@ -131,6 +131,7 @@ ANALYST_ACTIONS = (
 APPROVAL_GATED_ACTIONS = {
     "build_teacher_baseline": "costly_teacher_labeling",
     "validate_teacher_reference": "costly_teacher_labeling",
+    "build_teacher_physical_validation_target": "production_md",
     "acquire_structures": "costly_teacher_labeling",
     "label_with_teacher": "costly_teacher_labeling",
     "train_committee": "costly_training",
@@ -162,7 +163,7 @@ _INHERENT_COSTLY_ACTIONS = frozenset({
     "label_with_teacher",         # always runs fresh Teacher inference to create new training labels
     "train_committee",            # always runs Student committee training
     "evaluate_heldout_fidelity",  # always runs the trained committee
-    "run_teacher_md", "run_student_md",  # always run production dynamics
+    "build_teacher_physical_validation_target", "run_teacher_md", "run_student_md",  # always run production dynamics
     "submit_scheduler_job",       # always submits an external scheduler job
 })
 

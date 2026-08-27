@@ -9,7 +9,7 @@ invariant that matters is therefore no longer "no executor is registered"; it is
 dispatch pipeline in ``dispatch.authorize_and_execute`` never lets that executor run except in
 mode="primary" with a recorded human approval (see ``test_pydantic_ai_executors.py::
 test_hpc_action_requires_approval_then_reaches_real_train_wrapper`` for the original instance
-of this pattern). For each of the 8 HPC actions: the backing module.function exists and is
+of this pattern). For each of the 9 HPC actions: the backing module.function exists and is
 importable/callable; the action is approval-gated; a proposal for it is never EXECUTED in
 dry-run mode or without a granted approval; status is READY_HPC_APPROVAL_GATED. If a backing
 turns out not to exist, this test FAILS (per the stop rule).
@@ -34,6 +34,7 @@ HPC_ACTIONS = {
     # (fresh Teacher inference), so it is the representative callable checked here.
     "build_teacher_baseline": "adapters.acquisition.label_with_teacher",
     "validate_teacher_reference": "adapters.acquisition.label_with_teacher",
+    "build_teacher_physical_validation_target": "validation.teacher_physical_validation.compute_teacher_validation_target",
     "acquire_structures": "adapters.acquisition.acquire",
     "label_with_teacher": "adapters.acquisition.label_with_teacher",
     "train_committee": "workflow.steps.train_committee",
@@ -116,7 +117,8 @@ class HpcBackingVerificationTests(unittest.TestCase):
     def test_costly_hpc_actions_are_approval_gated(self):
         # The costly, side-effecting HPC actions require an approval record before execution.
         from runtimes.pydantic_ai.actions import APPROVAL_GATED_ACTIONS
-        for action in ("label_with_teacher", "train_committee", "run_teacher_md", "run_student_md"):
+        for action in ("label_with_teacher", "train_committee", "build_teacher_physical_validation_target",
+                       "run_teacher_md", "run_student_md"):
             self.assertIn(action, APPROVAL_GATED_ACTIONS, action)
 
     def test_hpc_backing_matrix_is_complete(self):
