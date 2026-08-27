@@ -32,10 +32,14 @@ from framework_v2.v2_judge_policy import (
     choose_decision_mode,
 )
 from framework_v2.v2_sampling import (
+    CriterionBindingStatus,
+    CriterionComparator,
+    CriterionRole,
     RegionClosureState,
     RegionStoppingPolicy,
     SamplerKind,
     SamplerRequest,
+    SignalCriterion,
     sample_candidates,
 )
 
@@ -167,15 +171,36 @@ def test_direct_like_stratified_path_and_recovery_samplers():
 def test_stopping_policy_is_independent_of_sampler():
     policy = RegionStoppingPolicy(
         policy_id="p",
-        required_signals=["force_rmse"],
-        thresholds={"force_rmse": 0.3},
-        threshold_provenance={"force_rmse": "human_contract"},
+        criteria=[
+            SignalCriterion(
+                signal="force_rmse",
+                role=CriterionRole.SCIENTIFIC_REQUIRED,
+                binding_status=CriterionBindingStatus.BOUND,
+                comparator=CriterionComparator.LE,
+                value=0.3,
+                units="eV/A",
+                provenance=["human_contract"],
+            )
+        ],
     )
     assert policy.state_for({"force_rmse": 0.2}) == RegionClosureState.CLOSED
     assert policy.state_for({"force_rmse": 0.4}) == RegionClosureState.RECOVER
 
-    with pytest.raises(ValueError, match="unbound"):
-        RegionStoppingPolicy(policy_id="bad", required_signals=["force_rmse"])
+    unbound = RegionStoppingPolicy(
+        policy_id="unbound",
+        criteria=[
+            SignalCriterion(
+                signal="force_rmse",
+                role=CriterionRole.SCIENTIFIC_REQUIRED,
+                binding_status=CriterionBindingStatus.UNBOUND,
+                unbound_reason="human has not set target",
+            )
+        ],
+    )
+    assert (
+        unbound.state_for({"force_rmse": 0.2})
+        == RegionClosureState.HUMAN_SCIENTIFIC_INPUT_REQUIRED
+    )
 
 
 def test_error_ledger_persist_reload_and_recovery_before_after(tmp_path):
