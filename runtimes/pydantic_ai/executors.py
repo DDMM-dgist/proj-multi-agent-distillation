@@ -2784,10 +2784,46 @@ def _exec_evaluate_committee(proposal):
     return result
 
 
+
+def _exec_build_stage10_deployment_plan(proposal):
+    """Build the canonical Stage-10 pre-execution deployment readiness plan.
+
+    This action performs no MD. It binds the starting-structure contract, frozen shared MD
+    protocol, governed Student checkpoint, velocity seed policy, and backend provisioning state
+    into one hashable artifact. A non-provisioned backend is recorded as
+    HUMAN_OPERATIONAL_INPUT_REQUIRED, not hidden behind a placeholder run.
+    """
+    from validation.deployment_plan import build_stage10_deployment_plan, validate_stage10_deployment_plan
+    from workflow.integrity import artifact_digest
+    p = _params(proposal)
+    plan = build_stage10_deployment_plan(
+        md_config=p["md_config"],
+        validation_profile=p["validation_profile"],
+        committee_manifest=p["committee_manifest"],
+        starting_structure_contract=p["starting_structure_contract"],
+        selected_seed=p.get("selected_seed"),
+        select_by=p.get("select_by"),
+        velocity_seed=p.get("velocity_seed"),
+    )
+    out_path = Path(p["out_path"])
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    out_path.write_text(json.dumps(plan, indent=2, sort_keys=True) + "\n")
+    validate_stage10_deployment_plan(out_path)
+    return {"path": str(out_path.resolve()), "plan": plan, "integrity": artifact_digest(out_path)}
+
 def _exec_run_student_md(proposal):
     from workflow.steps import run_md
     from workflow.integrity import artifact_digest
     p = _params(proposal)
+    if p.get("deployment_plan"):
+        from validation.deployment_plan import validate_stage10_deployment_plan
+        plan = validate_stage10_deployment_plan(p["deployment_plan"])
+        if not plan.get("executable"):
+            raise ValueError(
+                "Stage-10 deployment plan is not executable: "
+                f"{plan.get('operational_status')}")
+        p = {**p, "checkpoint": plan["student"]["checkpoint_path"],
+             "selected_seed": plan["student"].get("selected_seed")}
     manifest = run_md(
         p["md_config"], p["student_config"], p["checkpoint"], p["template_name"],
         p["context_yaml"], p["input_path"], p["run_dir"], p["manifest_path"],
@@ -2989,6 +3025,13 @@ BINDINGS: dict[str, ExecutorBinding] = {b.action_type: b for b in [
          "md_config,teacher_config,seed_structures,out_path", "teacher MD snapshots", ""),
     _hpc("run_student_md", "simulation", "workflow.steps.run_md / adapters.md_backend.run",
          "md_cfg,student_cfg,checkpoint,...", "MD trajectory + manifest", ""),
+    _ready("build_stage10_deployment_plan", "simulation",
+           "validation.deployment_plan.build_stage10_deployment_plan",
+           "md_config,validation_profile,committee_manifest,starting_structure_contract,out_path,"
+           "velocity_seed[,selected_seed,select_by]",
+           "stage10_deployment_plan.json (pre-execution readiness + backend provisioning state)",
+           _exec_build_stage10_deployment_plan,
+           validator="validation.deployment_plan.validate_stage10_deployment_plan"),
     _ready("resolve_deployment_checkpoint", "simulation",
            "validation.deployment_resolution.resolve_selected_checkpoint",
            "committee_manifest,starting_structure,out_path[,selected_seed,select_by,ensemble_role,"
@@ -3098,6 +3141,8 @@ def build_executor_registry() -> dict:
             executor = _exec_train_committee
         elif action == "evaluate_heldout_fidelity":
             executor = _exec_evaluate_committee
+        elif action == "build_stage10_deployment_plan":
+            executor = _exec_build_stage10_deployment_plan
         elif action == "run_student_md":
             executor = _exec_run_student_md
         reg[action] = ActionDescriptor(

@@ -966,7 +966,7 @@ FREEZE_REVISION = (
     "NVE energy-conservation segment -- purely from the frozen validation_profile shared_md_"
     "protocol, eliminating hand-tuned step counts). Both are backed by the new pure module "
     "validation/deployment_resolution.py (NOT frozen) and registered as light READY_EXECUTORs "
-    "(READY_EXECUTOR count 33 -> 35). The companion Stage-11 NVE-log auto-consumption "
+    "(READY_EXECUTOR count 33 -> 36 originally, now 37 including FE-066 build_stage10_deployment_plan). The companion Stage-11 NVE-log auto-consumption "
     "(_exec_build_physical_validation_report gains an optional nve_md_manifest param) and the "
     "physical_validation_report Judge adapter live entirely in NON-frozen files "
     "(executors.py, workflow/steps.py, bounded_evidence.py). No stage set, gate, recovery-taxonomy, "
@@ -1087,7 +1087,7 @@ FROZEN = {
     "runtimes/pydantic_ai/driver.py":
         "db480c20d126b7511e8bbaa4fc2018adb56aa789fabe496ba4f08313379f5939",
     "runtimes/pydantic_ai/actions.py":
-        "e661fcf46cbb9288e92b7785d5282104c60c6885c8552d602e1e42d23e5df88e",
+        "5646a67530d1d5fe44f6e163715448b7c677147240f11496adc7dc9032cb5ec3",
     "runtimes/pydantic_ai/controller_bridge.py":
         "91432692ae394da3b526b9d61b3c6743f34ec74c81f874b04494c96425f7f500",
     "orchestration/specs.py":

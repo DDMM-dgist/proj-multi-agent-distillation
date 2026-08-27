@@ -299,10 +299,10 @@ class BackingMatrixTests(unittest.TestCase):
         from runtimes.pydantic_ai.executors import BINDINGS
         counts = Counter(b.status for b in BINDINGS.values())
         # 36: 33 (through the v21 autonomous Teacher-validation-planning revision, incl.
-        # build_split_membership_population) + 2 UNIT-3 Stage-10 deployment producers
-        # (resolve_deployment_checkpoint, build_deployment_context) + 1 FE-049 species-mapping
+        # build_split_membership_population) + 3 Stage-10 deployment producers
+        # (build_stage10_deployment_plan, resolve_deployment_checkpoint, build_deployment_context) + 1 FE-049 species-mapping
         # exposure producer (validate_species_mapping_consistency).
-        self.assertEqual(counts["READY_EXECUTOR"], 36)
+        self.assertEqual(counts["READY_EXECUTOR"], 37)
         self.assertEqual(counts["READY_HPC_APPROVAL_GATED"], 8)
         self.assertEqual(counts["READY_INTERFACE_BACKEND_NOT_CONFIGURED"], 3)
         self.assertEqual(counts["READY_REASONING_OUTPUT"], 1)

@@ -113,7 +113,7 @@ SIMULATION_ACTIONS = (
     "build_teacher_baseline", "validate_teacher_reference", "run_teacher_md", "run_student_md", "compute_rdf", "compute_coordination",
     "compute_minimum_distance", "detect_force_spike", "compute_nve_drift",
     "validate_simulation_completion",
-    "resolve_deployment_checkpoint", "build_deployment_context",
+    "build_stage10_deployment_plan", "resolve_deployment_checkpoint", "build_deployment_context",
     "submit_scheduler_job", "query_scheduler_job", "collect_scheduler_artifact",
     "build_physical_validation_report",
 )
