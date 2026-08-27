@@ -5,6 +5,12 @@ DFT, or MD backend: human target -> operationalization -> validation contract ->
 structural regions -> protected evaluation binding -> region metrics ->
 error ledger -> region-directed recovery execution graph -> re-evaluation closes
 the deficient region.  All hashes/artifacts are mock strings.
+
+H10 upgrade: the same mock scenario now also drives a ``V2WorkflowPlan`` through
+its paper-facing transitions
+(SPECIFY->DISCOVER->CURATE->DISTILL->TRACK->RECOVER->DISTILL->TRACK->VALIDATE->
+COMPLETE) using only the H10 transition helpers -- no test-only semantics and no
+executor execution.
 """
 from framework_v2.error_tracking import (
     ErrorLedger,
@@ -44,7 +50,21 @@ from framework_v2.v2_sampling import (
     RegionClosureState,
     RegionStoppingPolicy,
     SamplerKind,
+    SamplerRequest,
     SignalCriterion,
+    sample_candidates,
+)
+from framework_v2.v2_workflow import (
+    ConvergenceKind,
+    V2WorkflowStatus,
+    V2WorkflowStep,
+    advance_v2_workflow_plan,
+    build_efficiency_evidence_bundle,
+    build_final_target_validation_request,
+    build_v2_final_evidence_record,
+    build_v2_workflow_plan,
+    convergence_from_existing_artifact,
+    route_after_tracking,
 )
 
 
@@ -59,6 +79,21 @@ def test_property_guided_v2_mock_control_loop():
 
     assert validation.target_property_family == TargetPropertyFamily.STRUCTURAL
     assert [b.observable.name for b in validation.observables] == ["coordination"]
+
+    # H10: start the paper-facing workflow plan at SPECIFY.
+    plan = build_v2_workflow_plan(
+        plan_id="plan",
+        campaign_id="mock",
+        human_target_sha256=target.content_sha256(),
+    )
+    assert plan.current_step == V2WorkflowStep.SPECIFY
+    # SPECIFY -> DISCOVER once the target is operationalized.
+    plan = advance_v2_workflow_plan(
+        plan,
+        produced_artifact_type="TargetOperationalizationResult",
+        produced_artifact_sha256=op.content_sha256(),
+    )
+    assert plan.current_step == V2WorkflowStep.DISCOVER
 
     structures = [
         StructureRecord(structure_id="a_train", species_counts={"Si": 1, "O": 2}),
@@ -82,6 +117,45 @@ def test_property_guided_v2_mock_control_loop():
         source_sha256="source",
         membership_manifest_sha256="membership",
     )
+    # DISCOVER -> CURATE once the structural region manifest exists.
+    plan = advance_v2_workflow_plan(
+        plan,
+        produced_artifact_type="StructuralRegionManifest",
+        produced_artifact_sha256=regions.content_sha256(),
+    )
+    assert plan.current_step == V2WorkflowStep.CURATE
+
+    # CURATE: real structural-stratified selection over the eligible training
+    # candidates; protected eval frames are excluded from selection.
+    sampler_result = sample_candidates(
+        SamplerRequest(
+            sampler=SamplerKind.FPS,
+            candidate_ids=["a_train", "b_train", "b_recovery"],
+            n_select=2,
+            protected_candidate_ids=["a_eval", "b_eval"],
+        ),
+        representation=rep,
+    )
+    assert "a_eval" not in sampler_result.selected_ids
+    assert "b_eval" not in sampler_result.selected_ids
+    plan = advance_v2_workflow_plan(
+        plan,
+        produced_artifact_type="SamplerResult",
+        produced_artifact_sha256=sampler_result.content_sha256(),
+    )
+    assert plan.current_step == V2WorkflowStep.DISTILL
+
+    # DISTILL emits an external Teacher-labeling request and *waits*; the plan
+    # never executes Teacher inference itself.
+    plan = advance_v2_workflow_plan(
+        plan,
+        produced_artifact_type="TeacherLabelingRequest",
+        produced_artifact_sha256="labeling_request_0",
+    )
+    assert plan.current_step == V2WorkflowStep.TRACK
+    assert plan.status == V2WorkflowStatus.WAITING_FOR_ARTIFACT
+    assert plan.execution_allowed is False
+
     binding0 = bind_evaluation_population_to_regions(
         region_manifest=regions,
         evaluation_frame_ids=["a_eval", "b_eval"],
@@ -153,6 +227,13 @@ def test_property_guided_v2_mock_control_loop():
     )
     assert ledger0.deficient_regions(0) == ["B"]
 
+    # TRACK: region B is an evaluated RECOVER state -> plan routes to RECOVER.
+    plan = route_after_tracking(
+        plan, ledger=ledger0, required_region_ids=["A", "B"]
+    )
+    assert plan.current_step == V2WorkflowStep.RECOVER
+    assert plan.status == V2WorkflowStatus.RECOVERY_REQUIRED
+
     recovery = plan_region_recovery(
         ledger0,
         iteration=0,
@@ -202,6 +283,22 @@ def test_property_guided_v2_mock_control_loop():
     done = attach_evaluation_artifact(student, evaluation_artifact_sha256="eval1")
     assert done.state == RecoveryExecutionState.EVALUATION_READY
 
+    # RECOVER waits for the staged recovery bundle; only then does it hand back
+    # to DISTILL for redistillation.
+    plan = advance_v2_workflow_plan(
+        plan,
+        produced_artifact_type="RecoveryExecutionBundle",
+        produced_artifact_sha256=done.content_sha256(),
+    )
+    assert plan.current_step == V2WorkflowStep.DISTILL
+    assert plan.recovery_bundle_sha256 == done.content_sha256()
+    plan = advance_v2_workflow_plan(
+        plan,
+        produced_artifact_type="RedistillationRequest",
+        produced_artifact_sha256="redistill_request_1",
+    )
+    assert plan.current_step == V2WorkflowStep.TRACK
+
     rev1 = aggregate_region_metrics(
         binding0,
         [
@@ -244,3 +341,73 @@ def test_property_guided_v2_mock_control_loop():
     assert all(
         r.state == RegionClosureState.CLOSED for r in ledger1.records_for_iteration(1)
     )
+
+    # TRACK: every latest required region is CLOSED -> route to VALIDATE.
+    plan = route_after_tracking(
+        plan, ledger=ledger1, required_region_ids=["A", "B"]
+    )
+    assert plan.current_step == V2WorkflowStep.VALIDATE
+    assert plan.status == V2WorkflowStatus.VALIDATION_READY
+
+    # VALIDATE: build the final target-validation request (gated on all-CLOSED,
+    # not merely no-deficient) and record the plan is waiting for its evidence.
+    final_request = build_final_target_validation_request(
+        request_id="final_request",
+        campaign_id="mock",
+        ledger=ledger1,
+        required_region_ids=["A", "B"],
+        target_validation_contract_sha256=validation.content_sha256(),
+        final_student_committee_sha256="student1",
+        protected_evaluation_population_sha256="protected_eval",
+        structural_region_manifest_sha256=regions.content_sha256(),
+        evaluation_binding_sha256=binding0.content_sha256(),
+    )
+    plan = advance_v2_workflow_plan(
+        plan,
+        produced_artifact_type="FinalTargetValidationRequest",
+        produced_artifact_sha256=final_request.content_sha256(),
+    )
+    assert plan.status == V2WorkflowStatus.WAITING_FOR_ARTIFACT
+
+    efficiency_bundle = build_efficiency_evidence_bundle(
+        bundle_id="efficiency", ledger=ledger1
+    )
+    convergence = [
+        convergence_from_existing_artifact(
+            record_id="campaign_closure",
+            campaign_id="mock",
+            iteration=1,
+            kind=ConvergenceKind.CAMPAIGN_CLOSURE,
+            artifact_sha256=ledger1.content_sha256(),
+            epochs=100,
+            continuation_rounds=1,
+            stopping_criterion_sha256="policy",
+            stopping_reason="all required regions CLOSED",
+            converged=True,
+            provenance=[ledger1.content_sha256()],
+        )
+    ]
+    final_evidence = build_v2_final_evidence_record(
+        record_id="final_evidence",
+        campaign_id="mock",
+        human_target_sha256=target.content_sha256(),
+        target_operationalization_sha256=op.content_sha256(),
+        final_validation_request=final_request,
+        ledger=ledger1,
+        efficiency_bundle=efficiency_bundle,
+        convergence_records=convergence,
+        recovery_history_sha256s=[done.content_sha256()],
+        protected_population_sha256s=["protected_eval"],
+        fe067_bridge_ref="evaluate_observable",
+        fe068_bridge_ref="validate_run_summary_report",
+    )
+    assert final_evidence.teacher_frozen is True
+    assert final_evidence.new_dft_performed is False
+
+    plan = advance_v2_workflow_plan(
+        plan,
+        produced_artifact_type="V2FinalEvidenceRecord",
+        produced_artifact_sha256=final_evidence.content_sha256(),
+    )
+    assert plan.status == V2WorkflowStatus.COMPLETE
+    assert plan.final_evidence_sha256 == final_evidence.content_sha256()

@@ -49,7 +49,15 @@ pytest tests/test_v2_replay_supercell_bridges.py
 pytest tests/test_v2_judge_routing_efficiency.py
 pytest tests/test_v2_synthetic_e2e.py
 pytest tests/test_v2_region_provider_equivalence.py
+pytest tests/test_v2_workflow_integration.py
+pytest tests/test_v2_efficiency_evidence.py
 ```
+
+The `test_v2_synthetic_e2e.py` mock control loop additionally traverses the
+paper-facing `V2WorkflowPlan` transitions
+(SPECIFY -> DISCOVER -> CURATE -> DISTILL -> TRACK -> RECOVER -> DISTILL ->
+TRACK -> VALIDATE -> COMPLETE) using only the H10 transition helpers; it is
+still mock-only and executes no backend.
 
 ## NEEDS_SOURCE_CONFIRMATION
 
@@ -84,6 +92,16 @@ pytest tests/test_fe054_train_augmentation.py
 - **Cohesion** (`test_v2_synthetic_e2e`, `test_v2_region_provider_equivalence`):
   a mock-only control loop closes a deficient region; explicit/discovered/hybrid
   region providers share one downstream pipeline.
+- **Workflow integration** (`test_v2_workflow_integration`,
+  `test_v2_efficiency_evidence`): the non-executing `V2WorkflowPlan` cannot
+  advance past SPECIFY while operationalization is pending or past CURATE under
+  an insufficient selection budget; DISTILL only emits external requests; only
+  evaluated `RECOVER` regions route to recovery; final validation requires every
+  latest required region CLOSED (not merely `deficient_regions()==[]`); coverage
+  values stay `None` (not zero) when unmeasured; Pareto rows keep raw dimensions
+  with no scalar total cost; FE-067/FE-068 surfaces are reused via the adapter
+  map; the final evidence record binds the frozen-Teacher / no-new-DFT
+  invariants and protected-population identity.
 
 Runtime verification with real backends is still required before any scientific
 claim is made from a V2 campaign.
