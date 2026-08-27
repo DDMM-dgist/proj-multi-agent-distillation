@@ -2603,9 +2603,26 @@ def _exec_train_committee(proposal):
 
 
 def _exec_evaluate_committee(proposal):
-    from workflow.steps import evaluate_committee
+    from workflow.steps import evaluate_committee, evaluate_multi_population
     from workflow.integrity import artifact_digest
     p = _params(proposal)
+    # Multi-population Stage-8: when the stage binds a role-bound
+    # MultiPopulationEvaluationPlan (inline ``evaluation_plan`` or a bound
+    # ``evaluation_plan_path``), evaluate each role-bound population separately
+    # and emit one channel-separated, provenance-bound report. The single-
+    # population path below stays the default when no plan is bound.
+    plan = p.get("evaluation_plan")
+    plan_path = p.get("evaluation_plan_path")
+    if plan is None and plan_path:
+        plan = json.loads(Path(plan_path).read_text())
+    if plan is not None:
+        report = evaluate_multi_population(
+            p["student_config"], p["committee_manifest"], plan,
+            p["training_frames_path"], p["labeled_output"], p["report_path"],
+            code_revision=p.get("code_revision"))
+        return {"path": str(Path(p["report_path"]).resolve()), "report": report,
+                "integrity": artifact_digest(p["report_path"]),
+                "labeled_output": str(Path(p["labeled_output"]).resolve())}
     # Governed protected-reference isolation: when an access-partition contract is bound, the
     # Stage-8 fidelity claim is restricted to the ``protected_stage8_evaluation`` role, while
     # committee predictions are still embedded on the full evaluated population so Stage-9 can

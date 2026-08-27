@@ -623,6 +623,131 @@ def evaluate_committee(student_config, committee_manifest, frames_path, labeled_
     return results
 
 
+def _predict_committee_onto(cfg, committee, frames):
+    """Embed each committee seed's Student energy/forces onto every frame
+    (label-free forward pass) -- the shared prediction step used by both the
+    single- and multi-population evaluators."""
+    for model in committee["models"]:
+        prediction = predict_student(cfg, load_student(cfg, model["path"]), frames)
+        if len(prediction.energies) != len(frames):
+            raise RuntimeError(
+                f"committee seed {model['seed']} returned {len(prediction.energies)} predictions "
+                f"for {len(frames)} held-out frames"
+            )
+        for index, (atoms, forces) in enumerate(zip(frames, prediction.forces)):
+            if np.asarray(forces).shape != (len(atoms), 3):
+                raise RuntimeError(
+                    f"committee seed {model['seed']} returned invalid force shape at frame "
+                    f"{index}: {np.asarray(forces).shape}"
+                )
+        key = f"{int(model['seed']):02d}"
+        for atoms, energy, forces in zip(frames, prediction.energies, prediction.forces):
+            atoms.info[f"student_energy_seed{key}"] = float(energy)
+            atoms.arrays[f"student_forces_seed{key}"] = np.asarray(forces)
+
+
+def evaluate_multi_population(student_config, committee_manifest, plan, training_frames_path,
+                             labeled_output, report, code_revision=None):
+    """Role-bound, channel-separated Stage-8 fidelity over MULTIPLE populations.
+
+    ``plan`` is a ``framework_v2.evaluation_population.MultiPopulationEvaluationPlan``
+    (or its dict form). Each population is bound to an exact frames artifact by
+    ``structures_sha256`` and produces only the channels its role permits. For
+    every population this:
+
+      * verifies the on-disk frames SHA matches the plan (identity binding);
+      * proves the population is disjoint from the training set (leakage guard,
+        fail closed) unless the population explicitly opts out;
+      * embeds committee Student predictions and computes each required channel
+        with ``require_complete=True`` so a missing reference label (e.g. a DFT
+        channel over a Teacher-only population) fails closed.
+
+    The result is a single channel-separated report: each channel carries its
+    metrics AND the provenance of the population + committee + policy + code
+    revision it was computed under. The union of all populations' labeled
+    frames is written to ``labeled_output`` (each frame tagged with its
+    population role/id) so downstream stages can slice per population."""
+    from framework_v2.evaluation_population import (
+        MultiPopulationEvaluationPlan, CHANNEL_REF_PRED, assert_no_training_leakage)
+    from validation.protected_reference import _structure_fingerprint
+
+    if not isinstance(plan, MultiPopulationEvaluationPlan):
+        plan = MultiPopulationEvaluationPlan.model_validate(plan)
+
+    cfg = load_config(student_config)
+    committee = json.loads(Path(committee_manifest).read_text())
+    for model in committee["models"]:
+        verify_artifact(model["path"], model.get("integrity", {}))
+    committee_models = [
+        {"seed": int(m["seed"]), "path": str(Path(m["path"]).resolve()),
+         "integrity": m.get("integrity", {})}
+        for m in committee["models"]
+    ]
+
+    training_fps = {_structure_fingerprint(a)
+                    for a in read(training_frames_path, index=":")}
+
+    channels_out = {}
+    populations_out = []
+    combined_frames = []
+    for pop in plan.populations:
+        on_disk_sha = sha256_file(pop.frames_path)
+        if on_disk_sha != pop.structures_sha256:
+            raise RuntimeError(
+                f"population {pop.population_id!r} frames SHA mismatch: plan bound "
+                f"{pop.structures_sha256} but {pop.frames_path} is {on_disk_sha}")
+        frames = read(pop.frames_path, index=":")
+        if pop.forbid_training_overlap:
+            assert_no_training_leakage(
+                (_structure_fingerprint(a) for a in frames), training_fps,
+                population_id=pop.population_id)
+        _predict_committee_onto(cfg, committee, frames)
+        pop_provenance = {
+            "population_id": pop.population_id,
+            "role": pop.role.value,
+            "frames_path": str(Path(pop.frames_path).resolve()),
+            "structures_sha256": pop.structures_sha256,
+            "source_manifest_sha256": pop.source_manifest_sha256,
+            "n_frames": len(frames),
+        }
+        populations_out.append(pop_provenance)
+        for ch in pop.required_channels:
+            ref, pred = CHANNEL_REF_PRED[ch]
+            result = channel(frames, ref, pred, per_config_type=True, require_complete=True)
+            if result is None:
+                raise RuntimeError(
+                    f"channel {ch!r} produced no rows on population "
+                    f"{pop.population_id!r}")
+            channels_out[ch] = {
+                "metrics": result,
+                "population": pop_provenance,
+            }
+        for atoms in frames:
+            atoms.info["evaluation_population_id"] = pop.population_id
+            atoms.info["evaluation_population_role"] = pop.role.value
+        combined_frames.extend(frames)
+
+    write(labeled_output, combined_frames)
+    result = {
+        "schema_version": 1,
+        "evaluation_kind": "multi_population",
+        "plan_id": plan.plan_id,
+        "plan_sha256": plan.content_sha256(),
+        "channels": channels_out,
+        "populations": populations_out,
+        "channel_assignments": plan.channel_assignments(),
+        "committee_manifest": str(Path(committee_manifest).resolve()),
+        "committee_models": committee_models,
+        "student_config": str(Path(student_config).resolve()),
+        "student_config_integrity": artifact_digest(student_config),
+        "training_frames_path": str(Path(training_frames_path).resolve()),
+        "training_frames_integrity": artifact_digest(training_frames_path),
+        "code_revision": code_revision,
+    }
+    _write_json(report, result)
+    return result
+
+
 def run_md(md_config, student_config, checkpoint, template_name, context_yaml, input_path, run_dir,
            manifest, committee_manifest=None, selected_seed=None, evidence_paths=None):
     md_cfg, student_cfg = load_config(md_config), load_config(student_config)

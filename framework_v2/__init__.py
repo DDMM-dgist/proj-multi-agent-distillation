@@ -88,6 +88,18 @@ from framework_v2.evaluation import (  # noqa: F401
     cross_stage_scope_consistent,
 )
 
+from framework_v2.evaluation_population import (  # noqa: F401
+    EvaluationPopulation,
+    EvaluationPopulationRole,
+    MultiPopulationEvaluationPlan,
+    EvaluationLeakageError,
+    assert_no_training_leakage,
+    ROLE_ALLOWED_CHANNELS,
+    STUDENT_VS_TEACHER,
+    STUDENT_VS_DFT,
+    TEACHER_VS_DFT,
+)
+
 from framework_v2.blind_test import (  # noqa: F401
     BlindTestBoundary,
     BlindTestAccessAttempt,
