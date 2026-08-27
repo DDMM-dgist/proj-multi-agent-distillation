@@ -62,9 +62,49 @@ def choose_decision_mode(
     return DecisionMode.HUMAN_REQUIRED
 
 
+class JudgeRoutingDecision(ContractBase):
+    decision_id: str
+    gate_id: str
+    mode: DecisionMode
+    reason: str
+    deterministic_failure: bool = False
+    judge_calls_planned: int = 0
+    llm_calls_planned: int = 0
+    policy_sha256: str
+
+
+def route_v2_decision(
+    policy: V2JudgePolicy,
+    *,
+    gate_id: str,
+    evidence_sufficiency: EvidenceSufficiency,
+    deterministic_failure: bool = False,
+    reason: str = "",
+) -> JudgeRoutingDecision:
+    mode = choose_decision_mode(
+        policy,
+        evidence_sufficiency=evidence_sufficiency,
+        deterministic_failure=deterministic_failure,
+        reason=reason,
+    )
+    calls = 1 if mode == DecisionMode.JUDGE_ALLOWED else 0
+    return JudgeRoutingDecision(
+        decision_id=f"{gate_id}_routing",
+        gate_id=gate_id,
+        mode=mode,
+        reason=reason,
+        deterministic_failure=deterministic_failure,
+        judge_calls_planned=calls,
+        llm_calls_planned=calls,
+        policy_sha256=policy.content_sha256(),
+    )
+
+
 __all__ = [
     "DecisionMode",
     "EvidenceSufficiency",
+    "JudgeRoutingDecision",
     "V2JudgePolicy",
     "choose_decision_mode",
+    "route_v2_decision",
 ]

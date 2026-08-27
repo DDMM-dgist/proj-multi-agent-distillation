@@ -13,6 +13,7 @@ from framework_v2.region_evaluation import (
     EvaluationPopulationRegionBinding,
     RegionEvaluationRecord,
 )
+from framework_v2.v2_judge_policy import JudgeRoutingDecision
 from framework_v2.v2_sampling import (
     RegionClosureState,
     RegionStoppingPolicy,
@@ -259,6 +260,17 @@ def build_error_ledger_iteration(
     return out
 
 
+def efficiency_from_judge_routing(decision: JudgeRoutingDecision) -> RawEfficiencyRecord:
+    return RawEfficiencyRecord(
+        judge_calls=decision.judge_calls_planned,
+        llm_calls=decision.llm_calls_planned,
+        measurement_provenance={
+            "judge_calls": [decision.content_sha256()],
+            "llm_calls": [decision.content_sha256()],
+        },
+    )
+
+
 __all__ = [
     "ErrorLedger",
     "NUMERIC_EFFICIENCY_FIELDS",
@@ -266,4 +278,5 @@ __all__ = [
     "ReferenceChannel",
     "RegionErrorRecord",
     "build_error_ledger_iteration",
+    "efficiency_from_judge_routing",
 ]
