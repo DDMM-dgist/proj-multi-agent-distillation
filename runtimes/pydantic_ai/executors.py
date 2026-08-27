@@ -671,7 +671,9 @@ def _exec_build_physical_validation_report(proposal):
     profile_path = Path(p["validation_profile"]).resolve()
     profile = yaml.safe_load(profile_path.read_text())
     checks_cfg = {c["name"]: c for c in (profile.get("checks") or [])}
-    if not checks_cfg:
+    teacher_target_bound = (p.get("teacher_validation_target") is not None
+                            or p.get("teacher_validation_target_dict") is not None)
+    if not checks_cfg and not teacher_target_bound:
         raise ValueError("validation_profile has no declared checks")
 
     frames_path = Path(p["frames_path"]).resolve()
@@ -691,6 +693,10 @@ def _exec_build_physical_validation_report(proposal):
     frames = read(str(frames_path), index=":", **read_kwargs)
     if not frames:
         raise ValueError("physical_validation frames_path is empty")
+    teacher_target = _load_bound_teacher_validation_target(p)
+    if teacher_target is not None:
+        return _build_student_reproduction_report(
+            p, profile, profile_path, frames, frames_path, species_mapping, teacher_target)
     elements = p.get("elements") or sorted({s for atoms in frames for s in atoms.get_chemical_symbols()})
     r_max = float(p.get("r_max", 6.0))
     nbins = int(p.get("nbins", 200))
@@ -828,6 +834,121 @@ def _exec_build_physical_validation_report(proposal):
     validate_validation_report(report_path)
     return {"path": str(report_path.resolve()), "report": report, "integrity": artifact_digest(report_path)}
 
+
+
+_STUDENT_OBSERVABLE_REDEFINITION_PARAMS = (
+    "physical_validation_policy_v2_dict", "physical_validation_policy_v2_ref",
+    "observable_specs", "r_max", "nbins", "cutoffs", "adf_params", "elements",
+)
+_REPRODUCTION_DOMAIN = "teacher_physical_validation_reproduction"
+_REPRODUCTION_STATUS_MAP = {"PASS": "PASS", "FAIL": "FAIL", "RECORDED": "RECORDED",
+                            "NOT_APPLICABLE": "NOT_EVALUATED", "UNAVAILABLE": "NOT_EVALUATED"}
+
+
+def _load_bound_teacher_validation_target(p):
+    from validation.teacher_physical_validation import verify_teacher_validation_target
+    target_dict = p.get("teacher_validation_target_dict")
+    target_path = p.get("teacher_validation_target")
+    if target_dict is None and not target_path:
+        return None
+    source = target_dict if target_dict is not None else Path(target_path)
+    target = verify_teacher_validation_target(source)
+    expected = p.get("teacher_validation_target_sha256")
+    if expected and target.get("target_sha256") != expected:
+        raise ValueError(
+            "Stage-11 bound TeacherValidationTarget sha256 does not match the expected target "
+            f"({target.get('target_sha256')} != {expected})")
+    return target
+
+
+def _reproduction_check(comparison):
+    from validation.report import criterion_passes
+    name = comparison["name"]
+    comp_status = comparison["status"]
+    details = {"kind": comparison.get("kind"),
+               "teacher_value": comparison.get("teacher_value"),
+               "student_value": comparison.get("student_value"),
+               "abs_deviation": comparison.get("abs_deviation"),
+               "relative_deviation": comparison.get("relative_deviation"),
+               "comparison_status": comp_status}
+    base = {"domain": _REPRODUCTION_DOMAIN, "observable": name, "unit": comparison.get("units")}
+    if comp_status in ("NOT_APPLICABLE", "UNAVAILABLE"):
+        return {**base, "status": _REPRODUCTION_STATUS_MAP[comp_status],
+                "value": comparison.get("student_value"), "criterion": None,
+                "details": details, "reason": comparison.get("reason")}
+    criterion = comparison.get("criterion")
+    if criterion is None:
+        return {**base, "status": "RECORDED", "value": comparison.get("student_value"),
+                "criterion": None, "details": details}
+    operator = criterion.get("operator")
+    if operator == "max_abs_deviation":
+        value = comparison.get("abs_deviation")
+        report_criterion = {"operator": "max_abs", "threshold": float(criterion["threshold"])}
+        details["evaluated_on"] = "abs_deviation"
+        unit = comparison.get("units")
+    elif operator == "max_relative_deviation":
+        value = comparison.get("relative_deviation")
+        report_criterion = {"operator": "max_abs", "threshold": float(criterion["threshold"])}
+        details["evaluated_on"] = "relative_deviation"
+        unit = "fraction"
+    else:
+        value = comparison.get("student_value")
+        report_criterion = criterion
+        details["evaluated_on"] = "student_value"
+        unit = comparison.get("units")
+    status = "PASS" if criterion_passes(value, report_criterion) else "FAIL"
+    if status != comp_status:
+        raise RuntimeError(f"internal reproduction status mismatch for {name}: {status} != {comp_status}")
+    return {**base, "status": status, "value": value, "unit": unit,
+            "criterion": report_criterion, "details": details}
+
+
+def _build_student_reproduction_report(p, profile, profile_path, frames, frames_path,
+                                       species_mapping, teacher_target):
+    from validation.teacher_physical_validation import compare_student_to_teacher_target
+    from validation.report import validate_validation_report
+    from workflow.integrity import artifact_digest
+    redefined = [k for k in _STUDENT_OBSERVABLE_REDEFINITION_PARAMS if p.get(k) is not None]
+    if redefined:
+        raise ValueError(
+            "Stage 11 may not redefine Teacher-frozen observable parameters when a "
+            "TeacherValidationTarget is bound; remove: " + ", ".join(sorted(redefined)))
+    student_context = {}
+    if "timestep_fs" in p:
+        student_context["timestep_fs"] = float(p["timestep_fs"])
+    if "sample_interval_steps" in p:
+        student_context["sample_interval_steps"] = int(p["sample_interval_steps"])
+    if "energies" in p:
+        student_context["energies"] = [float(x) for x in p["energies"]]
+    comparison = compare_student_to_teacher_target(
+        teacher_target, frames, comparison_policy=p.get("comparison_policy"),
+        student_context=student_context or None)
+    checks = [_reproduction_check(c) for c in comparison["comparisons"]]
+    if not checks:
+        raise ValueError("teacher target defined no observables to reproduce")
+    target_path = p.get("teacher_validation_target")
+    evidence = [_evidence("validation_profile", profile_path), _evidence("frames", frames_path)]
+    if target_path:
+        evidence.append(_evidence("teacher_validation_target", Path(target_path).resolve()))
+    report = {
+        "schema_version": 1,
+        "profile": profile.get("kind", "physical_validation"),
+        "mode": "teacher_target_reproduction",
+        "teacher_validation_target_sha256": teacher_target.get("target_sha256"),
+        "objective_profile_sha256": teacher_target.get("objective_profile_sha256"),
+        "overall_reproduction_status": comparison["overall_status"],
+        "checks": checks,
+        "evidence": evidence,
+    }
+    if species_mapping:
+        report["species_mapping"] = species_mapping
+    report_path = Path(p["report_path"])
+    report_path.parent.mkdir(parents=True, exist_ok=True)
+    report_path.write_text(json.dumps(report, indent=2) + "\n")
+    validate_validation_report(report_path)
+    return {"path": str(report_path.resolve()), "report": report,
+            "integrity": artifact_digest(report_path),
+            "teacher_validation_target_sha256": teacher_target.get("target_sha256")}
 
 def _exec_compare_coverage(proposal):
     from validation.data_coverage import validate_data_coverage_report
@@ -2701,6 +2822,88 @@ def _exec_validate_teacher_reference(proposal):
             "predictions_path": str(predictions_path),
             "predictions_integrity": artifact_digest(predictions_path)}
 
+
+def _make_teacher_calculator_provider(teacher_config):
+    from adapters import load_config
+    from framework_v2.acquisition.generators.base import TeacherCalculatorProvider
+
+    class _TeacherCalc(TeacherCalculatorProvider):
+        def __init__(self, cfg_path):
+            self._cfg = load_config(cfg_path)
+
+        def make_ase_calculator(self):
+            from adapters.teacher import load_teacher_with_species_evidence
+            calc, _ = load_teacher_with_species_evidence(self._cfg)
+            return calc
+
+    return _TeacherCalc(teacher_config)
+
+
+def _resolve_teacher_physical_validation_request(p):
+    import yaml
+    tpv_block = {}
+    objectives = []
+    if p.get("validation_profile"):
+        from workflow.contracts import parse_teacher_validation_objectives
+        profile = yaml.safe_load(Path(p["validation_profile"]).read_text()) or {}
+        tpv_block = profile.get("teacher_physical_validation") or {}
+        objectives = parse_teacher_validation_objectives(profile)
+    mode = str(p.get("mode") or tpv_block.get("mode") or "COMPUTE").upper()
+    md_protocol = p.get("md_protocol") or tpv_block.get("md_protocol")
+    observable_specs = p.get("observable_specs") or tpv_block.get("observables")
+    if not observable_specs:
+        raise ValueError(
+            "teacher physical validation requires observable_specs (from params or "
+            "validation_profile.teacher_physical_validation.observables)")
+    if not md_protocol:
+        raise ValueError(
+            "teacher physical validation requires md_protocol (from params or "
+            "validation_profile.teacher_physical_validation.md_protocol)")
+    context = {"objectives": list(objectives)} if objectives else None
+    return {"mode": mode, "md_protocol": md_protocol,
+            "observable_specs": observable_specs, "context": context}
+
+
+def _exec_build_teacher_physical_validation_target(proposal):
+    """Freeze a Teacher physical-validation target for later Stage-11 reproduction.
+
+    This is a canonical producer only; live Teacher COMPUTE mode remains expensive and must be
+    approval-gated by dispatch policy. Tests use injected mock providers/engines.
+    """
+    from validation import teacher_physical_validation as tpv
+    from workflow.integrity import artifact_digest
+    p = _params(proposal)
+    req = _resolve_teacher_physical_validation_request(p)
+    target_path = Path(p["target_path"]).resolve()
+    target_path.parent.mkdir(parents=True, exist_ok=True)
+    common = dict(
+        objective_profile_sha256=p["objective_profile_sha256"],
+        teacher_identity=p["teacher_identity"],
+        md_protocol=req["md_protocol"],
+        observable_specs=req["observable_specs"],
+        target_path=str(target_path),
+        context=req["context"],
+    )
+    if req["mode"] == "COMPUTE":
+        provider = p.get("teacher_calculator_provider") or _make_teacher_calculator_provider(p["teacher_config"])
+        target = tpv.compute_teacher_validation_target(
+            start_structures_path=p["start_structures_path"],
+            trajectory_out_path=str(Path(p["trajectory_out_path"]).resolve()),
+            teacher_calculator_provider=provider,
+            md_engine=p.get("md_engine"),
+            **common)
+    elif req["mode"] == "INGEST":
+        target = tpv.ingest_teacher_validation_target(
+            trajectory_path=p["trajectory_path"],
+            trajectory_sha256=p["trajectory_sha256"],
+            recompute_from_trajectory=bool(p.get("recompute_from_trajectory", True)),
+            precomputed_observables=p.get("precomputed_observables"),
+            **common)
+    else:
+        raise ValueError(f"unknown teacher physical validation mode: {req['mode']!r}")
+    tpv.verify_teacher_validation_target(target)
+    return {"path": str(target_path), "target": target, "integrity": artifact_digest(target_path)}
+
 def _exec_run_teacher_md(proposal):
     from adapters import load_config
     from adapters.acquisition import run_teacher_md
@@ -3021,6 +3224,13 @@ BINDINGS: dict[str, ExecutorBinding] = {b.action_type: b for b in [
          "teacher_config,reference_yaml,predictions_path,report_path",
          "reference validation report + fresh Teacher reference predictions",
          "validation.reference_validation"),
+    _hpc("build_teacher_physical_validation_target", "simulation",
+         "validation.teacher_physical_validation (COMPUTE via Teacher MD or INGEST existing target trajectory)",
+         "objective_profile_sha256,teacher_identity,md_protocol,observable_specs,target_path"
+         "[,mode,validation_profile,teacher_config,start_structures_path,trajectory_out_path,"
+         "trajectory_path,trajectory_sha256,recompute_from_trajectory,precomputed_observables]",
+         "frozen hash-bound TeacherValidationTarget",
+         "validation.teacher_physical_validation.verify_teacher_validation_target"),
     _hpc("run_teacher_md", "simulation", "adapters.acquisition.run_teacher_md",
          "md_config,teacher_config,seed_structures,out_path", "teacher MD snapshots", ""),
     _hpc("run_student_md", "simulation", "workflow.steps.run_md / adapters.md_backend.run",
@@ -3131,6 +3341,8 @@ def build_executor_registry() -> dict:
             executor = _exec_build_teacher_baseline
         elif action == "validate_teacher_reference":
             executor = _exec_validate_teacher_reference
+        elif action == "build_teacher_physical_validation_target":
+            executor = _exec_build_teacher_physical_validation_target
         elif action == "acquire_structures":
             executor = _exec_acquire_structures
         elif action == "label_with_teacher":

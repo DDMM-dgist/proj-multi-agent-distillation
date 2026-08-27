@@ -464,3 +464,145 @@ def main():
 
 if __name__ == "__main__":
     main()
+
+
+def compute_diffusivity(msd_by_species, timestep_fs, *, fit_start_frame, fit_end_frame,
+                        sample_interval_steps=1, n_dims=3):
+    """Einstein self-diffusivity from an explicit, provenance-bound MSD fit window."""
+    if not msd_by_species:
+        raise ValueError("compute_diffusivity requires a non-empty per-species MSD mapping")
+    if not (isinstance(timestep_fs, (int, float)) and float(timestep_fs) > 0):
+        raise ValueError("compute_diffusivity requires positive timestep_fs")
+    if int(sample_interval_steps) <= 0:
+        raise ValueError("sample_interval_steps must be positive")
+    if int(n_dims) not in (1, 2, 3):
+        raise ValueError("n_dims must be 1, 2, or 3")
+    s0, s1 = int(fit_start_frame), int(fit_end_frame)
+    out = {}
+    for species, series in msd_by_species.items():
+        series = np.asarray(series, dtype=float)
+        n = len(series)
+        if not (0 <= s0 < s1 <= n):
+            raise ValueError(
+                f"invalid MSD fit window [{s0}, {s1}) for species {species!r} with {n} frames")
+        if s1 - s0 < 2:
+            raise ValueError("MSD fit window must contain at least two frames")
+        window = series[s0:s1]
+        if not np.isfinite(window).all():
+            raise ValueError(f"non-finite MSD inside the fit window for species {species!r}")
+        frame_idx = np.arange(s0, s1, dtype=float)
+        t_fs = frame_idx * float(sample_interval_steps) * float(timestep_fs)
+        slope, intercept = np.polyfit(t_fs, window, 1)
+        resid = window - (slope * t_fs + intercept)
+        d_A2_per_fs = float(slope) / (2.0 * int(n_dims))
+        out[str(species)] = {
+            "diffusivity_A2_per_fs": float(d_A2_per_fs),
+            "diffusivity_A2_per_ps": float(d_A2_per_fs * 1000.0),
+            "diffusivity_cm2_per_s": float(d_A2_per_fs * 0.1),
+            "msd_slope_A2_per_fs": float(slope),
+            "fit_intercept_A2": float(intercept),
+            "fit_residual_std_A2": float(resid.std()),
+            "fit_window_frames": [s0, s1],
+            "fit_window_t_fs": [float(t_fs[0]), float(t_fs[-1])],
+            "n_fit_points": int(s1 - s0),
+            "n_dims": int(n_dims),
+            "sample_interval_steps": int(sample_interval_steps),
+            "timestep_fs": float(timestep_fs),
+        }
+    return out
+
+
+def compute_adf(frames, center_species, neighbor_species, *, r_cut_A,
+                nbins=180, angle_min_deg=0.0, angle_max_deg=180.0):
+    """Generic angular distribution function for neighbor-center-neighbor triplets."""
+    import itertools as _itertools
+    center_species = str(center_species)
+    if isinstance(neighbor_species, (list, tuple, set)):
+        neighbor_set = {str(s) for s in neighbor_species}
+    else:
+        neighbor_set = {str(neighbor_species)}
+    if not neighbor_set:
+        raise ValueError("compute_adf requires at least one neighbor species")
+    if not (isinstance(r_cut_A, (int, float)) and float(r_cut_A) > 0):
+        raise ValueError("compute_adf requires a positive r_cut_A")
+    nbins = int(nbins)
+    if nbins <= 0:
+        raise ValueError("compute_adf requires positive nbins")
+    lo, hi = float(angle_min_deg), float(angle_max_deg)
+    if not (0.0 <= lo < hi <= 180.0):
+        raise ValueError("compute_adf angle range must satisfy 0 <= min < max <= 180")
+    if not frames:
+        raise ValueError("compute_adf requires at least one frame")
+    edges = np.linspace(lo, hi, nbins + 1)
+    counts = np.zeros(nbins, dtype=float)
+    n_triplets = 0
+    n_center_seen = 0
+    for atoms in frames:
+        syms = np.array(atoms.get_chemical_symbols())
+        d = atoms.get_all_distances(mic=True)
+        center_idx = np.where(syms == center_species)[0]
+        n_center_seen += int(len(center_idx))
+        for i in center_idx:
+            neigh = [j for j in range(len(atoms))
+                     if j != i and syms[j] in neighbor_set and 0.0 < d[i, j] < float(r_cut_A)]
+            for a, b in _itertools.combinations(neigh, 2):
+                va = atoms.get_distance(i, a, mic=True, vector=True)
+                vb = atoms.get_distance(i, b, mic=True, vector=True)
+                na = float(np.linalg.norm(va))
+                nb = float(np.linalg.norm(vb))
+                if na == 0.0 or nb == 0.0:
+                    continue
+                cos = max(-1.0, min(1.0, float(np.dot(va, vb) / (na * nb))))
+                ang = float(np.degrees(np.arccos(cos)))
+                if lo <= ang <= hi:
+                    k = int(np.searchsorted(edges, ang, side="right") - 1)
+                    counts[min(max(k, 0), nbins - 1)] += 1.0
+                    n_triplets += 1
+    if n_center_seen == 0:
+        raise ValueError(f"no {center_species} atoms present in any frame")
+    total = float(counts.sum())
+    bin_centers = ((edges[:-1] + edges[1:]) / 2.0)
+    return {
+        "center_species": center_species,
+        "neighbor_species": sorted(neighbor_set),
+        "r_cut_A": float(r_cut_A),
+        "nbins": nbins,
+        "angle_range_deg": [lo, hi],
+        "bin_centers_deg": [float(x) for x in bin_centers],
+        "distribution": [float(x) for x in (counts / total if total > 0 else counts)],
+        "counts": [float(x) for x in counts],
+        "n_triplets": int(n_triplets),
+        "n_frames": int(len(frames)),
+        "mean_angle_deg": (float(np.average(bin_centers, weights=counts)) if total > 0 else None),
+    }
+
+
+BUILTIN_OBSERVABLE_KINDS = frozenset({
+    "rdf_peak_position", "rdf_peak_height", "species_coordination",
+    "coordination_distribution", "density", "msd", "diffusivity", "adf", "nve_drift",
+})
+_OBSERVABLE_PLUGINS = {}
+
+
+def register_observable(kind, fn):
+    kind = str(kind)
+    if kind in BUILTIN_OBSERVABLE_KINDS:
+        raise ValueError(f"cannot override built-in observable kind: {kind}")
+    if kind in _OBSERVABLE_PLUGINS:
+        raise ValueError(f"observable kind already registered: {kind}")
+    if not callable(fn):
+        raise ValueError("observable plugin must be callable")
+    _OBSERVABLE_PLUGINS[kind] = fn
+    return kind
+
+
+def unregister_observable(kind):
+    _OBSERVABLE_PLUGINS.pop(str(kind), None)
+
+
+def observable_plugin(kind):
+    return _OBSERVABLE_PLUGINS.get(str(kind))
+
+
+def registered_observable_kinds():
+    return sorted(_OBSERVABLE_PLUGINS)

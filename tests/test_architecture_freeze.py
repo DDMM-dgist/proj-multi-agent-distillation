@@ -974,6 +974,14 @@ FREEZE_REVISION = (
     "change; the two new actions are additive and inherit the default (non-gated) simulation "
     "boundary; every other frozen file is untouched."
     "\n\n"
+    "teacher-physical-validation-target (FE-067) re-freezes runtimes/pydantic_ai/actions.py "
+    "5646a67530d1d5fe44f6e163715448b7c677147240f11496adc7dc9032cb5ec3 -> "
+    "f862236b1f1e3ec0ea300cd49a3bfe1c694799b17791b9f5dad7fd70b23cba38 for one ADDITIVE "
+    "HPC/approval-gated simulation action, build_teacher_physical_validation_target. The action "
+    "freezes a hash-bound TeacherValidationTarget for later Stage-11 Student reproduction and does "
+    "not alter any existing action semantics, approval boundary, stage order, or Student training "
+    "path. READY_HPC_APPROVAL_GATED count 8 -> 9; every other frozen file is untouched."
+    "\n\n"
     "coverage-reacquisition-input-supersession (UNIT 4) re-freezes workflow/controller.py "
     "7685fa4eec8c80dee6ee8db0c571776eb4e4e6890f3b2465d1be7ad02a0f4e69 -> "
     "47ee90dd6138894cf14109a233c8405556b73f7c0015a75ede348526ac84a657 for ADDITIVE edits that make "
@@ -1087,7 +1095,7 @@ FROZEN = {
     "runtimes/pydantic_ai/driver.py":
         "db480c20d126b7511e8bbaa4fc2018adb56aa789fabe496ba4f08313379f5939",
     "runtimes/pydantic_ai/actions.py":
-        "5646a67530d1d5fe44f6e163715448b7c677147240f11496adc7dc9032cb5ec3",
+        "f862236b1f1e3ec0ea300cd49a3bfe1c694799b17791b9f5dad7fd70b23cba38",
     "runtimes/pydantic_ai/controller_bridge.py":
         "91432692ae394da3b526b9d61b3c6743f34ec74c81f874b04494c96425f7f500",
     "orchestration/specs.py":
