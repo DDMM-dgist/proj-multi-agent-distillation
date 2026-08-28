@@ -66,7 +66,9 @@ internal safety. It is not the V2 paper-facing scientific contribution.
 ## Public Concepts
 
 - Specify: `HumanTargetPropertyContract`, `TargetOperationalization`
-- Discover: `StructuralRepresentation`, `StructuralRegionProvider`
+- Discover: `StructuralRepresentation`, `StructuralRegionProvider`,
+  recursive refinement (`discover_structural_subregions`,
+  `refine_region_partition`, active-leaf partition)
 - Curate: candidate generation and sampler interfaces
 - Distill: Teacher labeling and Student committee training
 - Track: protected evaluation, `ErrorLedger`, raw efficiency records
@@ -196,6 +198,71 @@ These four layers are distinct and must not be conflated:
   Only synthetic, mock-only control loops have run so far
   (`tests/test_v2_synthetic_e2e.py`). Runtime verification is still required
   before any scientific claim.
+
+## Recursive Structural-Region Discovery
+
+Discovery is not restricted to a single flat pass. A discovered region may be
+recursively refined into finer sub-regions when the evidence supports it, so
+the same material-agnostic pipeline handles both a coarse partition and an
+arbitrarily deep hierarchy without per-material code.
+
+Two views coexist and must not be conflated:
+
+- **Region tree** — the ancestry relation. Every `StructuralRegion` carries
+  explicit `parent_region_id` and `discovery_depth` fields. Historical flat
+  regions have `parent_region_id = None` and `discovery_depth = 0`. The tree is
+  provenance: it records how a partition was reached, not which regions are
+  currently authoritative.
+- **Active leaf partition** — the authoritative assignment. A region is an
+  *active leaf* iff no other region names it as parent.
+  `active_leaf_frame_to_region()` maps every eligible frame to exactly one
+  active leaf and fails closed if any frame is unmapped. **CURATE,
+  TRACK/ErrorLedger, and RECOVER operate on active leaves**; they never parse
+  hierarchy out of region-ID strings and are unchanged by refinement depth.
+
+Region identity is carried in fields, never inferred from the string. Child IDs
+are minted deterministically and collision-free by `child_region_id(parent, i)`
+(`"{parent}.{i}"`); the string form is a convenience, not a parsing contract.
+Downstream consumers remain region-ID agnostic and invariant under relabeling,
+so hierarchical IDs like `structural_region_001.0` flow through evaluation,
+error tracking, sampling, and recovery with no special handling. Historical flat
+IDs are never renamed.
+
+The recursive step is two typed operations:
+
+- `discover_structural_subregions(parent_manifest, parent_region_id,
+  representation, config, ...)` validates that the parent is an active leaf,
+  extracts **only** that leaf's frames, runs the existing discovery backend on
+  the subset, mints child identities, and binds parent/depth/representation/
+  config provenance. The same call refines any leaf — coarse region, boundary
+  region, or child-of-a-child — with no caller-written, material-specific
+  filtering.
+- `refine_region_partition(current_manifest, parent_region_id, child_manifest)`
+  splices the children in while preserving every unaffected leaf. It fails
+  closed unless the children exactly repartition the parent: child membership ⊆
+  parent, union == parent, disjoint children, complete partition, no duplicate
+  active IDs, acyclic ancestry, child depth == parent depth + 1, and unchanged
+  total population. The refined parent is retained for provenance but ceases to
+  be an active leaf, so it is **never double-counted** with its children as a
+  required region.
+
+Refinement is evidence-driven, and **discovery adequacy is kept separate from
+target relevance** — they are two axes, not one boolean. A
+`RegionRefinementAssessment` reports a `resolution_status`
+(`RESOLVED` / `REFINE_SUPPORTED` / `UNRESOLVED` / `REFINEMENT_NOT_SUPPORTED`)
+independently of a `target_relevance_status`, and preserves its reasons and
+per-channel evidence. Only a `REFINE_SUPPORTED` assessment can be turned into a
+`RegionRefinementRequest` (enforced at the type level: the request is not
+constructible for any other status), so an LLM cannot hand-forge authorization
+past deterministic failed evidence; `UNRESOLVED` fails closed rather than
+auto-refining. No numerical refinement thresholds are baked into the framework.
+
+All hierarchy hashes are deterministic and order-independent:
+`region_tree_sha256()` and `active_leaf_partition_sha256()` change when
+membership, relations, config, or representation change, but not under dict
+ordering, and flat manifests keep their existing `content_sha256()`. The `C0`
+example in Fresh-01 is illustrative only — no `C0`, `SiO2`, `amorphous`, or
+`crystalline` meaning is encoded in framework source.
 
 ## Sampler Semantics
 
