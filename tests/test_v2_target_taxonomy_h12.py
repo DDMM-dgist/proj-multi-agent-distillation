@@ -110,10 +110,11 @@ def test_evidence_only_observable_does_not_block_closure():
     assert policy.state_for({"target.structural.rdf": 0.1}) == RegionClosureState.CLOSED
 
 
-def test_numerical_guard_is_treated_as_a_closure_gate():
-    from framework_v2.v2_sampling import CriterionComparator
+def _guard_policy(scope=None):
+    from framework_v2.v2_sampling import ClosurePolicyScope, CriterionComparator
 
-    policy = RegionStoppingPolicy(
+    kwargs = {} if scope is None else {"scope": scope}
+    return RegionStoppingPolicy(
         policy_id="p",
         criteria=[
             SignalCriterion(
@@ -126,9 +127,120 @@ def test_numerical_guard_is_treated_as_a_closure_gate():
                 provenance=["guard"],
             )
         ],
+        **kwargs,
     )
+
+
+def test_scientific_required_failure_drives_region_recover():
+    from framework_v2.v2_sampling import CriterionComparator
+
+    policy = RegionStoppingPolicy(
+        policy_id="p",
+        criteria=[
+            SignalCriterion(
+                signal="target.structural.rdf",
+                role=CriterionRole.SCIENTIFIC_REQUIRED,
+                binding_status=CriterionBindingStatus.BOUND,
+                comparator=CriterionComparator.LE,
+                value=0.2,
+                units="",
+                provenance=["sci"],
+            )
+        ],
+    )
+    assert policy.state_for({"target.structural.rdf": 0.9}) == RegionClosureState.RECOVER
+    assert policy.state_for({"target.structural.rdf": 0.1}) == RegionClosureState.CLOSED
+
+
+def test_operational_required_failure_drives_region_recover():
+    from framework_v2.v2_sampling import CriterionComparator
+
+    policy = RegionStoppingPolicy(
+        policy_id="p",
+        criteria=[
+            SignalCriterion(
+                signal="energy.rmse_meV_per_atom",
+                role=CriterionRole.OPERATIONAL_REQUIRED,
+                binding_status=CriterionBindingStatus.BOUND,
+                comparator=CriterionComparator.LE,
+                value=25.0,
+                units="meV/atom",
+                provenance=["op"],
+            )
+        ],
+    )
+    assert policy.state_for({"energy.rmse_meV_per_atom": 40.0}) == RegionClosureState.RECOVER
+
+
+def test_numerical_guard_does_not_auto_drive_region_recover():
+    # H12.1: a failing stability guard must NOT imply that a structural region
+    # needs more training data.  In the default REGION_RECOVERY scope the guard
+    # is non-gating, so a guard failure does not produce RECOVER.
+    policy = _guard_policy()  # default scope == REGION_RECOVERY
+    assert policy.state_for({"target.dynamical.nve_drift": 5.0}) == RegionClosureState.CLOSED
+    assert policy.state_for({"target.dynamical.nve_drift": 0.2}) == RegionClosureState.CLOSED
+    # And it is reported as explicitly non-gating rather than passed/failed.
+    ev = policy.evaluate_signals({"target.dynamical.nve_drift": 5.0})[0]
+    assert ev.passed is None
+    assert "does not drive region recovery" in ev.reason
+
+
+def test_numerical_guard_blocks_final_validation_scope():
+    # H12.1: an explicit FINAL_VALIDATION policy DOES let the guard block closure.
+    from framework_v2.v2_sampling import ClosurePolicyScope
+
+    policy = _guard_policy(ClosurePolicyScope.FINAL_VALIDATION)
     assert policy.state_for({"target.dynamical.nve_drift": 5.0}) == RegionClosureState.RECOVER
     assert policy.state_for({"target.dynamical.nve_drift": 0.2}) == RegionClosureState.CLOSED
+
+
+def test_selecting_dynamical_family_does_not_recommend_nve_guard():
+    # H12.1 issue 2: requesting the DYNAMICAL family for automatic candidate
+    # selection must not pull in energy_drift (a NUMERICAL_GUARD), but must still
+    # offer the genuine DYNAMICAL scientific targets vacf/vdos.
+    reg = default_observable_registry()
+    scientific = set(reg.scientific_names_for_family(F.DYNAMICAL))
+    assert "energy_drift" not in scientific
+    assert {"vacf", "vdos"} <= scientific
+    # energy_drift is still a member of the family classification (WHAT), just
+    # not a scientific target (WHY).
+    assert "energy_drift" in set(reg.names_for_family(F.DYNAMICAL))
+
+
+def test_broad_dynamical_request_recommends_only_scientific_targets():
+    from framework_v2.property_targets import (
+        HumanTargetPropertyContract,
+        ObservableSelectionRole,
+        operationalize_target_request,
+    )
+
+    target = HumanTargetPropertyContract(
+        contract_id="t", target_property_family=F.DYNAMICAL
+    )
+    result = operationalize_target_request(target)
+    recommended = {
+        d.observable_name for d in result.decisions
+        if d.role == ObservableSelectionRole.RECOMMENDED
+    }
+    assert "energy_drift" not in recommended
+    assert {"vacf", "vdos"} <= recommended
+
+
+def test_validation_contract_rejects_numerical_guard_as_scientific_target():
+    from framework_v2.property_targets import (
+        HumanTargetPropertyContract,
+        build_target_validation_contract,
+        operationalize_target_request,
+    )
+
+    target = HumanTargetPropertyContract(
+        contract_id="t",
+        target_property_family=F.DYNAMICAL,
+        required_observables=["energy_drift"],  # a NUMERICAL_GUARD, not a target
+    )
+    result = operationalize_target_request(target)
+    with pytest.raises(ValueError, match="non-scientific observables"):
+        build_target_validation_contract(result, default_observable_registry())
 
 
 # ---------------------------------------------------------------------------

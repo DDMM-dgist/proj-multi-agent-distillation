@@ -115,10 +115,15 @@ by parsing names such as `rdf_si_o`.
 | energy RMSE | (not a target family) | `OPERATIONAL_REQUIRED` |
 | NVE energy drift | (stability guard) | `NUMERICAL_GUARD` |
 
-`NUMERICAL_GUARD` is a closure gate (it can block closure) but is never a
-scientific target. Energy/force RMSE live in the `energy.*` / `force.*` closure
-namespaces as `OPERATIONAL_REQUIRED` fidelity criteria — they are not target
-observable families. Comparison/aggregation semantics may be declared per
+`NUMERICAL_GUARD` is a numerical/physical stability guard, never a scientific
+target and never a region-recovery driver. A guard failure does not imply that a
+structural region needs more training data, so in the default
+`ClosurePolicyScope.REGION_RECOVERY` scope the guard is non-gating (it records
+evidence without producing `RECOVER`). It gates closure only when an explicit
+`ClosurePolicyScope.FINAL_VALIDATION` policy binds it, i.e. at terminal
+physical/numerical validation. Energy/force RMSE live in the `energy.*` /
+`force.*` closure namespaces as `OPERATIONAL_REQUIRED` fidelity criteria — they
+are not target observable families. Comparison/aggregation semantics may be declared per
 observable, but any genuinely unbound numerical distance/threshold stays
 `UNBOUND` (H12 hardens taxonomy; it does not invent thresholds).
 

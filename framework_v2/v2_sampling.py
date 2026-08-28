@@ -69,9 +69,11 @@ class CriterionRole(str, Enum):
                                  energy drift); a gate, but never a scientific target.
     ``EVIDENCE_ONLY``         -- a non-gating diagnostic observable.
 
-    ``NUMERICAL_GUARD`` is treated as a closure gate exactly like the other
-    non-evidence roles (it can block closure); it is distinguished only so that a
-    stability guard is never mistaken for a scientific target property.
+    ``NUMERICAL_GUARD`` is a stability guard, never a scientific target property,
+    and never a region-recovery driver: a guard failure does not imply that a
+    structural region needs more training data.  It gates closure only in
+    ``FINAL_VALIDATION`` scope (see :class:`ClosurePolicyScope`), not in the
+    default ``REGION_RECOVERY`` scope.
     """
 
     SCIENTIFIC_REQUIRED = "SCIENTIFIC_REQUIRED"
@@ -83,6 +85,42 @@ class CriterionRole(str, Enum):
 class EvidenceStatus(str, Enum):
     EVALUATED = "EVALUATED"
     NOT_EVALUATED = "NOT_EVALUATED"
+
+
+class ClosurePolicyScope(str, Enum):
+    """WHERE in the workflow a stopping policy gates (H12.1 scope axis).
+
+    ``REGION_RECOVERY``   -- per-region training-sufficiency closure that, when a
+                             gating criterion fails, drives targeted reacquisition
+                             (more training data for that structural region).
+    ``FINAL_VALIDATION``  -- terminal physical/numerical validation, where a
+                             numerical-stability guard is allowed to block closure.
+
+    A ``NUMERICAL_GUARD`` (e.g. NVE energy drift) is a numerical/physical stability
+    check, not a statement about training coverage of a structural region.  It must
+    therefore NOT drive region recovery by default: a guard failure does not imply
+    "this region needs more training data".  It gates only in ``FINAL_VALIDATION``
+    scope (or when an explicit campaign policy binds it there).
+    """
+
+    REGION_RECOVERY = "REGION_RECOVERY"
+    FINAL_VALIDATION = "FINAL_VALIDATION"
+
+
+# Roles that gate closure, keyed by policy scope.  EVIDENCE_ONLY never gates.
+# NUMERICAL_GUARD gates only at FINAL_VALIDATION, never at REGION_RECOVERY.
+_GATING_ROLES_BY_SCOPE: dict[ClosurePolicyScope, frozenset[CriterionRole]] = {
+    ClosurePolicyScope.REGION_RECOVERY: frozenset(
+        {CriterionRole.SCIENTIFIC_REQUIRED, CriterionRole.OPERATIONAL_REQUIRED}
+    ),
+    ClosurePolicyScope.FINAL_VALIDATION: frozenset(
+        {
+            CriterionRole.SCIENTIFIC_REQUIRED,
+            CriterionRole.OPERATIONAL_REQUIRED,
+            CriterionRole.NUMERICAL_GUARD,
+        }
+    ),
+}
 
 
 # --------------------------------------------------------------------------
@@ -389,13 +427,24 @@ class SignalCriterionEvaluation(ContractBase):
 class RegionStoppingPolicy(ContractBase):
     policy_id: str
     criteria: list[SignalCriterion]
+    scope: ClosurePolicyScope = ClosurePolicyScope.REGION_RECOVERY
+
+    def _is_gating(self, role: CriterionRole) -> bool:
+        return role in _GATING_ROLES_BY_SCOPE[self.scope]
+
+    def _non_gating_reason(self, role: CriterionRole) -> str:
+        if role == CriterionRole.EVIDENCE_ONLY:
+            return "evidence-only signal does not affect closure"
+        if role == CriterionRole.NUMERICAL_GUARD:
+            return "numerical-stability guard does not drive region recovery"
+        return "non-gating in this closure scope"
 
     def evaluate_signals(
         self, signals: Mapping[str, float | int | str | None]
     ) -> list[SignalCriterionEvaluation]:
         out: list[SignalCriterionEvaluation] = []
         for c in self.criteria:
-            if c.role == CriterionRole.EVIDENCE_ONLY:
+            if not self._is_gating(c.role):
                 out.append(SignalCriterionEvaluation(
                     signal=c.signal,
                     criterion_binding_status=c.binding_status,
@@ -404,7 +453,7 @@ class RegionStoppingPolicy(ContractBase):
                     role=c.role,
                     measured_value=signals.get(c.signal),
                     passed=None,
-                    reason="evidence-only signal does not affect closure",
+                    reason=self._non_gating_reason(c.role),
                 ))
                 continue
             if c.binding_status == CriterionBindingStatus.UNBOUND:
@@ -443,7 +492,7 @@ class RegionStoppingPolicy(ContractBase):
         self, signals: Mapping[str, float | int | str | None]
     ) -> RegionClosureState:
         evaluations = self.evaluate_signals(signals)
-        required = [e for e in evaluations if e.role != CriterionRole.EVIDENCE_ONLY]
+        required = [e for e in evaluations if self._is_gating(e.role)]
         if any(e.criterion_binding_status == CriterionBindingStatus.UNBOUND for e in required):
             return RegionClosureState.HUMAN_SCIENTIFIC_INPUT_REQUIRED
         if any(e.evidence_status == EvidenceStatus.NOT_EVALUATED for e in required):
@@ -454,6 +503,7 @@ class RegionStoppingPolicy(ContractBase):
 
 
 __all__ = [
+    "ClosurePolicyScope",
     "CriterionBindingStatus",
     "CriterionComparator",
     "CriterionRole",

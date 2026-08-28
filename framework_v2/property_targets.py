@@ -159,6 +159,19 @@ class ObservableRegistry(ContractBase):
     def names_for_family(self, family: TargetPropertyFamily) -> list[str]:
         return [o.name for o in self.observables if o.family == family]
 
+    def scientific_names_for_family(self, family: TargetPropertyFamily) -> list[str]:
+        """Family members that are genuine scientific targets (H12.1).
+
+        Excludes non-scientific observables (e.g. a ``NUMERICAL_GUARD`` such as
+        NVE energy drift), so that requesting a broad family for automatic
+        candidate selection never silently pulls a stability guard into the
+        scientific target set merely because it shares the family classification.
+        """
+        return [
+            o.name for o in self.observables
+            if o.family == family and o.is_scientific_target()
+        ]
+
     def get(self, name: str) -> ObservableSpec:
         for observable in self.observables:
             if observable.name == name:
@@ -572,7 +585,7 @@ def operationalize_target_request(
                 decision_provenance=[registry.content_sha256(), human_target.content_sha256()],
                 acceptance_status=registry.get(name).acceptance_status,
             )
-            for name in registry.names_for_family(human_target.target_property_family)
+            for name in registry.scientific_names_for_family(human_target.target_property_family)
         ]
 
     for d in decisions:
@@ -613,6 +626,16 @@ def build_target_validation_contract(
     if not required:
         raise ValueError(
             "cannot build TargetValidationContract before REQUIRED observables are selected"
+        )
+    non_scientific = [
+        d.observable_name for d in required
+        if not registry.get(d.observable_name).is_scientific_target()
+    ]
+    if non_scientific:
+        raise ValueError(
+            "TargetValidationContract cannot bind non-scientific observables as "
+            f"scientific targets: {non_scientific} (e.g. a NUMERICAL_GUARD such as "
+            "NVE energy drift is a stability guard, not a target property)"
         )
     missing = [d.observable_name for d in required if d.acceptance_status != AcceptanceStatus.BOUND]
     return TargetValidationContract(
