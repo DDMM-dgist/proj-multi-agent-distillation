@@ -53,9 +53,10 @@ def test_explicitly_required_observable_is_preserved():
 
 
 def test_missing_threshold_remains_unbound_not_fabricated():
+    # H12: density is a THERMODYNAMIC state property, not STRUCTURAL.
     target = HumanTargetPropertyContract(
         contract_id="target",
-        target_property_family=TargetPropertyFamily.STRUCTURAL,
+        target_property_family=TargetPropertyFamily.THERMODYNAMIC,
         required_observables=["density"],
     )
     contract = operationalize_target(target)

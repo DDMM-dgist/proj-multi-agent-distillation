@@ -17,13 +17,25 @@ from typing import Any
 from pydantic import Field, model_validator
 
 from framework_v2.contracts import ContractBase, utc_now_iso
+from framework_v2.v2_sampling import CriterionRole
 
 
 class TargetPropertyFamily(str, Enum):
+    """WHAT physical behaviour is being preserved.
+
+    H12 scientific target taxonomy. A property family answers *what* physics is
+    evaluated; it is orthogonal to *where* it is evaluated (see
+    :class:`EvaluationDomain`) and *why* the quantity is evaluated (the
+    observable role, expressed with :class:`framework_v2.v2_sampling.CriterionRole`).
+    """
+
     STRUCTURAL = "STRUCTURAL"
-    DYNAMICAL = "DYNAMICAL"
     THERMODYNAMIC = "THERMODYNAMIC"
+    DYNAMICAL = "DYNAMICAL"
+    TRANSPORT = "TRANSPORT"
     MECHANICAL = "MECHANICAL"
+    KINETIC = "KINETIC"
+    # Retained for backward compatibility with historical broad-family targets.
     USER_DEFINED = "USER_DEFINED"
 
 
@@ -92,6 +104,15 @@ class ObservableSpec(ContractBase):
     acceptance_criterion: dict[str, Any] | None = None
     acceptance_provenance: list[str] = Field(default_factory=list)
     requirement: ObservableRequirement = ObservableRequirement.GATE_REQUIRED
+    # --- H12 structured taxonomy metadata (additive; carried, not name-parsed) ---
+    # WHAT sub-kind of the family this is (e.g. "rdf", "adf", "coordination",
+    # "density", "diffusivity", "vacf", "vdos", "nve_drift").
+    observable_kind: str = ""
+    # WHICH channel of the observable (species / pair / angle), carried as
+    # structured metadata rather than encoded in the name string.
+    channel: dict[str, Any] = Field(default_factory=dict)
+    # WHY the quantity is evaluated (reuses the closure role vocabulary).
+    observable_role: CriterionRole = CriterionRole.SCIENTIFIC_REQUIRED
 
     @model_validator(mode="after")
     def _criterion_matches_status(self):
@@ -102,6 +123,26 @@ class ObservableSpec(ContractBase):
             if self.acceptance_criterion is not None:
                 raise ValueError("unbound observable cannot carry an acceptance criterion")
         return self
+
+    def is_scientific_target(self) -> bool:
+        """True only when this observable is a scientific success criterion.
+
+        Operational-fidelity criteria and numerical-stability guards (e.g.
+        ``nve_drift``) are never scientific targets, regardless of family.
+        """
+        return self.observable_role == CriterionRole.SCIENTIFIC_REQUIRED
+
+    def signal_namespace(self) -> str:
+        """Family-qualified signal identity, e.g. ``target.structural.rdf``.
+
+        This is an *additive* structured accessor. It does not rename the
+        existing ``target.<key>`` closure signals (see
+        ``framework_v2.region_evaluation``); it exposes an unambiguous
+        family/observable identity for observables that carry structured
+        metadata.
+        """
+        kind = self.observable_kind or self.name
+        return f"target.{self.family.value.lower()}.{kind}"
 
 
 class ObservableRegistry(ContractBase):
@@ -176,6 +217,168 @@ class TargetOperationalizationResult(ContractBase):
     status: OperationalizationStatus
 
 
+# =====================================================================
+# H12 axis B: WHERE fidelity must hold (evaluation domain).
+# Orthogonal to the property family. The SAME observable is evaluated across
+# many domains; the family never changes with the domain.
+# =====================================================================
+class EvaluationDomain(ContractBase):
+    """A single point/region in the evaluation domain.
+
+    Domain axes are deliberately separate from the observable identity so that
+    ``RDF(Si-O)`` is one observable evaluated over many temperatures /
+    compositions / structural regions, never distinct observables such as
+    ``rdf_300K`` vs ``rdf_1000K``.
+    """
+
+    temperature_K: float | None = None
+    composition: str = ""
+    structural_region_id: str = ""
+    conditions: dict[str, Any] = Field(default_factory=dict)
+
+    def domain_id(self) -> str:
+        t = "T*" if self.temperature_K is None else f"T{self.temperature_K:g}"
+        c = self.composition or "comp*"
+        r = self.structural_region_id or "region*"
+        return f"{c}|{t}|{r}"
+
+
+class DomainResolvedObservable(ContractBase):
+    """Pairs one observable with one evaluation domain.
+
+    The property family is a property of the observable, never of the domain:
+    :meth:`family` returns the observable's family regardless of where it is
+    evaluated.
+    """
+
+    observable: ObservableSpec
+    domain: EvaluationDomain
+
+    def family(self) -> TargetPropertyFamily:
+        return self.observable.family
+
+    def resolved_signal(self) -> str:
+        return f"{self.observable.signal_namespace()}@{self.domain.domain_id()}"
+
+
+# =====================================================================
+# H12 axis A hierarchy: channel-resolved observables without name-parsing.
+# =====================================================================
+class ObservableSelectionStatus(str, Enum):
+    PRIMARY_REQUIRED = "PRIMARY_REQUIRED"
+    SECONDARY_OPTIONAL = "SECONDARY_OPTIONAL"
+
+
+class TargetObservableChannel(ContractBase):
+    """One channel of an observable (species / pair / angle), with the channel
+    identity carried as structured metadata rather than encoded in a name."""
+
+    observable_kind: str
+    family: TargetPropertyFamily
+    channel: dict[str, Any] = Field(default_factory=dict)
+    observable_role: CriterionRole = CriterionRole.SCIENTIFIC_REQUIRED
+    selection_status: ObservableSelectionStatus = ObservableSelectionStatus.PRIMARY_REQUIRED
+    # Comparison/aggregation semantics may be declared, but a genuine numerical
+    # distance/threshold that is not yet bound MUST stay UNBOUND (no invention).
+    metric_definition: str = "UNBOUND"
+
+    def channel_id(self) -> str:
+        parts = [self.observable_kind]
+        for key in sorted(self.channel):
+            val = self.channel[key]
+            if isinstance(val, (list, tuple)):
+                val = "-".join(str(v) for v in val)
+            parts.append(f"{key}={val}")
+        return "::".join(parts)
+
+
+class CampaignTargetSelection(ContractBase):
+    """Explicit per-campaign scientific target selection.
+
+    The taxonomy *supports* every family, but which observables are REQUIRED for
+    a campaign is an explicit selection, never an automatic consequence of the
+    taxonomy.
+    """
+
+    campaign_id: str
+    primary: list[TargetObservableChannel] = Field(default_factory=list)
+    secondary: list[TargetObservableChannel] = Field(default_factory=list)
+
+    def primary_kinds(self) -> set[str]:
+        return {c.observable_kind for c in self.primary}
+
+    def secondary_kinds(self) -> set[str]:
+        return {c.observable_kind for c in self.secondary}
+
+    def requires(self, observable_kind: str) -> bool:
+        return observable_kind in self.primary_kinds()
+
+    @model_validator(mode="after")
+    def _roles_and_disjoint(self):
+        for c in self.primary:
+            if c.selection_status != ObservableSelectionStatus.PRIMARY_REQUIRED:
+                raise ValueError("primary channels must be PRIMARY_REQUIRED")
+        for c in self.secondary:
+            if c.selection_status != ObservableSelectionStatus.SECONDARY_OPTIONAL:
+                raise ValueError("secondary channels must be SECONDARY_OPTIONAL")
+        if self.primary_kinds() & self.secondary_kinds():
+            raise ValueError("an observable_kind cannot be both primary and secondary")
+        return self
+
+
+def sio2_fresh01_target_selection(
+    *, campaign_id: str = "sio2-property-guided-v2-fresh-01"
+) -> CampaignTargetSelection:
+    """Fresh-01 scientific target selection for amorphous SiO2-x.
+
+    PRIMARY (structural + a thermodynamic state property): partial RDF (Si-O,
+    Si-Si, O-O), ADF (O-Si-O, Si-O-Si), Si/O coordination + coordination-state
+    populations, density. SECONDARY / future-selectable only (NOT required for
+    Fresh-01): Si/O self-diffusivity, VACF, VDOS. No acceptance thresholds are
+    invented here; comparison semantics stay ``UNBOUND``.
+    """
+
+    def _p(kind, family, channel):
+        return TargetObservableChannel(
+            observable_kind=kind,
+            family=family,
+            channel=channel,
+            observable_role=CriterionRole.SCIENTIFIC_REQUIRED,
+            selection_status=ObservableSelectionStatus.PRIMARY_REQUIRED,
+        )
+
+    def _s(kind, family, channel):
+        return TargetObservableChannel(
+            observable_kind=kind,
+            family=family,
+            channel=channel,
+            observable_role=CriterionRole.SCIENTIFIC_REQUIRED,
+            selection_status=ObservableSelectionStatus.SECONDARY_OPTIONAL,
+        )
+
+    S = TargetPropertyFamily.STRUCTURAL
+    primary = [
+        _p("rdf", S, {"pair": ["Si", "O"]}),
+        _p("rdf", S, {"pair": ["Si", "Si"]}),
+        _p("rdf", S, {"pair": ["O", "O"]}),
+        _p("adf", S, {"angle": ["O", "Si", "O"]}),
+        _p("adf", S, {"angle": ["Si", "O", "Si"]}),
+        _p("coordination", S, {"center_species": "Si"}),
+        _p("coordination", S, {"center_species": "O"}),
+        _p("coordination", S, {"channel": "state_population"}),
+        _p("density", TargetPropertyFamily.THERMODYNAMIC, {}),
+    ]
+    secondary = [
+        _s("diffusivity", TargetPropertyFamily.TRANSPORT, {"species": "Si"}),
+        _s("diffusivity", TargetPropertyFamily.TRANSPORT, {"species": "O"}),
+        _s("vacf", TargetPropertyFamily.DYNAMICAL, {}),
+        _s("vdos", TargetPropertyFamily.DYNAMICAL, {}),
+    ]
+    return CampaignTargetSelection(
+        campaign_id=campaign_id, primary=primary, secondary=secondary
+    )
+
+
 def default_observable_registry() -> ObservableRegistry:
     """Registry backed by existing validation.structure_dynamics kernels."""
 
@@ -187,6 +390,7 @@ def default_observable_registry() -> ObservableRegistry:
             required_inputs=["trajectory", "center_species", "neighbor_species"],
             units="Angstrom",
             metric_definition="partial radial-distribution peak/minimum comparison",
+            observable_kind="rdf",
         ),
         ObservableSpec(
             family=TargetPropertyFamily.STRUCTURAL,
@@ -195,6 +399,7 @@ def default_observable_registry() -> ObservableRegistry:
             required_inputs=["trajectory", "center_species", "neighbor_species"],
             units="dimensionless g(r)",
             metric_definition="partial radial-distribution function comparison",
+            observable_kind="rdf",
         ),
         ObservableSpec(
             family=TargetPropertyFamily.STRUCTURAL,
@@ -203,6 +408,7 @@ def default_observable_registry() -> ObservableRegistry:
             required_inputs=["trajectory", "center_species", "neighbor_species", "r_cut_A"],
             units="degrees",
             metric_definition="bond-angle distribution summary comparison",
+            observable_kind="adf",
         ),
         ObservableSpec(
             family=TargetPropertyFamily.STRUCTURAL,
@@ -211,14 +417,16 @@ def default_observable_registry() -> ObservableRegistry:
             required_inputs=["trajectory", "center_species", "neighbor_species", "cutoff_A"],
             units="count",
             metric_definition="species coordination distribution comparison",
+            observable_kind="coordination",
         ),
         ObservableSpec(
-            family=TargetPropertyFamily.STRUCTURAL,
+            family=TargetPropertyFamily.THERMODYNAMIC,
             name="density",
             kernel="validation.structure_dynamics.compute_density",
             required_inputs=["trajectory"],
             units="g/cm^3",
             metric_definition="mean trajectory density comparison",
+            observable_kind="density",
         ),
         ObservableSpec(
             family=TargetPropertyFamily.STRUCTURAL,
@@ -226,22 +434,25 @@ def default_observable_registry() -> ObservableRegistry:
             kernel="plugin:local_structural_descriptor",
             required_inputs=["structures"],
             metric_definition="plugin-defined local descriptor comparison",
+            observable_kind="local_structural_descriptor",
         ),
         ObservableSpec(
-            family=TargetPropertyFamily.DYNAMICAL,
+            family=TargetPropertyFamily.TRANSPORT,
             name="msd",
             kernel="validation.structure_dynamics.compute_msd",
             required_inputs=["trajectory"],
             units="Angstrom^2",
             metric_definition="mean-squared displacement comparison",
+            observable_kind="msd",
         ),
         ObservableSpec(
-            family=TargetPropertyFamily.DYNAMICAL,
+            family=TargetPropertyFamily.TRANSPORT,
             name="diffusion_coefficient",
             kernel="validation.structure_dynamics.compute_diffusivity",
             required_inputs=["trajectory", "timestep_fs", "fit_start_frame", "fit_end_frame"],
             units="Angstrom^2/ps",
             metric_definition="linear MSD-slope diffusivity comparison",
+            observable_kind="diffusivity",
         ),
         ObservableSpec(
             family=TargetPropertyFamily.DYNAMICAL,
@@ -250,6 +461,8 @@ def default_observable_registry() -> ObservableRegistry:
             required_inputs=["trajectory", "energies", "timestep_fs"],
             units="meV/atom/ps",
             metric_definition="NVE energy drift comparison",
+            observable_kind="nve_drift",
+            observable_role=CriterionRole.NUMERICAL_GUARD,
         ),
         ObservableSpec(
             family=TargetPropertyFamily.DYNAMICAL,
@@ -257,6 +470,7 @@ def default_observable_registry() -> ObservableRegistry:
             kernel="plugin:temperature_response",
             required_inputs=["trajectory", "temperature_series"],
             metric_definition="temperature-dependent behavior comparison",
+            observable_kind="temperature_response",
         ),
         ObservableSpec(
             family=TargetPropertyFamily.DYNAMICAL,
@@ -264,6 +478,15 @@ def default_observable_registry() -> ObservableRegistry:
             kernel="plugin:vacf",
             required_inputs=["trajectory", "velocities"],
             metric_definition="velocity autocorrelation comparison",
+            observable_kind="vacf",
+        ),
+        ObservableSpec(
+            family=TargetPropertyFamily.DYNAMICAL,
+            name="vdos",
+            kernel="plugin:vdos",
+            required_inputs=["trajectory", "velocities"],
+            metric_definition="vibrational density-of-states comparison",
+            observable_kind="vdos",
         ),
         ObservableSpec(
             family=TargetPropertyFamily.THERMODYNAMIC,
@@ -271,6 +494,7 @@ def default_observable_registry() -> ObservableRegistry:
             kernel="plugin:thermodynamic",
             required_inputs=["campaign_specific_evidence"],
             metric_definition="plugin-defined thermodynamic observable",
+            observable_kind="thermodynamic_plugin",
         ),
         ObservableSpec(
             family=TargetPropertyFamily.MECHANICAL,
@@ -278,6 +502,15 @@ def default_observable_registry() -> ObservableRegistry:
             kernel="plugin:mechanical",
             required_inputs=["campaign_specific_evidence"],
             metric_definition="plugin-defined mechanical observable",
+            observable_kind="mechanical_plugin",
+        ),
+        ObservableSpec(
+            family=TargetPropertyFamily.KINETIC,
+            name="kinetic_plugin",
+            kernel="plugin:kinetic",
+            required_inputs=["campaign_specific_evidence"],
+            metric_definition="plugin-defined kinetic observable (barriers/rates/lifetimes)",
+            observable_kind="kinetic_plugin",
         ),
         ObservableSpec(
             family=TargetPropertyFamily.USER_DEFINED,
@@ -285,6 +518,7 @@ def default_observable_registry() -> ObservableRegistry:
             kernel="plugin:user_defined",
             required_inputs=["user_defined_evidence"],
             metric_definition="user-defined observable comparison",
+            observable_kind="user_defined_plugin",
         ),
     ]
     return ObservableRegistry(registry_id="v2_default_observable_registry", observables=specs)
@@ -460,14 +694,20 @@ def operationalize_target(
 
 __all__ = [
     "AcceptanceStatus",
+    "CampaignTargetSelection",
+    "CriterionRole",
+    "DomainResolvedObservable",
+    "EvaluationDomain",
     "HumanTargetPropertyContract",
     "ObservableRegistry",
     "ObservableRequirement",
     "ObservableSelectionRole",
+    "ObservableSelectionStatus",
     "ObservableSpec",
     "OperationalizationDecision",
     "OperationalizationStatus",
     "TargetObservableBinding",
+    "TargetObservableChannel",
     "TargetOperationalizationRequest",
     "TargetOperationalizationResult",
     "TargetPropertyFamily",
@@ -477,4 +717,5 @@ __all__ = [
     "default_observable_registry",
     "operationalize_target",
     "operationalize_target_request",
+    "sio2_fresh01_target_selection",
 ]

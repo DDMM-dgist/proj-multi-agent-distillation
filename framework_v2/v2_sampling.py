@@ -60,8 +60,23 @@ class CriterionBindingStatus(str, Enum):
 
 
 class CriterionRole(str, Enum):
+    """WHY an observable/criterion is evaluated (H12 observable-role axis).
+
+    ``SCIENTIFIC_REQUIRED``   -- a scientific success criterion (the target property).
+    ``OPERATIONAL_REQUIRED``  -- an operational model-fidelity criterion (e.g.
+                                 Student-vs-Teacher energy/force RMSE).
+    ``NUMERICAL_GUARD``       -- a numerical/physical-stability guard (e.g. NVE
+                                 energy drift); a gate, but never a scientific target.
+    ``EVIDENCE_ONLY``         -- a non-gating diagnostic observable.
+
+    ``NUMERICAL_GUARD`` is treated as a closure gate exactly like the other
+    non-evidence roles (it can block closure); it is distinguished only so that a
+    stability guard is never mistaken for a scientific target property.
+    """
+
     SCIENTIFIC_REQUIRED = "SCIENTIFIC_REQUIRED"
     OPERATIONAL_REQUIRED = "OPERATIONAL_REQUIRED"
+    NUMERICAL_GUARD = "NUMERICAL_GUARD"
     EVIDENCE_ONLY = "EVIDENCE_ONLY"
 
 

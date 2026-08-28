@@ -57,7 +57,8 @@ def test_required_observable_cannot_change_family():
 def test_required_unbound_threshold_blocks_ready_status():
     target = HumanTargetPropertyContract(
         contract_id="t",
-        target_property_family=TargetPropertyFamily.STRUCTURAL,
+        # H12: density is a THERMODYNAMIC state property.
+        target_property_family=TargetPropertyFamily.THERMODYNAMIC,
         required_observables=["density"],  # registry default is threshold-unbound
     )
     result = operationalize_target_request(target)
@@ -68,14 +69,16 @@ def test_required_unbound_threshold_blocks_ready_status():
 
 
 def test_build_contract_preserves_required_and_provenance():
+    # H12: keep a single-family selection; density moved to THERMODYNAMIC, so a
+    # STRUCTURAL contract uses two structural observables.
     target = HumanTargetPropertyContract(
         contract_id="t",
         target_property_family=TargetPropertyFamily.STRUCTURAL,
-        required_observables=["coordination", "density"],
+        required_observables=["coordination", "rdf"],
     )
     result = operationalize_target_request(target)
     contract = build_target_validation_contract(result, default_observable_registry())
-    assert [b.observable.name for b in contract.observables] == ["coordination", "density"]
+    assert [b.observable.name for b in contract.observables] == ["coordination", "rdf"]
     assert {b.selected_by for b in contract.observables} == {"REQUIRED"}
     assert contract.target_property_family == TargetPropertyFamily.STRUCTURAL
     for b in contract.observables:

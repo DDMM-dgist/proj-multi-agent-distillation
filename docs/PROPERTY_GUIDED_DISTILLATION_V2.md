@@ -73,6 +73,87 @@ internal safety. It is not the V2 paper-facing scientific contribution.
 - Recover: `RegionRecoveryPlan`, targeted curation
 - Validate: target-property validation, deployment validation, final evidence
 
+## Scientific Target Taxonomy (H12)
+
+Three orthogonal concepts describe every evaluated observable. They must never
+be conflated:
+
+- **WHAT** — property family (`TargetPropertyFamily`): the physical behaviour.
+- **WHERE** — evaluation domain (`EvaluationDomain`): temperature / composition /
+  structural region. The same observable is evaluated across many domains; the
+  family never changes with the domain.
+- **WHY** — observable role (`framework_v2.v2_sampling.CriterionRole`): why the
+  quantity is evaluated.
+
+### Property families (WHAT)
+
+| PROPERTY FAMILY | EXAMPLES |
+|---|---|
+| STRUCTURAL | RDF, partial RDF, ADF, coordination distributions, ring-size distributions, structure factor, local-environment distributions |
+| THERMODYNAMIC | density, enthalpy, heat capacity, thermal expansion, equation-of-state / pressure response |
+| DYNAMICAL | VACF, VDOS, intermediate scattering / relaxation correlation functions |
+| TRANSPORT | MSD (for diffusion), self-diffusion coefficient, viscosity, thermal/ionic conductivity |
+| MECHANICAL | elastic response, bulk/shear modulus, stress–strain behaviour |
+| KINETIC | transition barriers, event rates, residence times / lifetimes |
+
+`StructuralRegion` (a WHERE region) is not `TargetPropertyFamily.STRUCTURAL`
+(a WHAT family). Channels (species/pair/angle) are carried as structured
+metadata on `ObservableSpec.channel` / `TargetObservableChannel`, never encoded
+by parsing names such as `rdf_si_o`.
+
+### Observable roles (WHY)
+
+`CriterionRole` distinguishes why a quantity is evaluated, and only
+`SCIENTIFIC_REQUIRED` is a scientific success criterion:
+
+| observable | property family | role |
+|---|---|---|
+| Si-O RDF | STRUCTURAL | `SCIENTIFIC_REQUIRED` |
+| density | THERMODYNAMIC | `SCIENTIFIC_REQUIRED` |
+| Si self-diffusivity | TRANSPORT | `SCIENTIFIC_REQUIRED` (when selected) |
+| force RMSE | (not a target family) | `OPERATIONAL_REQUIRED` |
+| energy RMSE | (not a target family) | `OPERATIONAL_REQUIRED` |
+| NVE energy drift | (stability guard) | `NUMERICAL_GUARD` |
+
+`NUMERICAL_GUARD` is a closure gate (it can block closure) but is never a
+scientific target. Energy/force RMSE live in the `energy.*` / `force.*` closure
+namespaces as `OPERATIONAL_REQUIRED` fidelity criteria — they are not target
+observable families. Comparison/aggregation semantics may be declared per
+observable, but any genuinely unbound numerical distance/threshold stays
+`UNBOUND` (H12 hardens taxonomy; it does not invent thresholds).
+
+### Worked example
+
+```
+observable:         Si-O RDF
+property family:    STRUCTURAL          (WHAT)
+domain:             T = 2000 K, composition = SiO2-x, structural_region = R3  (WHERE)
+role:               SCIENTIFIC_REQUIRED  (WHY)
+```
+
+### Domain-resolved evaluation
+
+The same target is evaluated per structural region (via `RegionEvaluationRecord`
+/ `ErrorLedger`) and per (temperature, composition) domain point. Evidence is
+not globally averaged before closure, so region/domain-resolved failure
+attribution remains possible for targeted recovery. Family-qualified signal
+identity is available additively via `ObservableSpec.signal_namespace()` (e.g.
+`target.structural.rdf`, `target.thermodynamic.density`) without renaming the
+existing `target.*` closure signals.
+
+### First Fresh campaign (SiO2-x) selection
+
+`sio2_fresh01_target_selection()` fixes the explicit Fresh-01 scientific target:
+
+- **PRIMARY (required):** partial RDF (Si-O, Si-Si, O-O), ADF (O-Si-O, Si-O-Si),
+  Si/O coordination + coordination-state populations, density.
+- **SECONDARY (future-selectable, NOT required for Fresh-01):** Si/O
+  self-diffusivity, VACF, VDOS.
+
+The taxonomy supports all families, but campaign selection is always explicit —
+viscosity, thermal conductivity, mechanical and kinetic families are supported
+but not auto-required.
+
 ## Implementation Map
 
 - Human target and observable registry:
